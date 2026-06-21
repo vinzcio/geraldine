@@ -1,0 +1,42 @@
+import Foundation
+
+enum Shell {
+    /// Run a non-interactive command and capture combined output.
+    @discardableResult
+    static func run(_ launchPath: String, _ args: [String]) -> (status: Int32, output: String) {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: launchPath)
+        proc.arguments = args
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = pipe
+        do { try proc.run() } catch { return (-1, "\(error)") }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        proc.waitUntilExit()
+        return (proc.terminationStatus, String(data: data, encoding: .utf8) ?? "")
+    }
+
+    /// Locate a CLI tool across common locations (Homebrew included).
+    static func which(_ tool: String) -> String? {
+        let candidates = [
+            "/opt/homebrew/bin/\(tool)", "/usr/local/bin/\(tool)",
+            "/usr/bin/\(tool)", "/bin/\(tool)",
+            "/usr/sbin/\(tool)", "/sbin/\(tool)"
+        ]
+        for c in candidates where FileManager.default.isExecutableFile(atPath: c) { return c }
+        let r = run("/usr/bin/which", [tool])
+        let path = r.output.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (r.status == 0 && !path.isEmpty) ? path : nil
+    }
+
+    /// Run a shell command as administrator (one macOS password prompt) via osascript.
+    @discardableResult
+    static func runAdmin(_ command: String) -> (ok: Bool, output: String) {
+        let escaped = command
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        let script = "do shell script \"\(escaped)\" with administrator privileges"
+        let r = run("/usr/bin/osascript", ["-e", script])
+        return (r.status == 0, r.output)
+    }
+}
