@@ -106,6 +106,7 @@ struct DetailHost: View {
             case .activity:    ActivityView()
             case .storage:     StorageView()
             case .battery:     BatteryView()
+            case .keepAwake:   KeepAwakeView()
             case .cleanup:     CleanupView()
             case .uninstaller: UninstallerView()
             case .largeFiles:  LargeFilesView()

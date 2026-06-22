@@ -12,7 +12,7 @@ struct WidgetGrid: View {
             ForEach(Array(packed.enumerated()), id: \.offset) { _, row in
                 HStack(spacing: 8) {
                     ForEach(row, id: \.kind) { item in
-                        MetricWidget(item: item).frame(maxWidth: .infinity)
+                        widget(for: item).frame(maxWidth: .infinity)
                     }
                     // Keep a lone small tile at half width instead of stretching.
                     if row.count == 1, row[0].size == .small {
@@ -22,6 +22,13 @@ struct WidgetGrid: View {
             }
         }
         .animation(.snappy(duration: 0.28), value: layout.items)
+    }
+
+    @ViewBuilder private func widget(for item: WidgetItem) -> some View {
+        switch item.kind {
+        case .metric(let metric): MetricWidget(kind: metric, size: item.size)
+        case .keepAwake:          KeepAwakeWidget(size: item.size)
+        }
     }
 
     /// Flow the ordered items into rows: a large item takes its own row; smalls pair up.
@@ -42,19 +49,84 @@ struct WidgetGrid: View {
     }
 }
 
+// MARK: - Shared widget chrome
+
+/// Drag-to-reorder handle + size toggle, shared by every widget tile so Keep Awake
+/// behaves exactly like the metric widgets.
+struct WidgetControls: View {
+    @EnvironmentObject var layout: WidgetLayoutStore
+    let kind: WidgetKind
+    let size: WidgetSize
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "line.3.horizontal")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 18, height: 18)
+                .contentShape(Rectangle())
+                .help("Drag to reorder")
+                .draggable(kind.id) { dragPreview }
+
+            Button {
+                withAnimation(.snappy(duration: 0.28)) { layout.toggleSize(kind) }
+            } label: {
+                Image(systemName: size == .small ? "arrow.up.left.and.arrow.down.right" : "arrow.down.right.and.arrow.up.left")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 18, height: 18)
+                    .background(Color.primary.opacity(0.07), in: Circle())
+            }
+            .buttonStyle(.plain)
+            .help(size == .small ? "Expand widget" : "Shrink widget")
+        }
+    }
+
+    @ViewBuilder private var dragPreview: some View {
+        HStack(spacing: 5) {
+            switch kind {
+            case .metric(let metric): Image(systemName: metric.icon)
+            case .keepAwake:          EyeView(isActive: false, size: 16)
+            }
+            Text(kind.title)
+        }
+        .font(.caption).padding(6)
+        .background(.ultraThinMaterial, in: Capsule())
+    }
+}
+
+/// Accept a dropped widget id and reorder it before `target`.
+private struct WidgetDropTarget: ViewModifier {
+    @EnvironmentObject var layout: WidgetLayoutStore
+    let target: WidgetKind
+
+    func body(content: Content) -> some View {
+        content.dropDestination(for: String.self) { dropped, _ in
+            guard let raw = dropped.first, let dragged = WidgetKind(id: raw), dragged != target else { return false }
+            withAnimation(.snappy(duration: 0.28)) { layout.move(dragged, before: target) }
+            return true
+        }
+    }
+}
+
+extension View {
+    func widgetDropTarget(_ target: WidgetKind) -> some View {
+        modifier(WidgetDropTarget(target: target))
+    }
+}
+
 // MARK: - Widget
 
 /// One resizable, draggable metric tile. Small = compact readout; large = adds a chart.
 struct MetricWidget: View {
-    let item: WidgetItem
+    let kind: MetricKind
+    let size: WidgetSize
     @EnvironmentObject var state: AppState
     @EnvironmentObject var monitor: SystemMonitor
     @EnvironmentObject var network: NetworkMonitor
-    @EnvironmentObject var layout: WidgetLayoutStore
     @State private var freeing = false
 
-    private var kind: MetricKind { item.kind }
-    private var isSmall: Bool { item.size == .small }
+    private var isSmall: Bool { size == .small }
     private var networkRateFontSize: CGFloat { isSmall ? 11 : 12 }
     private var networkRateIconWidth: CGFloat { isSmall ? 8 : 10 }
     private var networkRateSpacing: CGFloat { isSmall ? 2 : 5 }
@@ -68,44 +140,12 @@ struct MetricWidget: View {
         .frame(height: isSmall ? 100 : nil, alignment: .topLeading)
         .padding(10)
         .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-        .dropDestination(for: String.self) { dropped, _ in
-            guard let raw = dropped.first, let dragged = MetricKind(rawValue: raw), dragged != kind else { return false }
-            withAnimation(.snappy(duration: 0.28)) { layout.move(dragged, before: kind) }
-            return true
-        }
+        .widgetDropTarget(.metric(kind))
     }
 
     // MARK: Shared chrome
 
-    private var controls: some View {
-        HStack(spacing: 6) {
-            // Drag handle for reordering.
-            Image(systemName: "line.3.horizontal")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 18, height: 18)
-                .contentShape(Rectangle())
-                .help("Drag to reorder")
-                .draggable(kind.rawValue) {
-                    Label(kind.title, systemImage: kind.icon)
-                        .font(.caption).padding(6)
-                        .background(.ultraThinMaterial, in: Capsule())
-                }
-
-            // Tap to toggle small ↔ large.
-            Button {
-                withAnimation(.snappy(duration: 0.28)) { layout.toggleSize(kind) }
-            } label: {
-                Image(systemName: isSmall ? "arrow.up.left.and.arrow.down.right" : "arrow.down.right.and.arrow.up.left")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 18, height: 18)
-                    .background(Color.primary.opacity(0.07), in: Circle())
-            }
-            .buttonStyle(.plain)
-            .help(isSmall ? "Expand widget" : "Shrink widget")
-        }
-    }
+    private var controls: some View { WidgetControls(kind: .metric(kind), size: size) }
 
     private func headerRow(@ViewBuilder trailing: () -> some View) -> some View {
         HStack(spacing: 5) {
@@ -229,7 +269,13 @@ struct MetricWidget: View {
                 actionButton("Clean Up") { state.open(.cleanup) }
             }
         case .battery:
-            HStack { caption(batteryCaption, animationValue: batteryCaptionAnimationValue); Spacer() }
+            HStack {
+                caption(batteryCaption, animationValue: batteryCaptionAnimationValue)
+                Spacer()
+                if let health = monitor.batteryHealth {
+                    caption("Health \(Fmt.percent(health))", animationValue: health * 100)
+                }
+            }
         case .network:
             EmptyView()
         }
@@ -241,8 +287,7 @@ struct MetricWidget: View {
         if isSmall {
             VStack(alignment: .leading, spacing: 6) {
                 networkHeader
-                Text(network.displayName).font(.rounded(14, .semibold))
-                    .lineLimit(1).truncationMode(.middle)
+                networkName(size: 14)
                 Spacer(minLength: 0)
                 HStack(spacing: 4) {
                     rate("arrow.down", monitor.netDown, Theme.accent2)
@@ -253,8 +298,7 @@ struct MetricWidget: View {
             VStack(alignment: .leading, spacing: 8) {
                 networkHeader
                 HStack(alignment: .firstTextBaseline) {
-                    Text(network.displayName).font(.rounded(16, .semibold))
-                        .lineLimit(1).truncationMode(.middle)
+                    networkName(size: 16)
                     Spacer()
                     securityPill
                 }
@@ -278,10 +322,37 @@ struct MetricWidget: View {
         HStack(spacing: 5) {
             Image(systemName: network.connection.icon).font(.caption)
                 .foregroundStyle(network.online ? Theme.accent2 : Theme.warn)
-            Text("Network").font(.caption.weight(.medium)).foregroundStyle(.secondary)
+            Text(network.connection.label).font(.caption.weight(.medium)).foregroundStyle(.secondary).lineLimit(1)
             Spacer(minLength: 4)
             signalGlyph
             controls
+        }
+    }
+
+    /// The headline name: the Wi-Fi SSID when macOS will give it to us, otherwise a
+    /// state that isn't a redundant "Wi-Fi" — including a tap to reveal a hidden name.
+    @ViewBuilder private func networkName(size: CGFloat) -> some View {
+        if let ssid = network.ssid, !ssid.isEmpty {
+            Text(ssid)
+                .font(.rounded(size, .semibold))
+                .lineLimit(1).truncationMode(.middle)
+        } else if network.connection == .wifi, !network.canShowName {
+            Button { network.requestNameAccess() } label: {
+                Text("Show Name")
+                    .font(.rounded(size, .semibold))
+                    .foregroundStyle(Theme.accent2)
+            }
+            .buttonStyle(.plain)
+            .help("Allow Location so macOS reveals the Wi-Fi network name")
+        } else if !network.online {
+            Text("Not Connected")
+                .font(.rounded(size, .semibold))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        } else {
+            Text(network.connection.label)
+                .font(.rounded(size, .semibold))
+                .lineLimit(1)
         }
     }
 
@@ -423,14 +494,32 @@ struct MetricWidget: View {
     }
 
     private var batteryCaption: String {
-        if monitor.batteryCharging { return "Charging" }
-        if let h = monitor.batteryHealth { return "Health \(Fmt.percent(h))" }
-        return monitor.batteryLevel == nil ? "On AC power" : "On battery"
+        // Desktop / no battery.
+        guard monitor.batteryLevel != nil else { return "Plugged In" }
+        // Unplugged — running on the battery.
+        guard monitor.batteryOnAC else {
+            if let m = monitor.batteryMinutesToEmpty { return "On Battery · \(BatteryInfo.durationString(m)) Left" }
+            return "On Battery"
+        }
+        // Plugged in, but the adapter can't keep up so the battery is still draining.
+        if monitor.batteryDraining { return "On Battery · Adapter Can't Keep Up" }
+        // Plugged in, on wall power.
+        if monitor.batteryFull { return "Plugged In · Fully Charged" }
+        if monitor.batteryCharging {
+            if let m = monitor.batteryMinutesToFull { return "Plugged In · \(BatteryInfo.durationString(m)) To Full" }
+            return "Plugged In · Charging"
+        }
+        // On wall power, deliberately holding the charge to protect the battery.
+        return "Plugged In · Optimized Charging"
     }
 
     private var batteryCaptionAnimationValue: Double? {
-        guard !monitor.batteryCharging else { return nil }
-        return monitor.batteryHealth.map { $0 * 100 }
+        guard monitor.batteryLevel != nil else { return nil }
+        if !monitor.batteryOnAC { return monitor.batteryMinutesToEmpty.map(Double.init) }
+        if monitor.batteryCharging, !monitor.batteryFull, !monitor.batteryDraining {
+            return monitor.batteryMinutesToFull.map(Double.init)
+        }
+        return nil
     }
 
     private func tempString(_ value: Double?) -> String {
@@ -450,5 +539,137 @@ struct MetricWidget: View {
             monitor.refresh()
             freeing = false
         }
+    }
+}
+
+// MARK: - Keep Awake widget
+
+/// The Keep Awake control as a draggable, resizable tile. The eye is the toggle;
+/// the duration strip scrolls to start a timed session. Lives in the same layout as
+/// the metric widgets but never drives the menu-bar status item (see `menuBarKind`).
+struct KeepAwakeWidget: View {
+    let size: WidgetSize
+    @EnvironmentObject private var keepAwake: KeepAwakeController
+
+    private var isSmall: Bool { size == .small }
+    private var active: Bool { keepAwake.isActive }
+
+    var body: some View {
+        Group { if isSmall { small } else { large } }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(height: isSmall ? 100 : nil, alignment: .topLeading)
+            .padding(10)
+            .background {
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .fill(.quaternary.opacity(0.4))
+                    .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .fill(Theme.bad.opacity(active ? 0.10 : 0)))
+                    .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .strokeBorder(Theme.bad.opacity(active ? 0.35 : 0), lineWidth: 1))
+            }
+            .animation(.easeInOut(duration: 0.4), value: active)
+            .widgetDropTarget(.keepAwake)
+    }
+
+    private var large: some View {
+        HStack(alignment: .center, spacing: 12) {
+            eye(46)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .top) {
+                    titleAndStatus
+                    Spacer(minLength: 4)
+                    WidgetControls(kind: .keepAwake, size: size)
+                }
+                DurationStrip(compact: false)
+            }
+        }
+    }
+
+    private var small: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 8) {
+                eye(26)
+                Text("Keep Awake")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                WidgetControls(kind: .keepAwake, size: size)
+            }
+            Text(keepAwake.statusLine)
+                .font(.caption2)
+                .foregroundStyle(active ? Theme.bad : .secondary)
+                .lineLimit(1)
+            Spacer(minLength: 0)
+            DurationStrip(compact: true)
+        }
+    }
+
+    private var titleAndStatus: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("Keep Awake").font(.caption.weight(.semibold))
+            Text(keepAwake.statusLine)
+                .font(.caption2)
+                .foregroundStyle(active ? Theme.bad : .secondary)
+                .lineLimit(1)
+        }
+    }
+
+    private func eye(_ eyeSize: CGFloat) -> some View {
+        Button { keepAwake.toggle() } label: {
+            EyeView(isActive: active, size: eyeSize)
+        }
+        .buttonStyle(.plain)
+        .help(active ? "Stop keeping your Mac awake" : "Keep your Mac awake")
+    }
+}
+
+/// Horizontal, scrollable row of durations. It quietly recedes until hovered, then
+/// brightens into a scrollable track; tapping a duration starts a timed session.
+private struct DurationStrip: View {
+    @EnvironmentObject private var keepAwake: KeepAwakeController
+    var compact: Bool
+    @State private var hovering = false
+
+    var body: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 5) {
+                ForEach(KeepAwakeDuration.allCases) { duration in
+                    pill(duration)
+                }
+            }
+            .padding(.horizontal, 4)
+            .padding(.vertical, 4)
+        }
+        .scrollIndicators(.hidden)
+        .background(Color.primary.opacity(hovering ? 0.06 : 0.03), in: Capsule())
+        .overlay(Capsule().strokeBorder(Color.primary.opacity(hovering ? 0.10 : 0), lineWidth: 1))
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.18), value: hovering)
+    }
+
+    private func pill(_ duration: KeepAwakeDuration) -> some View {
+        let selected = keepAwake.defaultDuration == duration
+        let running = keepAwake.isActive && selected
+        let fill: Color = running ? Theme.bad
+            : selected ? Theme.bad.opacity(0.16)
+            : Color.primary.opacity(0.06)
+
+        return Button {
+            keepAwake.defaultDuration = duration
+            keepAwake.activate(option: duration)
+        } label: {
+            Text(duration.shortLabel)
+                .font(.caption2.weight(.semibold))
+                .monospacedDigit()
+                .foregroundStyle(running ? .white : (selected ? Theme.bad : .secondary))
+                .padding(.horizontal, compact ? 7 : 9)
+                .padding(.vertical, compact ? 3 : 5)
+                .background(Capsule().fill(fill))
+                .overlay(Capsule().strokeBorder(selected && !running ? Theme.bad.opacity(0.5) : .clear, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .opacity(hovering || selected ? 1 : 0.7)
+        .help("Keep awake for \(duration.label)")
     }
 }

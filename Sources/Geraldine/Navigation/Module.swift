@@ -6,6 +6,7 @@ enum Module: String, CaseIterable, Identifiable {
     case activity
     case storage
     case battery
+    case keepAwake
     case cleanup
     case largeFiles
     case spaceLens
@@ -25,6 +26,7 @@ enum Module: String, CaseIterable, Identifiable {
         case .activity:    return "Activity"
         case .storage:     return "Storage"
         case .battery:     return "Battery"
+        case .keepAwake:   return "Keep Awake"
         case .cleanup:     return "Cleanup"
         case .largeFiles:  return "Large & Old Files"
         case .spaceLens:   return "Space Lens"
@@ -44,6 +46,7 @@ enum Module: String, CaseIterable, Identifiable {
         case .activity:    return "waveform.path.ecg"
         case .storage:     return "chart.pie.fill"
         case .battery:     return "battery.100"
+        case .keepAwake:   return "cup.and.saucer.fill"
         case .cleanup:     return "sparkles"
         case .largeFiles:  return "doc.text.magnifyingglass"
         case .spaceLens:   return "circle.hexagongrid.fill"
@@ -63,6 +66,7 @@ enum Module: String, CaseIterable, Identifiable {
         case .activity:    return Theme.accent2
         case .storage:     return Color(red: 0.20, green: 0.70, blue: 0.62)
         case .battery:     return Color(red: 0.30, green: 0.78, blue: 0.45)
+        case .keepAwake:   return Color(red: 0.94, green: 0.58, blue: 0.26)
         case .cleanup:     return Theme.accent2
         case .largeFiles:  return Color(red: 0.95, green: 0.55, blue: 0.35)
         case .spaceLens:   return Color(red: 0.86, green: 0.42, blue: 0.86)
@@ -82,6 +86,7 @@ enum Module: String, CaseIterable, Identifiable {
         case .activity:    return "CPU, memory & top processes"
         case .storage:     return "What's using your disk"
         case .battery:     return "Charge history, consumers & health"
+        case .keepAwake:   return "Prevent idle sleep and display dimming"
         case .cleanup:     return "Clear caches, logs, and junk"
         case .largeFiles:  return "Find big and forgotten files"
         case .spaceLens:   return "See what's using your disk"
@@ -103,7 +108,7 @@ enum Module: String, CaseIterable, Identifiable {
 
     var group: Group {
         switch self {
-        case .dashboard, .smartCare, .activity, .storage, .battery: return .overview
+        case .dashboard, .smartCare, .activity, .storage, .battery, .keepAwake: return .overview
         case .cleanup, .largeFiles, .spaceLens, .uninstaller: return .clean
         case .privacy, .loginItems, .maintenance, .updater, .settings: return .tune
         }

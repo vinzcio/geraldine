@@ -45,6 +45,7 @@ final class AppState: ObservableObject {
     let network = NetworkMonitor()
     let devices = DeviceMonitor()
     let layout = WidgetLayoutStore()
+    let keepAwake = KeepAwakeController()
 
     @Published var selection: Module? = .dashboard
     @Published private(set) var hasFullDiskAccess = Permissions.hasFullDiskAccess()

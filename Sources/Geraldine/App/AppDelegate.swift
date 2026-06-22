@@ -13,6 +13,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menuBarController = MenuBarController(state: state)
     }
 
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls {
+            if AppState.shared.keepAwake.handle(url: url) {
+                return
+            }
+        }
+    }
+
     func applicationDidBecomeActive(_ notification: Notification) {
         AppState.shared.refreshFullDiskAccess()
     }
@@ -27,5 +35,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Closing the full window hides it; Quit is the explicit way to end Geraldine.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        AppState.shared.keepAwake.shutdown()
     }
 }

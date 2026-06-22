@@ -15,6 +15,11 @@ final class SystemMonitor: ObservableObject {
     @Published var batteryCharging: Bool = false
     @Published var batteryHealth: Double? = nil  // 0…1
     @Published var batteryCycles: Int? = nil
+    @Published var batteryMinutesToEmpty: Int? = nil  // nil while macOS is still estimating
+    @Published var batteryMinutesToFull: Int? = nil
+    @Published var batteryOnAC: Bool = true           // system is drawing from the wall adapter
+    @Published var batteryDraining: Bool = false      // plugged in yet net-discharging (adapter can't keep up)
+    @Published var batteryFull: Bool = false
     @Published var netDown: Double = 0           // bytes/sec
     @Published var netUp: Double = 0             // bytes/sec
 
@@ -64,6 +69,8 @@ final class SystemMonitor: ObservableObject {
         let bat = Self.sampleBattery()
         batteryLevel = bat.level; batteryCharging = bat.charging
         batteryHealth = bat.health; batteryCycles = bat.cycles
+        batteryMinutesToEmpty = bat.toEmpty; batteryMinutesToFull = bat.toFull
+        batteryOnAC = bat.onAC; batteryDraining = bat.draining; batteryFull = bat.full
         let net = sampleNetwork()
         netDown = net.down; netUp = net.up
 
@@ -185,14 +192,16 @@ final class SystemMonitor: ObservableObject {
 
     // MARK: - Battery
 
-    private static func sampleBattery() -> (level: Double?, charging: Bool, health: Double?, cycles: Int?) {
+    private static func sampleBattery() -> (level: Double?, charging: Bool, health: Double?, cycles: Int?,
+                                            toEmpty: Int?, toFull: Int?, onAC: Bool, draining: Bool, full: Bool) {
         let reg = batteryFromRegistry()
         guard let blob = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
               let list = IOPSCopyPowerSourcesList(blob)?.takeRetainedValue() as? [CFTypeRef],
               let source = list.first,
               let desc = IOPSGetPowerSourceDescription(blob, source)?.takeUnretainedValue() as? [String: Any]
         else {
-            return (nil, false, reg.health, reg.cycles)
+            // No power source (e.g. a desktop): always on wall power.
+            return (nil, false, reg.health, reg.cycles, nil, nil, true, false, false)
         }
         var level: Double? = nil
         if let cur = desc[kIOPSCurrentCapacityKey as String] as? Int,
@@ -200,7 +209,22 @@ final class SystemMonitor: ObservableObject {
             level = Double(cur) / Double(max)
         }
         let charging = (desc[kIOPSIsChargingKey as String] as? Bool) ?? false
-        return (level, charging, reg.health, reg.cycles)
+        // Both estimates report -1 while macOS is still calculating; treat as nil.
+        func positive(_ key: String) -> Int? {
+            guard let value = desc[key] as? Int, value > 0 else { return nil }
+            return value
+        }
+        let toEmpty = positive(kIOPSTimeToEmptyKey as String)
+        let toFull = positive(kIOPSTimeToFullChargeKey as String)
+
+        // Power-source state reports "AC Power" whenever the adapter is connected —
+        // including while charging or holding at a limit. The signed current then tells
+        // us the true direction: < 0 means the battery is net-draining despite AC.
+        let onAC = (desc[kIOPSPowerSourceStateKey as String] as? String) == (kIOPSACPowerValue as String)
+        let full = (desc[kIOPSIsChargedKey as String] as? Bool) ?? false
+        let current = desc[kIOPSCurrentKey as String] as? Int
+        let draining = onAC && (current ?? 0) < 0
+        return (level, charging, reg.health, reg.cycles, toEmpty, toFull, onAC, draining, full)
     }
 
     private static func batteryFromRegistry() -> (health: Double?, cycles: Int?) {

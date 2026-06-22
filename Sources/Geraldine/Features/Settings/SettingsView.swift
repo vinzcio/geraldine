@@ -5,6 +5,8 @@ struct SettingsView: View {
         TabView {
             GeneralSettings()
                 .tabItem { Label("General", systemImage: "gearshape") }
+            KeepAwakeSettings()
+                .tabItem { Label("Keep Awake", systemImage: Module.keepAwake.systemImage) }
             PermissionsSettings()
                 .tabItem { Label("Permissions", systemImage: "lock.shield") }
             AboutSettings()
@@ -33,6 +35,12 @@ struct AppSettingsView: View {
                 .card()
 
                 VStack(alignment: .leading, spacing: 14) {
+                    SectionHeader("Keep Awake")
+                    KeepAwakeSettingsControls()
+                }
+                .card()
+
+                VStack(alignment: .leading, spacing: 14) {
                     SectionHeader("Startup")
                     Toggle("Launch Geraldine at login", isOn: $launchAtLogin)
                         .onChange(of: launchAtLogin) { _, newValue in
@@ -45,6 +53,35 @@ struct AppSettingsView: View {
             .frame(maxWidth: 720, alignment: .leading)
         }
         .onAppear { launchAtLogin = LaunchAtLogin.isEnabled }
+    }
+}
+
+private struct KeepAwakeSettings: View {
+    var body: some View {
+        Form {
+            Section("Keep Awake") {
+                KeepAwakeSettingsControls()
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
+
+private struct KeepAwakeSettingsControls: View {
+    @EnvironmentObject private var keepAwake: KeepAwakeController
+
+    var body: some View {
+        Group {
+            Picker("Default duration", selection: $keepAwake.defaultDuration) {
+                ForEach(KeepAwakeDuration.allCases) { duration in
+                    Text(duration.label).tag(duration)
+                }
+            }
+            Toggle("Allow display sleep", isOn: $keepAwake.allowDisplaySleep)
+            Toggle("Deactivate on battery", isOn: $keepAwake.deactivateOnBattery)
+            Toggle("Pause while screen is locked", isOn: $keepAwake.pauseWhenScreenLocked)
+            Toggle("Menu bar click toggles Keep Awake", isOn: $keepAwake.statusItemClickToggles)
+        }
     }
 }
 

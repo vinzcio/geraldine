@@ -39,19 +39,80 @@ enum MetricKind: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+/// What a widget tile holds. Metrics drive sparklines/readouts; Keep Awake is a
+/// control. Both share the same draggable, resizable grid — but only metrics can
+/// drive the live menu-bar status item (see `WidgetLayoutStore.menuBarKind`).
+enum WidgetKind: Hashable, Identifiable {
+    case metric(MetricKind)
+    case keepAwake
+
+    var id: String {
+        switch self {
+        case .metric(let metric): return metric.rawValue
+        case .keepAwake:          return "keepAwake"
+        }
+    }
+
+    init?(id: String) {
+        if id == "keepAwake" {
+            self = .keepAwake
+        } else if let metric = MetricKind(rawValue: id) {
+            self = .metric(metric)
+        } else {
+            return nil
+        }
+    }
+
+    /// The underlying metric, or nil for non-metric controls like Keep Awake.
+    var metric: MetricKind? {
+        if case .metric(let metric) = self { return metric }
+        return nil
+    }
+
+    var title: String {
+        switch self {
+        case .metric(let metric): return metric.title
+        case .keepAwake:          return "Keep Awake"
+        }
+    }
+}
+
+/// Encoded as a single string so layouts persisted before Keep Awake became a
+/// widget (which stored a bare `MetricKind` raw value) still decode cleanly.
+extension WidgetKind: Codable {
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        guard let kind = WidgetKind(id: raw) else {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath,
+                                                    debugDescription: "Unknown widget kind \"\(raw)\""))
+        }
+        self = kind
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(id)
+    }
+}
+
 enum WidgetSize: String, Codable {
     case small, large
     mutating func toggle() { self = self == .small ? .large : .small }
 }
 
 struct WidgetItem: Codable, Identifiable, Equatable {
-    var kind: MetricKind
+    var kind: WidgetKind
     var size: WidgetSize
-    var id: String { kind.rawValue }
+    var id: String { kind.id }
 
-    init(_ kind: MetricKind, _ size: WidgetSize) {
+    init(_ kind: WidgetKind, _ size: WidgetSize) {
         self.kind = kind
         self.size = size
+    }
+
+    /// Convenience for the common metric case: `WidgetItem(.cpu, .small)`.
+    init(_ metric: MetricKind, _ size: WidgetSize) {
+        self.init(.metric(metric), size)
     }
 }
 
@@ -66,6 +127,7 @@ final class WidgetLayoutStore: ObservableObject {
 
     static let defaults: [WidgetItem] = [
         WidgetItem(.temperature, .large),
+        WidgetItem(.keepAwake, .large),
         WidgetItem(.cpu, .small),
         WidgetItem(.memory, .small),
         WidgetItem(.storage, .small),
@@ -77,17 +139,18 @@ final class WidgetLayoutStore: ObservableObject {
         items = Self.load(key: "geraldine.widgetLayout.v1") ?? Self.defaults
     }
 
-    /// The metric mirrored live in the menu-bar status item.
-    var menuBarKind: MetricKind { items.first?.kind ?? .temperature }
+    /// The metric mirrored live in the menu-bar status item. Non-metric widgets
+    /// (Keep Awake) are skipped, so it never drives the bar even from the top slot.
+    var menuBarKind: MetricKind { items.compactMap(\.kind.metric).first ?? .temperature }
 
-    func toggleSize(_ kind: MetricKind) {
+    func toggleSize(_ kind: WidgetKind) {
         guard let idx = items.firstIndex(where: { $0.kind == kind }) else { return }
         items[idx].size.toggle()
         persist()
     }
 
     /// Move `dragged` so it sits immediately before `target` in the order.
-    func move(_ dragged: MetricKind, before target: MetricKind) {
+    func move(_ dragged: WidgetKind, before target: WidgetKind) {
         guard dragged != target,
               let from = items.firstIndex(where: { $0.kind == dragged }) else { return }
         var arr = items
@@ -112,12 +175,15 @@ final class WidgetLayoutStore: ObservableObject {
         guard let data = UserDefaults.standard.data(forKey: key),
               let decoded = try? JSONDecoder().decode([WidgetItem].self, from: data),
               !decoded.isEmpty else { return nil }
-        // Drop unknown/duplicate kinds and append any newly-added metrics so the
-        // layout stays valid across app updates.
-        var seen = Set<MetricKind>()
+        // Drop duplicates and append any newly-added widgets (including Keep Awake,
+        // for layouts saved before it existed) so the layout stays valid across updates.
+        var seen = Set<WidgetKind>()
         var result = decoded.filter { seen.insert($0.kind).inserted }
-        for kind in MetricKind.allCases where !seen.contains(kind) {
+        for kind in MetricKind.allCases where !seen.contains(.metric(kind)) {
             result.append(WidgetItem(kind, .small))
+        }
+        if !seen.contains(.keepAwake) {
+            result.append(WidgetItem(.keepAwake, .large))
         }
         return result
     }
