@@ -2,6 +2,7 @@ import SwiftUI
 
 struct CleanupView: View {
     @StateObject private var vm = CleanupViewModel()
+    @State private var showPermanentDeleteConfirmation = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -22,10 +23,24 @@ struct CleanupView: View {
                 ScanningState(tint: Module.cleanup.tint, label: "Looking for junk…")
             case .results, .cleaning:
                 ScanResultsView(groups: vm.groups, selection: $vm.selection,
-                                isBusy: vm.phase == .cleaning, onClean: vm.clean)
+                                actionTitle: vm.selectedIncludesTrash ? "Clean Selected" : "Move to Trash",
+                                isBusy: vm.phase == .cleaning) {
+                    if vm.selectedIncludesTrash {
+                        showPermanentDeleteConfirmation = true
+                    } else {
+                        vm.clean()
+                    }
+                }
             case .done:
                 CleanDoneState(result: vm.lastResult, again: { vm.reset(); vm.scan() })
             }
+        }
+        .confirmationDialog("Remove selected Trash items permanently?",
+                            isPresented: $showPermanentDeleteConfirmation) {
+            Button("Clean Selected", role: .destructive) { vm.clean() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Items already in the Trash will be permanently deleted. Other selected items will be moved to the Trash.")
         }
     }
 }
@@ -83,7 +98,7 @@ struct CleanDoneState: View {
             }
             if let r = result, r.removed > 0 {
                 Text("Freed \(Fmt.size(r.freed))").font(.rounded(24, .bold))
-                Text("\(r.removed) items moved to the Trash" + (r.failed.isEmpty ? "" : " · \(r.failed.count) needed permission"))
+                Text(resultMessage(r))
                     .font(.callout).foregroundStyle(.secondary)
             } else {
                 Text("All clean").font(.rounded(24, .bold))
@@ -94,5 +109,22 @@ struct CleanDoneState: View {
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func resultMessage(_ result: TrashService.Result) -> String {
+        var parts: [String] = []
+        if result.trashed > 0 {
+            parts.append("\(result.trashed) item\(result.trashed == 1 ? "" : "s") moved to the Trash")
+        }
+        if result.permanentlyDeleted > 0 {
+            parts.append("\(result.permanentlyDeleted) item\(result.permanentlyDeleted == 1 ? "" : "s") permanently deleted")
+        }
+        if parts.isEmpty {
+            parts.append("\(result.removed) item\(result.removed == 1 ? "" : "s") cleaned")
+        }
+        if !result.failed.isEmpty {
+            parts.append("\(result.failed.count) needed permission")
+        }
+        return parts.joined(separator: " · ")
     }
 }

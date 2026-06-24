@@ -3,6 +3,8 @@ import AppKit
 enum TrashService {
     struct Result {
         var removed: Int = 0
+        var trashed: Int = 0
+        var permanentlyDeleted: Int = 0
         var freed: UInt64 = 0
         var failed: [URL] = []
     }
@@ -17,8 +19,10 @@ enum TrashService {
             do {
                 if isInTrash(item.url) {
                     try fm.removeItem(at: item.url)
+                    result.permanentlyDeleted += 1
                 } else {
                     try fm.trashItem(at: item.url, resultingItemURL: nil)
+                    result.trashed += 1
                 }
                 result.removed += 1
                 result.freed += item.size

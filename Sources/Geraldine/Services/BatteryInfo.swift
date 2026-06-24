@@ -177,10 +177,18 @@ enum BatteryInfo {
         func int(_ key: String) -> Int? { (prop(key) as? NSNumber)?.intValue }
         func bool(_ key: String) -> Bool { (prop(key) as? NSNumber)?.boolValue ?? false }
 
-        d.hasBattery = bool("BatteryInstalled") || prop("CurrentCapacity") != nil
-        d.cycleCount = int("CycleCount")
         d.designCapacity = int("DesignCapacity")
         d.currentMaxCapacity = int("AppleRawMaxCapacity") ?? int("MaxCapacity")
+        let currentCapacity = int("CurrentCapacity")
+        d.hasBattery = bool("BatteryInstalled") || [
+            d.designCapacity,
+            d.currentMaxCapacity,
+            currentCapacity
+        ].contains { ($0 ?? 0) > 0 }
+
+        guard d.hasBattery else { return d }
+
+        d.cycleCount = int("CycleCount")
         d.isCharging = bool("IsCharging")
         d.fullyCharged = bool("FullyCharged")
         d.externalConnected = bool("ExternalConnected")

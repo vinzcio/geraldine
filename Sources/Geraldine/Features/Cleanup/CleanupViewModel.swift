@@ -10,6 +10,8 @@ final class CleanupViewModel: ObservableObject {
     @Published var lastResult: TrashService.Result?
 
     var foundTotal: UInt64 { groups.reduce(0) { $0 + $1.totalSize } }
+    var selectedItems: [ScanItem] { groups.items(in: selection) }
+    var selectedIncludesTrash: Bool { selectedItems.contains { TrashService.isInTrash($0.url) } }
 
     func scan() {
         phase = .scanning
@@ -23,7 +25,7 @@ final class CleanupViewModel: ObservableObject {
     }
 
     func clean() {
-        let items = groups.items(in: selection)
+        let items = selectedItems
         guard !items.isEmpty else { return }
         phase = .cleaning
         Task {
@@ -55,7 +57,7 @@ final class CleanupViewModel: ObservableObject {
             }
 
             if let g = group("Trash Bin", "trash.fill", Theme.bad,
-                             home.appendingPathComponent(".Trash"), safe: true) { groups.append(g) }
+                             home.appendingPathComponent(".Trash"), safe: false) { groups.append(g) }
             if let g = group("User Caches", "shippingbox.fill", Theme.accent2,
                              home.appendingPathComponent("Library/Caches"), safe: true) { groups.append(g) }
             if let g = group("Logs", "doc.text.fill", Color(red: 0.95, green: 0.55, blue: 0.35),

@@ -1,28 +1,5 @@
 import SwiftUI
 
-/// Inline banner shown on the Dashboard when Full Disk Access isn't granted.
-struct FDABanner: View {
-    var onRecheck: () -> Void
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "lock.shield.fill").font(.title2).foregroundStyle(Theme.accent)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Turn on Full Disk Access").font(.rounded(14, .semibold))
-                Text("Geraldine needs this to scan caches, browser data, and protected folders.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            Spacer()
-            Button("Recheck", action: onRecheck).buttonStyle(.bordered)
-            Button("Open Settings") { Permissions.openFullDiskAccessSettings() }
-                .buttonStyle(.borderedProminent).tint(Theme.accent)
-        }
-        .card(padding: 14)
-        .overlay(RoundedRectangle(cornerRadius: Theme.corner, style: .continuous)
-            .strokeBorder(Theme.accent.opacity(0.35), lineWidth: 1))
-    }
-}
-
 /// First-run welcome sheet.
 struct WelcomeView: View {
     @EnvironmentObject var state: AppState

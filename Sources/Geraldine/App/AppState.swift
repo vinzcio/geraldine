@@ -46,9 +46,13 @@ final class AppState: ObservableObject {
     let devices = DeviceMonitor()
     let layout = WidgetLayoutStore()
     let keepAwake = KeepAwakeController()
+    let powerTools = PowerToolsController()
+    let calendar = CalendarSettingsStore()
+    let hardware = HardwareInfo.current
 
     @Published var selection: Module? = .dashboard
     @Published private(set) var hasFullDiskAccess = Permissions.hasFullDiskAccess()
+    @Published private(set) var hasAccessibility = Permissions.hasAccessibilityAccess()
 
     @Published var appShape: AppShape {
         didSet {
@@ -103,5 +107,16 @@ final class AppState: ObservableObject {
 
     func refreshFullDiskAccess() {
         hasFullDiskAccess = Permissions.hasFullDiskAccess()
+    }
+
+    func refreshAccessibility() {
+        hasAccessibility = Permissions.hasAccessibilityAccess()
+    }
+
+    /// Re-check every permission the Permissions page shows. Cheap, so it's safe to call
+    /// on appear and whenever the app comes back to the foreground.
+    func refreshPermissions() {
+        refreshFullDiskAccess()
+        refreshAccessibility()
     }
 }

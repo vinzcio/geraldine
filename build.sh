@@ -2,10 +2,11 @@
 #
 # Build Geraldine into a runnable .app bundle (no Xcode required).
 #
-#   ./build.sh                 # debug build + bundle + ad-hoc sign
+#   ./build.sh                 # debug build + bundle + Developer ID sign
 #   ./build.sh run             # also launch it
 #   ./build.sh release run     # optimized build, then launch
 #   ./build.sh install         # copy the built app into /Applications
+#   ./build.sh release install notarize run
 #
 # Sources are staged to a local (non-iCloud/OneDrive) folder before building,
 # because cloud sync can touch files mid-compile and break the build.
@@ -23,11 +24,13 @@ BUILD="$ROOT/build"
 CONFIG="debug"
 DO_RUN=0
 DO_INSTALL=0
+DO_NOTARIZE=0
 for a in "$@"; do
   case "$a" in
     release|debug) CONFIG="$a" ;;
     run)           DO_RUN=1 ;;
     install)       DO_INSTALL=1 ;;
+    notarize)      DO_NOTARIZE=1 ;;
     *) echo "Unknown argument: $a" >&2; exit 1 ;;
   esac
 done
@@ -51,6 +54,32 @@ echo "▸ Assembling $APP_NAME.app…"
 rm -rf "$APP"
 mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
 cp "$BIN" "$CONTENTS/MacOS/$APP_NAME"
+
+sanitize_app_executable_rpaths() {
+  local executable="$1"
+  local rpath
+  local rpaths=()
+
+  while IFS= read -r rpath; do
+    rpaths+=("$rpath")
+  done < <(
+    otool -l "$executable" \
+      | awk '/cmd LC_RPATH/{in_rpath=1; next} in_rpath && $1 == "path" {print $2; in_rpath=0}'
+  )
+
+  for rpath in "${rpaths[@]}"; do
+    case "$rpath" in
+      /usr/lib/swift|@loader_path*|@executable_path*)
+        ;;
+      /*)
+        echo "▸ Removing external app rpath from $APP_NAME: $rpath"
+        install_name_tool -delete_rpath "$rpath" "$executable"
+        ;;
+    esac
+  done
+}
+
+sanitize_app_executable_rpaths "$CONTENTS/MacOS/$APP_NAME"
 
 if [ -f "$SRC_DIR/Resources/AppIcon.icns" ]; then
   cp "$SRC_DIR/Resources/AppIcon.icns" "$CONTENTS/Resources/AppIcon.icns"
@@ -100,20 +129,71 @@ PLIST
 # Sign with your Developer ID (override with CODESIGN_ID env var if needed).
 # A stable identity means Full Disk Access & other permissions persist across rebuilds.
 CODESIGN_ID="${CODESIGN_ID:-Developer ID Application: Lloyd Vincent Luardo (4S9BMP9GU3)}"
+NOTARY_PROFILE="${NOTARY_PROFILE:-harken-notary}"
 ENT="$SRC_DIR/Geraldine.entitlements"
 sign_and_verify() {
   local app="$1"
+  local -a sign_args=(--force --options runtime)
+  if [ -f "$ENT" ]; then
+    sign_args+=(--entitlements "$ENT")
+  fi
+
+  # Older/ad-hoc signing passes can leave a legacy resource seal here. Modern
+  # app bundles should only carry Contents/_CodeSignature/CodeResources.
+  /bin/rm -f "$app/Contents/CodeResources" 2>/dev/null || true
+
   echo "▸ Signing $app as: $CODESIGN_ID"
   /usr/bin/xattr -cr "$app" 2>/dev/null || true
-  codesign --force --options runtime ${ENT:+--entitlements "$ENT"} \
-    --identifier "$BUNDLE_ID" --sign "$CODESIGN_ID" "$app"
+  codesign "${sign_args[@]}" --identifier "$BUNDLE_ID" --sign "$CODESIGN_ID" "$app"
   codesign --verify --verbose=1 "$app" || { echo "✗ signature verification failed"; exit 1; }
+}
+
+notarize_app_bundle() {
+  local app="$1"
+  local notary_dir zip_path
+
+  if ! /usr/bin/command -v xcrun >/dev/null 2>&1; then
+    echo "✗ xcrun is required for notarization" >&2
+    exit 1
+  fi
+
+  notary_dir="$(mktemp -d "${TMPDIR:-/tmp}/geraldine-notary.XXXXXX")"
+  zip_path="$notary_dir/$APP_NAME.zip"
+
+  echo "▸ Preparing notarization archive: $zip_path"
+  ditto -c -k --keepParent "$app" "$zip_path"
+
+  echo "▸ Submitting $APP_NAME.app to Apple notary service with profile: $NOTARY_PROFILE"
+  xcrun notarytool submit "$zip_path" --keychain-profile "$NOTARY_PROFILE" --wait
+
+  echo "▸ Stapling notarization ticket…"
+  xcrun stapler staple "$app"
+  xcrun stapler validate "$app"
 }
 
 app_is_running() {
   local running
   running=$(/usr/bin/osascript -e "application id \"$BUNDLE_ID\" is running" 2>/dev/null || echo false)
   [ "$running" = "true" ]
+}
+
+rss_for_pid() {
+  /bin/ps -o rss= -p "$1" 2>/dev/null | /usr/bin/awk '{print $1}'
+}
+
+check_launch_policy() {
+  if ! /usr/bin/command -v syspolicy_check >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local policy_output
+  if policy_output="$(syspolicy_check distribution "$APP" 2>&1)"; then
+    return 0
+  fi
+
+  echo "$policy_output" >&2
+  echo "✗ $APP_NAME.app failed macOS launch policy checks; not opening a process that macOS will block." >&2
+  exit 1
 }
 
 quit_running_app() {
@@ -133,6 +213,31 @@ quit_running_app() {
   exit 1
 }
 
+launch_app_bundle() {
+  local pid=""
+  local rss=0
+
+  /usr/bin/open "$APP"
+  for attempt in {1..20}; do
+    pid="$(/usr/bin/pgrep -f "$APP/Contents/MacOS/$APP_NAME" 2>/dev/null | /usr/bin/head -n 1 || true)"
+    if [ -n "$pid" ]; then
+      rss="$(rss_for_pid "$pid")"
+      if [ "${rss:-0}" -gt 8192 ]; then
+        echo "✓ Relaunched: $APP"
+        return 0
+      fi
+    fi
+    sleep 0.25
+  done
+
+  if [ -n "$pid" ] && [ "${rss:-0}" -le 1024 ]; then
+    echo "▸ LaunchServices started a pre-main stalled process (pid $pid); stopping it…"
+    /bin/kill "$pid" >/dev/null 2>&1 || true
+  fi
+
+  return 1
+}
+
 sign_and_verify "$APP"
 echo "✓ Built & signed: $APP"
 
@@ -147,11 +252,25 @@ if [ "$DO_INSTALL" -eq 1 ]; then
   rsync -a --delete "$APP/" "/Applications/$APP_NAME.app/"
   APP="/Applications/$APP_NAME.app"
   sign_and_verify "$APP"
+  if [ "$DO_NOTARIZE" -eq 1 ]; then
+    notarize_app_bundle "$APP"
+  fi
   echo "✓ Installed & signed: $APP"
+fi
+
+if [ "$DO_INSTALL" -ne 1 ] && [ "$DO_NOTARIZE" -eq 1 ]; then
+  notarize_app_bundle "$APP"
 fi
 
 if [ "$DO_RUN" -eq 1 ]; then
   echo "▸ Relaunching…"
   quit_running_app
-  open "$APP"
+  if [ "$DO_NOTARIZE" -eq 1 ]; then
+    check_launch_policy
+  fi
+  if ! launch_app_bundle; then
+    echo "✗ $APP_NAME.app did not initialize after LaunchServices started it" >&2
+    echo "  The stalled process was stopped; no alternate executable was launched." >&2
+    exit 1
+  fi
 fi

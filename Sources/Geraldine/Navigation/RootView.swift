@@ -63,12 +63,22 @@ private struct BrandHeader: View {
 }
 
 private struct SidebarRow: View {
+    @EnvironmentObject var monitor: SystemMonitor
     var module: Module
+
+    private var title: String {
+        module == .battery && !monitor.hasBattery ? "Power" : module.title
+    }
+
+    private var systemImage: String {
+        module == .battery && !monitor.hasBattery ? "powerplug" : module.systemImage
+    }
+
     var body: some View {
         Label {
-            Text(module.title)
+            Text(title)
         } icon: {
-            Image(systemName: module.systemImage)
+            Image(systemName: systemImage)
                 .foregroundStyle(module.tint)
         }
     }
@@ -107,6 +117,8 @@ struct DetailHost: View {
             case .storage:     StorageView()
             case .battery:     BatteryView()
             case .keepAwake:   KeepAwakeView()
+            case .calendar:    CalendarSettingsView()
+            case .powerTools:  PowerToolsView()
             case .cleanup:     CleanupView()
             case .uninstaller: UninstallerView()
             case .largeFiles:  LargeFilesView()
@@ -115,6 +127,7 @@ struct DetailHost: View {
             case .privacy:     PrivacyView()
             case .maintenance: MaintenanceView()
             case .updater:     UpdaterView()
+            case .permissions: PermissionsView()
             case .settings:    AppSettingsView()
             }
         }

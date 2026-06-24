@@ -11,6 +11,7 @@ final class SystemMonitor: ObservableObject {
     @Published var memoryTotal: Double = 0       // bytes
     @Published var diskUsed: Double = 0          // bytes
     @Published var diskTotal: Double = 0         // bytes
+    @Published var hasBattery: Bool = false      // true only for an installed internal battery
     @Published var batteryLevel: Double? = nil   // 0…1, nil if no battery
     @Published var batteryCharging: Bool = false
     @Published var batteryHealth: Double? = nil  // 0…1
@@ -67,6 +68,7 @@ final class SystemMonitor: ObservableObject {
         let disk = Self.sampleDisk()
         diskUsed = disk.used; diskTotal = disk.total
         let bat = Self.sampleBattery()
+        hasBattery = bat.hasBattery
         batteryLevel = bat.level; batteryCharging = bat.charging
         batteryHealth = bat.health; batteryCycles = bat.cycles
         batteryMinutesToEmpty = bat.toEmpty; batteryMinutesToFull = bat.toFull
@@ -192,21 +194,35 @@ final class SystemMonitor: ObservableObject {
 
     // MARK: - Battery
 
-    private static func sampleBattery() -> (level: Double?, charging: Bool, health: Double?, cycles: Int?,
+    private static func sampleBattery() -> (hasBattery: Bool, level: Double?, charging: Bool, health: Double?, cycles: Int?,
                                             toEmpty: Int?, toFull: Int?, onAC: Bool, draining: Bool, full: Bool) {
         let reg = batteryFromRegistry()
         guard let blob = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
               let list = IOPSCopyPowerSourcesList(blob)?.takeRetainedValue() as? [CFTypeRef],
-              let source = list.first,
-              let desc = IOPSGetPowerSourceDescription(blob, source)?.takeUnretainedValue() as? [String: Any]
+              !list.isEmpty
         else {
             // No power source (e.g. a desktop): always on wall power.
-            return (nil, false, reg.health, reg.cycles, nil, nil, true, false, false)
+            return (reg.hasBattery, nil, false, reg.health, reg.cycles, nil, nil, true, false, false)
         }
+
+        let descriptions = list.compactMap {
+            IOPSGetPowerSourceDescription(blob, $0)?.takeUnretainedValue() as? [String: Any]
+        }
+        let internalBattery = descriptions.first {
+            ($0[kIOPSTypeKey as String] as? String) == (kIOPSInternalBatteryType as String)
+        }
+        guard let desc = internalBattery ?? (reg.hasBattery ? descriptions.first : nil) else {
+            return (false, nil, false, nil, nil, nil, nil, true, false, false)
+        }
+
         var level: Double? = nil
         if let cur = desc[kIOPSCurrentCapacityKey as String] as? Int,
            let max = desc[kIOPSMaxCapacityKey as String] as? Int, max > 0 {
             level = Double(cur) / Double(max)
+        }
+        let hasBattery = reg.hasBattery || level != nil
+        guard hasBattery else {
+            return (false, nil, false, nil, nil, nil, nil, true, false, false)
         }
         let charging = (desc[kIOPSIsChargingKey as String] as? Bool) ?? false
         // Both estimates report -1 while macOS is still calculating; treat as nil.
@@ -224,24 +240,31 @@ final class SystemMonitor: ObservableObject {
         let full = (desc[kIOPSIsChargedKey as String] as? Bool) ?? false
         let current = desc[kIOPSCurrentKey as String] as? Int
         let draining = onAC && (current ?? 0) < 0
-        return (level, charging, reg.health, reg.cycles, toEmpty, toFull, onAC, draining, full)
+        return (true, level, charging, reg.health, reg.cycles, toEmpty, toFull, onAC, draining, full)
     }
 
-    private static func batteryFromRegistry() -> (health: Double?, cycles: Int?) {
+    private static func batteryFromRegistry() -> (hasBattery: Bool, health: Double?, cycles: Int?) {
         let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSmartBattery"))
-        guard service != 0 else { return (nil, nil) }
+        guard service != 0 else { return (false, nil, nil) }
         defer { IOObjectRelease(service) }
         func intProp(_ key: String) -> Int? {
             guard let cf = IORegistryEntryCreateCFProperty(service, key as CFString, kCFAllocatorDefault, 0)?
                 .takeRetainedValue() else { return nil }
             return (cf as? NSNumber)?.intValue
         }
+        func boolProp(_ key: String) -> Bool {
+            guard let cf = IORegistryEntryCreateCFProperty(service, key as CFString, kCFAllocatorDefault, 0)?
+                .takeRetainedValue() else { return false }
+            return (cf as? NSNumber)?.boolValue ?? false
+        }
         let maxCap = intProp("AppleRawMaxCapacity") ?? intProp("MaxCapacity")
         let designCap = intProp("DesignCapacity")
-        let cycles = intProp("CycleCount")
+        let currentCap = intProp("CurrentCapacity")
+        let hasBattery = boolProp("BatteryInstalled") || [maxCap, designCap, currentCap].contains { ($0 ?? 0) > 0 }
+        let cycles = hasBattery ? intProp("CycleCount") : nil
         var health: Double? = nil
         if let m = maxCap, let d = designCap, d > 0 { health = min(1, Double(m) / Double(d)) }
-        return (health, cycles)
+        return (hasBattery, hasBattery ? health : nil, cycles)
     }
 
     // MARK: - Network

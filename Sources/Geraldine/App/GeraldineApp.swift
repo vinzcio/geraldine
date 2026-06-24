@@ -11,7 +11,10 @@ struct GeraldineApp: App {
             RootView()
                 .environmentObject(state)
                 .environmentObject(state.monitor)
+                .environmentObject(state.network)
                 .environmentObject(state.keepAwake)
+                .environmentObject(state.powerTools)
+                .environmentObject(state.calendar)
                 .frame(minWidth: 920, minHeight: 620)
         }
         .windowStyle(.hiddenTitleBar)
@@ -25,6 +28,7 @@ struct GeraldineApp: App {
                 .environmentObject(state)
                 .environmentObject(state.monitor)
                 .environmentObject(state.keepAwake)
+                .environmentObject(state.powerTools)
         }
     }
 }

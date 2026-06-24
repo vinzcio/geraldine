@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         state.monitor.start()
         state.network.start()
         state.devices.start()
+        state.powerTools.start()
         menuBarController = MenuBarController(state: state)
     }
 
@@ -22,7 +23,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
-        AppState.shared.refreshFullDiskAccess()
+        AppState.shared.refreshPermissions()
+        AppState.shared.network.refreshNameAccess()
+        AppState.shared.powerTools.refreshAccessibility()
     }
 
     /// Clicking the Dock icon (or re-opening) brings the main window back.
@@ -39,5 +42,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         AppState.shared.keepAwake.shutdown()
+        AppState.shared.powerTools.stop()
     }
 }

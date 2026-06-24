@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 
 enum Permissions {
     /// Best-effort Full Disk Access check: try directly opening a TCC-protected location.
@@ -33,6 +34,22 @@ enum Permissions {
 
     static func openFullDiskAccessSettings() {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    static func hasAccessibilityAccess() -> Bool {
+        AXIsProcessTrusted()
+    }
+
+    @discardableResult
+    static func requestAccessibilityAccess() -> Bool {
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+        return AXIsProcessTrustedWithOptions(options)
+    }
+
+    static func openAccessibilitySettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
             NSWorkspace.shared.open(url)
         }
     }

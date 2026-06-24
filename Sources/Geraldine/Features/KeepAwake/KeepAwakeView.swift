@@ -36,12 +36,20 @@ struct KeepAwakeView: View {
 
     private var hero: some View {
         HStack(spacing: 18) {
-            ZStack {
-                Circle()
-                    .fill(keepAwake.isActive ? Theme.bad.opacity(0.08) : Color.primary.opacity(0.04))
-                EyeView(isActive: keepAwake.isActive, size: 104)
+            Button {
+                keepAwake.toggle()
+            } label: {
+                ZStack {
+                    Circle()
+                        .fill(keepAwake.isActive ? Theme.bad.opacity(0.08) : Color.primary.opacity(0.04))
+                    EyeView(isActive: keepAwake.isActive, size: 104)
+                }
+                .frame(width: 116, height: 116)
+                .contentShape(Circle())
             }
-            .frame(width: 116, height: 116)
+            .buttonStyle(.plain)
+            .pointingHandCursor()
+            .help(keepAwake.isActive ? "Stop keeping your Mac awake" : "Keep your Mac awake")
 
             VStack(alignment: .leading, spacing: 6) {
                 Text(keepAwake.isActive ? "Awake" : "Idle sleep allowed")
@@ -136,14 +144,7 @@ struct KeepAwakeView: View {
 
     private var automationCard: some View {
         VStack(alignment: .leading, spacing: 14) {
-            SectionHeader("Controls")
-
-            Toggle(isOn: $keepAwake.statusItemClickToggles) {
-                Label("Menu bar click toggles Keep Awake", systemImage: "menubar.rectangle")
-            }
-            .toggleStyle(.switch)
-
-            Divider()
+            SectionHeader("Automation")
 
             VStack(alignment: .leading, spacing: 8) {
                 Label("geraldine:activate?minutes=10", systemImage: "link")

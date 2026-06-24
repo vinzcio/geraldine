@@ -80,7 +80,6 @@ private struct KeepAwakeSettingsControls: View {
             Toggle("Allow display sleep", isOn: $keepAwake.allowDisplaySleep)
             Toggle("Deactivate on battery", isOn: $keepAwake.deactivateOnBattery)
             Toggle("Pause while screen is locked", isOn: $keepAwake.pauseWhenScreenLocked)
-            Toggle("Menu bar click toggles Keep Awake", isOn: $keepAwake.statusItemClickToggles)
         }
     }
 }
@@ -126,21 +125,25 @@ private struct PermissionsSettings: View {
 
     var body: some View {
         Form {
-            Section("Full Disk Access") {
-                HStack {
-                    Label(state.hasFullDiskAccess ? "Granted" : "Not granted",
-                          systemImage: state.hasFullDiskAccess ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                        .foregroundStyle(state.hasFullDiskAccess ? Theme.good : Theme.warn)
-                    Spacer()
-                    Button("Recheck") { state.refreshFullDiskAccess() }
-                    Button("Open Settings") { Permissions.openFullDiskAccessSettings() }
-                }
-                Text("Lets Geraldine scan caches, browser data, mail, and other protected locations. If Geraldine still shows this after granting access, quit and reopen it.")
-                    .font(.caption).foregroundStyle(.secondary)
+            Section("Permissions") {
+                statusRow("Full Disk Access", granted: state.hasFullDiskAccess)
+                statusRow("Accessibility", granted: state.hasAccessibility)
+                Button("Open Permissions…") { state.open(.permissions) }
             }
+            Text("Review, grant, and manage all of Geraldine's permissions in one place.")
+                .font(.caption).foregroundStyle(.secondary)
         }
         .formStyle(.grouped)
-        .onAppear { state.refreshFullDiskAccess() }
+        .onAppear { state.refreshPermissions() }
+    }
+
+    private func statusRow(_ title: String, granted: Bool) -> some View {
+        LabeledContent(title) {
+            Label(granted ? "Granted" : "Not Granted",
+                  systemImage: granted ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                .foregroundStyle(granted ? Theme.good : Theme.warn)
+                .labelStyle(.titleAndIcon)
+        }
     }
 }
 

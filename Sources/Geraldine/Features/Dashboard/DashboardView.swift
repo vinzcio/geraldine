@@ -22,9 +22,7 @@ struct DashboardView: View {
             VStack(alignment: .leading, spacing: 22) {
                 header
 
-                if !state.hasFullDiskAccess {
-                    FDABanner { state.refreshFullDiskAccess() }
-                }
+                PermissionsBanner()
 
                 LazyVGrid(columns: columns, spacing: 16) {
                     StatTile(icon: "cpu", title: "CPU",
@@ -67,7 +65,7 @@ struct DashboardView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(greeting).font(.rounded(28, .bold))
-            Text("Here's how your Mac is doing right now.")
+            Text("Here's how your \(state.hardware.displayName) is doing right now.")
                 .font(.title3).foregroundStyle(.secondary)
         }
     }

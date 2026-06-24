@@ -3,6 +3,7 @@ import Combine
 import Network
 import CoreWLAN
 import CoreLocation
+import AppKit
 
 /// Live view of the Mac's own network connection — connection type, Wi-Fi name,
 /// security, signal, link speed — plus an on-demand throughput test.
@@ -43,6 +44,10 @@ final class NetworkMonitor: NSObject, ObservableObject {
         static let unknown = Security(label: "—", strong: true)
     }
 
+    /// Whether macOS will hand us the Wi-Fi name yet. `undetermined` means we can still
+    /// prompt; `denied` means the only way back is System Settings.
+    enum NameAccess: Equatable { case authorized, undetermined, denied }
+
     enum SpeedPhase: Equatable { case download, upload }
 
     enum SpeedTest: Equatable {
@@ -59,6 +64,7 @@ final class NetworkMonitor: NSObject, ObservableObject {
     @Published private(set) var rssi: Int?            // dBm
     @Published private(set) var linkRateMbps: Double?
     @Published private(set) var locationAuthorized = false
+    @Published private(set) var nameAccess: NameAccess = .undetermined
     @Published private(set) var speedTest: SpeedTest = .idle
 
     private let pathMonitor = NWPathMonitor()
@@ -73,7 +79,7 @@ final class NetworkMonitor: NSObject, ObservableObject {
 
     override init() {
         super.init()
-        locationAuthorized = Self.isAuthorized(locationManager.authorizationStatus)
+        refreshNameAccess()
         pathMonitor.pathUpdateHandler = { [weak self] path in
             let connection = Self.classify(path)
             let online = path.status == .satisfied
@@ -84,7 +90,6 @@ final class NetworkMonitor: NSObject, ObservableObject {
     }
 
     func start(interval: TimeInterval = 3) {
-        requestNameAccessIfNeeded()
         timer?.invalidate()
         let t = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refreshWiFi() }
@@ -129,14 +134,40 @@ final class NetworkMonitor: NSObject, ObservableObject {
     /// True once the OS will tell us the network name. When false, offer `requestNameAccess()`.
     var canShowName: Bool { locationAuthorized }
 
-    func requestNameAccess() {
-        locationManager.requestWhenInUseAuthorization()
+    func refreshNameAccess() {
+        let status = locationManager.authorizationStatus
+        locationAuthorized = Self.isAuthorized(status)
+        nameAccess = Self.nameAccess(for: status)
+        refreshWiFi()
     }
 
-    /// Request Location once so the Wi-Fi name resolves (macOS hides the SSID otherwise).
-    func requestNameAccessIfNeeded() {
-        if locationManager.authorizationStatus == .notDetermined {
+    /// Ask macOS to register Geraldine for Location access so System Settings can show it.
+    func requestNameAccess() {
+        refreshNameAccess()
+        switch nameAccess {
+        case .undetermined:
+            NSApp.activate(ignoringOtherApps: true)
             locationManager.requestWhenInUseAuthorization()
+            locationManager.requestLocation()
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                refreshNameAccess()
+            }
+        case .denied:
+            Self.openLocationSettings()
+        case .authorized:
+            break
+        }
+    }
+
+    func requestNameAccessAndOpenSettings() {
+        requestNameAccess()
+        Self.openLocationSettings()
+    }
+
+    static func openLocationSettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_LocationServices") {
+            NSWorkspace.shared.open(url)
         }
     }
 
@@ -144,6 +175,14 @@ final class NetworkMonitor: NSObject, ObservableObject {
         switch status {
         case .authorizedAlways, .authorizedWhenInUse: return true
         default: return false
+        }
+    }
+
+    private static func nameAccess(for status: CLAuthorizationStatus) -> NameAccess {
+        switch status {
+        case .authorizedAlways, .authorizedWhenInUse: return .authorized
+        case .notDetermined:                          return .undetermined
+        default:                                      return .denied   // .denied, .restricted
         }
     }
 
@@ -236,8 +275,19 @@ final class NetworkMonitor: NSObject, ObservableObject {
 extension NetworkMonitor: CLLocationManagerDelegate {
     nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         Task { @MainActor in
-            self.locationAuthorized = Self.isAuthorized(self.locationManager.authorizationStatus)
-            self.refreshWiFi()
+            self.refreshNameAccess()
+        }
+    }
+
+    nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        Task { @MainActor in
+            self.refreshNameAccess()
+        }
+    }
+
+    nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        Task { @MainActor in
+            self.refreshNameAccess()
         }
     }
 }

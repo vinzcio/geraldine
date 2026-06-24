@@ -18,6 +18,14 @@ enum MetricKind: String, Codable, CaseIterable, Identifiable {
         }
     }
 
+    func title(hasBattery: Bool) -> String {
+        self == .battery && !hasBattery ? "Power" : title
+    }
+
+    func isAvailable(hasBattery: Bool) -> Bool {
+        self != .battery || hasBattery
+    }
+
     var icon: String {
         switch self {
         case .temperature: return "thermometer.medium"
@@ -27,6 +35,10 @@ enum MetricKind: String, Codable, CaseIterable, Identifiable {
         case .battery:     return "battery.100"
         case .network:     return "wifi"
         }
+    }
+
+    func icon(hasBattery: Bool) -> String {
+        self == .battery && !hasBattery ? "powerplug" : icon
     }
 
     /// Fast-changing metrics read well as a time-series sparkline; slow ones (battery,
@@ -45,21 +57,33 @@ enum MetricKind: String, Codable, CaseIterable, Identifiable {
 enum WidgetKind: Hashable, Identifiable {
     case metric(MetricKind)
     case keepAwake
+    case calendar
 
     var id: String {
         switch self {
         case .metric(let metric): return metric.rawValue
         case .keepAwake:          return "keepAwake"
+        case .calendar:           return "calendar"
         }
     }
 
     init?(id: String) {
-        if id == "keepAwake" {
-            self = .keepAwake
-        } else if let metric = MetricKind(rawValue: id) {
+        switch id {
+        case "keepAwake":    self = .keepAwake
+        case "calendar":     self = .calendar
+        default:
+            guard let metric = MetricKind(rawValue: id) else { return nil }
             self = .metric(metric)
-        } else {
-            return nil
+        }
+    }
+
+    /// Whether the tile can shrink to a half-width small size. The calendar (which holds
+    /// the month grid and world clocks) is inherently full-width, so it only offers the
+    /// drag-to-reorder handle.
+    var canResize: Bool {
+        switch self {
+        case .metric, .keepAwake: return true
+        case .calendar:           return false
         }
     }
 
@@ -73,6 +97,15 @@ enum WidgetKind: Hashable, Identifiable {
         switch self {
         case .metric(let metric): return metric.title
         case .keepAwake:          return "Keep Awake"
+        case .calendar:           return "Calendar"
+        }
+    }
+
+    func title(hasBattery: Bool) -> String {
+        switch self {
+        case .metric(let metric): return metric.title(hasBattery: hasBattery)
+        case .keepAwake:          return "Keep Awake"
+        case .calendar:           return "Calendar"
         }
     }
 }
@@ -132,7 +165,8 @@ final class WidgetLayoutStore: ObservableObject {
         WidgetItem(.memory, .small),
         WidgetItem(.storage, .small),
         WidgetItem(.battery, .small),
-        WidgetItem(.network, .large)
+        WidgetItem(.network, .large),
+        WidgetItem(.calendar, .large)
     ]
 
     init() {
@@ -140,11 +174,13 @@ final class WidgetLayoutStore: ObservableObject {
     }
 
     /// The metric mirrored live in the menu-bar status item. Non-metric widgets
-    /// (Keep Awake) are skipped, so it never drives the bar even from the top slot.
-    var menuBarKind: MetricKind { items.compactMap(\.kind.metric).first ?? .temperature }
+    /// (Keep Awake, Calendar) are skipped, so they never drive the bar even from the top slot.
+    func menuBarKind(hasBattery: Bool) -> MetricKind {
+        items.compactMap(\.kind.metric).first { $0.isAvailable(hasBattery: hasBattery) } ?? .temperature
+    }
 
     func toggleSize(_ kind: WidgetKind) {
-        guard let idx = items.firstIndex(where: { $0.kind == kind }) else { return }
+        guard kind.canResize, let idx = items.firstIndex(where: { $0.kind == kind }) else { return }
         items[idx].size.toggle()
         persist()
     }
@@ -171,10 +207,21 @@ final class WidgetLayoutStore: ObservableObject {
         UserDefaults.standard.set(data, forKey: key)
     }
 
+    /// Mirrors a persisted `WidgetItem` but keeps the kind as a raw string, so a saved
+    /// entry whose kind no longer exists (e.g. the old separate world-clocks widget)
+    /// can be skipped instead of failing the whole decode and wiping the layout.
+    private struct StoredItem: Decodable {
+        let kind: String
+        let size: WidgetSize
+    }
+
     private static func load(key: String) -> [WidgetItem]? {
         guard let data = UserDefaults.standard.data(forKey: key),
-              let decoded = try? JSONDecoder().decode([WidgetItem].self, from: data),
-              !decoded.isEmpty else { return nil }
+              let stored = try? JSONDecoder().decode([StoredItem].self, from: data) else { return nil }
+        let decoded = stored.compactMap { item in
+            WidgetKind(id: item.kind).map { WidgetItem($0, item.size) }
+        }
+        guard !decoded.isEmpty else { return nil }
         // Drop duplicates and append any newly-added widgets (including Keep Awake,
         // for layouts saved before it existed) so the layout stays valid across updates.
         var seen = Set<WidgetKind>()
@@ -184,6 +231,9 @@ final class WidgetLayoutStore: ObservableObject {
         }
         if !seen.contains(.keepAwake) {
             result.append(WidgetItem(.keepAwake, .large))
+        }
+        if !seen.contains(.calendar) {
+            result.append(WidgetItem(.calendar, .large))
         }
         return result
     }

@@ -43,6 +43,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
                 .environmentObject(state.devices)
                 .environmentObject(state.layout)
                 .environmentObject(state.keepAwake)
+                .environmentObject(state.calendar)
         )
         return popover
     }()
@@ -58,13 +59,6 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         state.$appShape
             .sink { [weak self] _ in
                 Task { @MainActor in self?.syncVisibility() }
-            }
-            .store(in: &cancellables)
-        state.keepAwake.objectWillChange
-            .sink { [weak self] _ in
-                Task { @MainActor in
-                    self?.updateStatusTooltip()
-                }
             }
             .store(in: &cancellables)
     }
@@ -100,10 +94,8 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         button.toolTip = "Geraldine"
         button.imageScaling = .scaleNone
         button.imagePosition = .imageOnly
-        button.sendAction(on: [.leftMouseUp, .rightMouseUp])
 
         renderStatusItem()
-        updateStatusTooltip()
 
         // Keep sampling/charts at the monitor's cadence, but only redraw the visible
         // menu-bar image about every two seconds. Layout changes stay immediate
@@ -117,16 +109,6 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     }
 
     @objc private func togglePopover(_ sender: NSStatusBarButton) {
-        let event = NSApp.currentEvent
-        let isRightClick = event?.type == .rightMouseUp
-        let optionClick = event?.modifierFlags.contains(.option) ?? false
-
-        if state.keepAwake.statusItemClickToggles, !isRightClick, !optionClick {
-            state.keepAwake.toggle()
-            updateStatusTooltip()
-            return
-        }
-
         if popover.isShown {
             popover.performClose(sender)
         } else {
@@ -137,11 +119,6 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
             sender.highlight(true)
             popover.contentViewController?.view.window?.makeKey()
         }
-    }
-
-    private func updateStatusTooltip() {
-        let clickHint = state.keepAwake.statusItemClickToggles ? "Click toggles Keep Awake. Option-click opens the menu." : "Geraldine"
-        statusItem?.button?.toolTip = state.keepAwake.isActive ? "\(clickHint)\n\(state.keepAwake.statusLine)" : clickHint
     }
 
     func popoverDidClose(_ notification: Notification) {
@@ -188,7 +165,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
 
     private func plan() -> StatusPlan {
         let m = state.monitor
-        switch state.layout.menuBarKind {
+        switch state.layout.menuBarKind(hasBattery: m.hasBattery) {
         case .temperature:
             guard m.thermal.available else {
                 return StatusPlan(kind: .temperature, series: nil, glyph: "sparkles", label: "", widthSample: "",
@@ -693,6 +670,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     }
 
     private var batteryIcon: String {
+        if !state.monitor.hasBattery { return "powerplug" }
         if state.monitor.batteryCharging { return "battery.100.bolt" }
         switch state.monitor.batteryLevel ?? 1 {
         case ..<0.15: return "battery.0"

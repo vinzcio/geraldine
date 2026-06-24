@@ -19,11 +19,24 @@ struct ModulePlaceholderView: View {
 /// Shared header used at the top of every module screen.
 struct ModuleHeader: View {
     var module: Module
+    var title: String?
+    var subtitle: String?
+    var systemImage: String?
     var trailing: AnyView? = nil
 
-    init(module: Module) { self.module = module; self.trailing = nil }
+    init(module: Module, title: String? = nil, subtitle: String? = nil, systemImage: String? = nil) {
+        self.module = module
+        self.title = title
+        self.subtitle = subtitle
+        self.systemImage = systemImage
+        self.trailing = nil
+    }
+
     init(module: Module, @ViewBuilder trailing: () -> some View) {
         self.module = module
+        self.title = nil
+        self.subtitle = nil
+        self.systemImage = nil
         self.trailing = AnyView(trailing())
     }
 
@@ -33,13 +46,13 @@ struct ModuleHeader: View {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .fill(module.tint.opacity(0.16))
                     .frame(width: 46, height: 46)
-                Image(systemName: module.systemImage)
+                Image(systemName: systemImage ?? module.systemImage)
                     .font(.system(size: 20, weight: .semibold))
                     .foregroundStyle(module.tint)
             }
             VStack(alignment: .leading, spacing: 2) {
-                Text(module.title).font(.rounded(22, .bold))
-                Text(module.subtitle).font(.callout).foregroundStyle(.secondary)
+                Text(title ?? module.title).font(.rounded(22, .bold))
+                Text(subtitle ?? module.subtitle).font(.callout).foregroundStyle(.secondary)
             }
             Spacer()
             if let trailing { trailing }

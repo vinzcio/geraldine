@@ -1,29 +1,32 @@
 import SwiftUI
 
 struct BatteryView: View {
+    @EnvironmentObject var state: AppState
     @EnvironmentObject var monitor: SystemMonitor
     @StateObject private var vm = BatteryViewModel()
     @State private var range: HistoryRange = .day
 
     private var tint: Color { Module.battery.tint }
     private var level: Double { monitor.batteryLevel ?? vm.detail.healthFraction ?? 0 }
+    private var hardwareName: String { state.hardware.displayName }
+    private var hasInternalBattery: Bool { monitor.hasBattery || vm.detail.hasBattery }
 
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
-                ModuleHeader(module: .battery)
+                ModuleHeader(module: .battery,
+                             title: hasInternalBattery ? nil : "Power",
+                             subtitle: hasInternalBattery ? nil : "AC power status for \(hardwareName)",
+                             systemImage: hasInternalBattery ? nil : "powerplug")
                     .padding(.horizontal, -26)
 
-                if monitor.batteryLevel == nil && !vm.detail.hasBattery {
-                    EmptyState(icon: "powerplug",
-                               title: "No battery detected",
-                               message: "This Mac runs on AC power, so there's no battery to report on.",
-                               tint: tint)
-                        .frame(minHeight: 320)
+                if !hasInternalBattery {
+                    powerStatusCard
+                    consumersCard(title: "Power Consumers", subtitle: "Apps using the most energy")
                 } else {
                     hero
                     historyCard
-                    consumersCard
+                    consumersCard(title: "Battery Consumers", subtitle: "Apps using the most energy")
                     healthCard
                 }
             }
@@ -76,6 +79,37 @@ struct BatteryView: View {
         return nil
     }
 
+    // MARK: Power-only status
+
+    private var powerStatusCard: some View {
+        HStack(spacing: 18) {
+            ZStack {
+                Circle().fill(tint.opacity(0.14)).frame(width: 78, height: 78)
+                Image(systemName: "powerplug.fill")
+                    .font(.system(size: 34, weight: .semibold))
+                    .foregroundStyle(tint)
+            }
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Plugged In")
+                    .font(.rounded(32, .bold))
+                Text(adapterLabel ?? "Running on AC power")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                if monitor.loadAverage > 0 {
+                    AnimatedNumberText("System load \(String(format: "%.2f", monitor.loadAverage))",
+                                       value: monitor.loadAverage)
+                        .font(.caption.weight(.medium))
+                        .padding(.horizontal, 10).padding(.vertical, 4)
+                        .background(tint.opacity(0.14), in: Capsule())
+                        .foregroundStyle(tint)
+                        .padding(.top, 2)
+                }
+            }
+            Spacer()
+        }
+        .card()
+    }
+
     // MARK: Charge history
 
     private var historyCard: some View {
@@ -125,10 +159,10 @@ struct BatteryView: View {
 
     // MARK: Consumers
 
-    private var consumersCard: some View {
+    private func consumersCard(title: String, subtitle: String) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                SectionHeader("Battery Consumers", subtitle: "Apps using the most energy")
+                SectionHeader(title, subtitle: subtitle)
                 Spacer()
                 if vm.sampling && vm.consumers.isEmpty { ProgressView().controlSize(.small) }
             }

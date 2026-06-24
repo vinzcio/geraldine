@@ -1,4 +1,31 @@
 import SwiftUI
+import AppKit
+
+// MARK: - Pointing-hand cursor
+
+/// Shows the macOS pointing-hand cursor while hovered — the standard "this is pokeable"
+/// affordance that SwiftUI's plain buttons don't provide on their own. Pops on exit and
+/// on disappear so the cursor can never get stuck if the view is removed mid-hover.
+private struct PointingHandCursor: ViewModifier {
+    @State private var hovering = false
+
+    func body(content: Content) -> some View {
+        content
+            .onHover { inside in
+                guard inside != hovering else { return }
+                hovering = inside
+                if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+            }
+            .onDisappear {
+                if hovering { NSCursor.pop(); hovering = false }
+            }
+    }
+}
+
+extension View {
+    /// Cue that the view can be poked: the cursor becomes a pointing hand on hover.
+    func pointingHandCursor() -> some View { modifier(PointingHandCursor()) }
+}
 
 // MARK: - Card
 

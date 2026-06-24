@@ -62,7 +62,6 @@ final class KeepAwakeController: ObservableObject {
         static let allowDisplaySleep = "keepAwake.allowDisplaySleep"
         static let deactivateOnBattery = "keepAwake.deactivateOnBattery"
         static let pauseWhenScreenLocked = "keepAwake.pauseWhenScreenLocked"
-        static let statusItemClickToggles = "keepAwake.statusItemClickToggles"
     }
 
     @Published private(set) var isActive = false
@@ -101,10 +100,6 @@ final class KeepAwakeController: ObservableObject {
         }
     }
 
-    @Published var statusItemClickToggles: Bool {
-        didSet { defaults.set(statusItemClickToggles, forKey: DefaultsKey.statusItemClickToggles) }
-    }
-
     private static let screenLockPauseReason = "Screen locked"
     private let defaults: UserDefaults
     private var idleAssertion: IOPMAssertionID = 0
@@ -122,7 +117,6 @@ final class KeepAwakeController: ObservableObject {
         allowDisplaySleep = defaults.bool(forKey: DefaultsKey.allowDisplaySleep)
         deactivateOnBattery = defaults.bool(forKey: DefaultsKey.deactivateOnBattery)
         pauseWhenScreenLocked = defaults.bool(forKey: DefaultsKey.pauseWhenScreenLocked)
-        statusItemClickToggles = defaults.bool(forKey: DefaultsKey.statusItemClickToggles)
 
         installPowerSourceObserver()
         installWorkspaceObservers()

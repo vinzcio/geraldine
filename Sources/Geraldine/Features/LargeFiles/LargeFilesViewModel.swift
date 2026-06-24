@@ -58,7 +58,7 @@ final class LargeFilesViewModel: ObservableObject {
 
             var large: [ScanItem] = []
             var old: [ScanItem] = []
-            for case let url as URL in en {
+            while let url = en.nextObject() as? URL {
                 let v = try? url.resourceValues(forKeys: Set(keys))
                 guard v?.isRegularFile == true else { continue }
                 let size = DiskScan.fileSize(url)

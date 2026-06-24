@@ -6,6 +6,8 @@ import SwiftUI
 /// a large tile spanning the full width, in the user's chosen order.
 struct WidgetGrid: View {
     @EnvironmentObject var layout: WidgetLayoutStore
+    @EnvironmentObject private var monitor: SystemMonitor
+    @EnvironmentObject private var calendar: CalendarSettingsStore
 
     var body: some View {
         VStack(spacing: 8) {
@@ -15,31 +17,48 @@ struct WidgetGrid: View {
                         widget(for: item).frame(maxWidth: .infinity)
                     }
                     // Keep a lone small tile at half width instead of stretching.
-                    if row.count == 1, row[0].size == .small {
+                    if row.count == 1, !isFullWidth(row[0]) {
                         Color.clear.frame(maxWidth: .infinity)
                     }
                 }
             }
         }
-        .animation(.snappy(duration: 0.28), value: layout.items)
+        // Key on the packed result, not raw items, so showing/hiding the calendar or
+        // world clocks (a settings toggle, not an items change) reflows just as smoothly.
+        .animation(.snappy(duration: 0.28), value: packed)
     }
 
     @ViewBuilder private func widget(for item: WidgetItem) -> some View {
         switch item.kind {
         case .metric(let metric): MetricWidget(kind: metric, size: item.size)
         case .keepAwake:          KeepAwakeWidget(size: item.size)
+        case .calendar:           CalendarWidget()
         }
     }
 
-    /// Flow the ordered items into rows: a large item takes its own row; smalls pair up.
+    /// Whether the kind/setting is currently shown in the popover.
+    private func isVisible(_ item: WidgetItem) -> Bool {
+        switch item.kind {
+        case .metric(let metric): return metric.isAvailable(hasBattery: monitor.hasBattery)
+        case .keepAwake:          return true
+        case .calendar:           return calendar.appearsInPopover
+        }
+    }
+
+    /// A tile spans the whole row when it's large, or when it can't be shrunk at all.
+    private func isFullWidth(_ item: WidgetItem) -> Bool {
+        item.size == .large || !item.kind.canResize
+    }
+
+    /// Flow the ordered items into rows: a full-width item takes its own row; smalls pair up.
     private var packed: [[WidgetItem]] {
         var rows: [[WidgetItem]] = []
         var i = 0
-        let items = layout.items
+        let items = layout.items.filter(isVisible)
         while i < items.count {
-            if items[i].size == .large {
+            if isFullWidth(items[i]) {
                 rows.append([items[i]]); i += 1
-            } else if i + 1 < items.count, items[i + 1].size == .small {
+            } else if i + 1 < items.count, !isFullWidth(items[i + 1]) {
                 rows.append([items[i], items[i + 1]]); i += 2
             } else {
                 rows.append([items[i]]); i += 1
@@ -55,6 +74,7 @@ struct WidgetGrid: View {
 /// behaves exactly like the metric widgets.
 struct WidgetControls: View {
     @EnvironmentObject var layout: WidgetLayoutStore
+    @EnvironmentObject private var monitor: SystemMonitor
     let kind: WidgetKind
     let size: WidgetSize
 
@@ -68,27 +88,30 @@ struct WidgetControls: View {
                 .help("Drag to reorder")
                 .draggable(kind.id) { dragPreview }
 
-            Button {
-                withAnimation(.snappy(duration: 0.28)) { layout.toggleSize(kind) }
-            } label: {
-                Image(systemName: size == .small ? "arrow.up.left.and.arrow.down.right" : "arrow.down.right.and.arrow.up.left")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 18, height: 18)
-                    .background(Color.primary.opacity(0.07), in: Circle())
+            if kind.canResize {
+                Button {
+                    withAnimation(.snappy(duration: 0.28)) { layout.toggleSize(kind) }
+                } label: {
+                    Image(systemName: size == .small ? "arrow.up.left.and.arrow.down.right" : "arrow.down.right.and.arrow.up.left")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 18, height: 18)
+                        .background(Color.primary.opacity(0.07), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .help(size == .small ? "Expand widget" : "Shrink widget")
             }
-            .buttonStyle(.plain)
-            .help(size == .small ? "Expand widget" : "Shrink widget")
         }
     }
 
     @ViewBuilder private var dragPreview: some View {
         HStack(spacing: 5) {
             switch kind {
-            case .metric(let metric): Image(systemName: metric.icon)
+            case .metric(let metric): Image(systemName: metric.icon(hasBattery: monitor.hasBattery))
             case .keepAwake:          EyeView(isActive: false, size: 16)
+            case .calendar:           Image(systemName: "calendar")
             }
-            Text(kind.title)
+            Text(kind.title(hasBattery: monitor.hasBattery))
         }
         .font(.caption).padding(6)
         .background(.ultraThinMaterial, in: Capsule())
@@ -149,8 +172,8 @@ struct MetricWidget: View {
 
     private func headerRow(@ViewBuilder trailing: () -> some View) -> some View {
         HStack(spacing: 5) {
-            Image(systemName: kind.icon).font(.caption).foregroundStyle(tint)
-            Text(kind.title).font(.caption.weight(.medium)).foregroundStyle(.secondary).lineLimit(1)
+            Image(systemName: kind.icon(hasBattery: monitor.hasBattery)).font(.caption).foregroundStyle(tint)
+            Text(kind.title(hasBattery: monitor.hasBattery)).font(.caption.weight(.medium)).foregroundStyle(.secondary).lineLimit(1)
             Spacer(minLength: 4)
             trailing()
             controls
@@ -337,13 +360,16 @@ struct MetricWidget: View {
                 .font(.rounded(size, .semibold))
                 .lineLimit(1).truncationMode(.middle)
         } else if network.connection == .wifi, !network.canShowName {
-            Button { network.requestNameAccess() } label: {
-                Text("Show Name")
+            Button { state.open(.permissions) } label: {
+                Text(network.nameAccess == .denied ? "Location Off" : "Show Name")
                     .font(.rounded(size, .semibold))
                     .foregroundStyle(Theme.accent2)
             }
             .buttonStyle(.plain)
-            .help("Allow Location so macOS reveals the Wi-Fi network name")
+            .pointingHandCursor()
+            .help(network.nameAccess == .denied
+                  ? "Open Permissions to enable Location for Geraldine"
+                  : "Open Permissions to allow Location so macOS reveals the Wi-Fi network name")
         } else if !network.online {
             Text("Not Connected")
                 .font(.rounded(size, .semibold))
@@ -620,6 +646,7 @@ struct KeepAwakeWidget: View {
             EyeView(isActive: active, size: eyeSize)
         }
         .buttonStyle(.plain)
+        .pointingHandCursor()
         .help(active ? "Stop keeping your Mac awake" : "Keep your Mac awake")
     }
 }

@@ -7,6 +7,8 @@ enum Module: String, CaseIterable, Identifiable {
     case storage
     case battery
     case keepAwake
+    case calendar
+    case powerTools
     case cleanup
     case largeFiles
     case spaceLens
@@ -15,6 +17,7 @@ enum Module: String, CaseIterable, Identifiable {
     case loginItems
     case maintenance
     case updater
+    case permissions
     case settings
 
     var id: String { rawValue }
@@ -27,6 +30,8 @@ enum Module: String, CaseIterable, Identifiable {
         case .storage:     return "Storage"
         case .battery:     return "Battery"
         case .keepAwake:   return "Keep Awake"
+        case .calendar:    return "Calendar"
+        case .powerTools:  return "Power Tools"
         case .cleanup:     return "Cleanup"
         case .largeFiles:  return "Large & Old Files"
         case .spaceLens:   return "Space Lens"
@@ -35,6 +40,7 @@ enum Module: String, CaseIterable, Identifiable {
         case .loginItems:  return "Login Items"
         case .maintenance: return "Maintenance"
         case .updater:     return "Updater"
+        case .permissions: return "Permissions"
         case .settings:    return "Settings"
         }
     }
@@ -47,6 +53,8 @@ enum Module: String, CaseIterable, Identifiable {
         case .storage:     return "chart.pie.fill"
         case .battery:     return "battery.100"
         case .keepAwake:   return "cup.and.saucer.fill"
+        case .calendar:    return "calendar"
+        case .powerTools:  return "bolt.horizontal.circle.fill"
         case .cleanup:     return "sparkles"
         case .largeFiles:  return "doc.text.magnifyingglass"
         case .spaceLens:   return "circle.hexagongrid.fill"
@@ -55,6 +63,7 @@ enum Module: String, CaseIterable, Identifiable {
         case .loginItems:  return "power"
         case .maintenance: return "wrench.and.screwdriver.fill"
         case .updater:     return "arrow.triangle.2.circlepath"
+        case .permissions: return "lock.shield.fill"
         case .settings:    return "gearshape.fill"
         }
     }
@@ -67,6 +76,8 @@ enum Module: String, CaseIterable, Identifiable {
         case .storage:     return Color(red: 0.20, green: 0.70, blue: 0.62)
         case .battery:     return Color(red: 0.30, green: 0.78, blue: 0.45)
         case .keepAwake:   return Color(red: 0.94, green: 0.58, blue: 0.26)
+        case .calendar:    return Color(red: 0.40, green: 0.52, blue: 0.96)
+        case .powerTools:  return Color(red: 0.45, green: 0.58, blue: 0.95)
         case .cleanup:     return Theme.accent2
         case .largeFiles:  return Color(red: 0.95, green: 0.55, blue: 0.35)
         case .spaceLens:   return Color(red: 0.86, green: 0.42, blue: 0.86)
@@ -75,6 +86,7 @@ enum Module: String, CaseIterable, Identifiable {
         case .loginItems:  return Color(red: 0.55, green: 0.60, blue: 0.98)
         case .maintenance: return Color(red: 0.40, green: 0.72, blue: 0.50)
         case .updater:     return Color(red: 0.50, green: 0.66, blue: 0.96)
+        case .permissions: return Color(red: 0.36, green: 0.56, blue: 0.86)
         case .settings:    return Color.secondary
         }
     }
@@ -87,6 +99,8 @@ enum Module: String, CaseIterable, Identifiable {
         case .storage:     return "What's using your disk"
         case .battery:     return "Charge history, consumers & health"
         case .keepAwake:   return "Prevent idle sleep and display dimming"
+        case .calendar:    return "Month view, world clocks & date format"
+        case .powerTools:  return "Dock, window, keyboard, and Finder controls"
         case .cleanup:     return "Clear caches, logs, and junk"
         case .largeFiles:  return "Find big and forgotten files"
         case .spaceLens:   return "See what's using your disk"
@@ -95,6 +109,7 @@ enum Module: String, CaseIterable, Identifiable {
         case .loginItems:  return "Control what launches at startup"
         case .maintenance: return "Run macOS upkeep tasks"
         case .updater:     return "Find apps that are out of date"
+        case .permissions: return "Access Geraldine needs to do its job"
         case .settings:    return "Choose where Geraldine appears"
         }
     }
@@ -108,9 +123,9 @@ enum Module: String, CaseIterable, Identifiable {
 
     var group: Group {
         switch self {
-        case .dashboard, .smartCare, .activity, .storage, .battery, .keepAwake: return .overview
+        case .dashboard, .smartCare, .activity, .storage, .battery, .keepAwake, .calendar: return .overview
         case .cleanup, .largeFiles, .spaceLens, .uninstaller: return .clean
-        case .privacy, .loginItems, .maintenance, .updater, .settings: return .tune
+        case .powerTools, .privacy, .loginItems, .maintenance, .updater, .permissions, .settings: return .tune
         }
     }
 
