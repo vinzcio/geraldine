@@ -20,9 +20,10 @@ struct FreeRAMView: View {
 
     var body: some View {
         VStack(spacing: 18) {
-            ZStack {
-                Circle().fill(Theme.accent.opacity(0.12)).frame(width: 92, height: 92)
-                Image(systemName: "memorychip").font(.system(size: 38, weight: .medium)).foregroundStyle(Theme.accent)
+            if phase == .working {
+                BrandSpinner(tint: Theme.accent, icon: "memorychip", size: 92)
+            } else {
+                IconBadge(icon: "memorychip", tint: Theme.accent, size: 92)
             }
 
             switch phase {
@@ -32,14 +33,13 @@ struct FreeRAMView: View {
                     .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
                 PrimaryButton(title: "Free Up Memory", icon: "wand.and.sparkles", action: run)
             case .working:
-                ProgressView().controlSize(.large)
-                Text("Reclaiming memory…").foregroundStyle(.secondary)
+                Text("Reclaiming Memory…").foregroundStyle(.secondary)
             case .done:
-                Text(freed > 0 ? "Freed \(Fmt.size(freed))" : "Memory optimized").font(.rounded(22, .bold))
+                Text(freed > 0 ? "Freed \(Fmt.size(freed))" : "Memory Optimized").font(.rounded(22, .bold))
                 Text("Now \(Fmt.size(monitor.memoryUsed)) in use.").font(.callout).foregroundStyle(.secondary)
                 Button("Done") { dismiss() }
             case .failed:
-                Text("Couldn't free memory").font(.rounded(20, .semibold))
+                Text("Couldn't Free Memory").font(.rounded(20, .semibold))
                 Text("The action was cancelled or denied.").font(.callout).foregroundStyle(.secondary)
                 Button("Close") { dismiss() }
             }

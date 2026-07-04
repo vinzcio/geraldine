@@ -1,5 +1,26 @@
 import SwiftUI
 
+/// Shared path assembly for the spark graphs: a polyline through the points and
+/// a closed area path from the same points down to the baseline.
+private enum SparkPath {
+    static func line(through points: [CGPoint]) -> Path {
+        Path { p in
+            for (i, pt) in points.enumerated() {
+                i == 0 ? p.move(to: pt) : p.addLine(to: pt)
+            }
+        }
+    }
+
+    static func area(under points: [CGPoint], in size: CGSize) -> Path {
+        Path { p in
+            p.move(to: CGPoint(x: 0, y: size.height))
+            for pt in points { p.addLine(to: pt) }
+            p.addLine(to: CGPoint(x: size.width, y: size.height))
+            p.closeSubpath()
+        }
+    }
+}
+
 /// Filled sparkline for a series of 0…1 values.
 struct SparkGraph: View {
     var values: [Double]
@@ -14,15 +35,16 @@ struct SparkGraph: View {
     @ViewBuilder
     private func content(in size: CGSize) -> some View {
         if values.count >= 2 {
+            let points = values.enumerated().map { point($0.offset, $0.element, size) }
             ZStack {
-                areaPath(in: size)
+                SparkPath.area(under: points, in: size)
                     .fill(LinearGradient(colors: [tint.opacity(0.35), tint.opacity(0.02)],
                                          startPoint: .top, endPoint: .bottom))
-                linePath(in: size)
+                SparkPath.line(through: points)
                     .stroke(tint.gradient, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
             }
         } else {
-            Rectangle().fill(.clear)
+            CollectingHistoryState(tint: tint)
         }
     }
 
@@ -30,22 +52,6 @@ struct SparkGraph: View {
         let n = max(values.count - 1, 1)
         return CGPoint(x: size.width * CGFloat(i) / CGFloat(n),
                        y: size.height * (1 - CGFloat(min(max(v, 0), 1))))
-    }
-
-    private func areaPath(in size: CGSize) -> Path {
-        Path { p in
-            p.move(to: CGPoint(x: 0, y: size.height))
-            for (i, v) in values.enumerated() { p.addLine(to: point(i, v, size)) }
-            p.addLine(to: CGPoint(x: size.width, y: size.height)); p.closeSubpath()
-        }
-    }
-
-    private func linePath(in size: CGSize) -> Path {
-        Path { p in
-            for (i, v) in values.enumerated() {
-                i == 0 ? p.move(to: point(i, v, size)) : p.addLine(to: point(i, v, size))
-            }
-        }
     }
 }
 
@@ -84,17 +90,18 @@ struct ScaledSparkGraph: View {
     @ViewBuilder
     private func content(in size: CGSize) -> some View {
         if values.count >= 2 {
+            let points = values.enumerated().map { point($0.offset, $0.element, size) }
             ZStack {
-                areaPath(in: size).fill(areaShading)
+                SparkPath.area(under: points, in: size).fill(areaShading)
                 if let valueColor {
-                    segmentedLine(in: size, valueColor: valueColor)
+                    segmentedLine(points: points, valueColor: valueColor)
                 } else {
-                    linePath(in: size)
+                    SparkPath.line(through: points)
                         .stroke(lineShading, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
                 }
             }
         } else {
-            Rectangle().fill(.clear)
+            CollectingHistoryState(tint: tint)
         }
     }
 
@@ -115,35 +122,15 @@ struct ScaledSparkGraph: View {
                        y: size.height * (1 - CGFloat(normalized)))
     }
 
-    private func areaPath(in size: CGSize) -> Path {
-        Path { p in
-            p.move(to: CGPoint(x: 0, y: size.height))
-            for (i, v) in values.enumerated() { p.addLine(to: point(i, v, size)) }
-            p.addLine(to: CGPoint(x: size.width, y: size.height)); p.closeSubpath()
-        }
-    }
-
-    private func linePath(in size: CGSize) -> Path {
-        Path { p in
-            for (i, v) in values.enumerated() {
-                i == 0 ? p.move(to: point(i, v, size)) : p.addLine(to: point(i, v, size))
-            }
-        }
-    }
-
     @ViewBuilder
-    private func segmentedLine(in size: CGSize, valueColor: @escaping (Double) -> Color) -> some View {
+    private func segmentedLine(points: [CGPoint], valueColor: @escaping (Double) -> Color) -> some View {
         ForEach(1..<values.count, id: \.self) { index in
-            segmentPath(from: index - 1, to: index, in: size)
-                .stroke(valueColor(max(values[index - 1], values[index])),
-                        style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
-        }
-    }
-
-    private func segmentPath(from startIndex: Int, to endIndex: Int, in size: CGSize) -> Path {
-        Path { p in
-            p.move(to: point(startIndex, values[startIndex], size))
-            p.addLine(to: point(endIndex, values[endIndex], size))
+            Path { p in
+                p.move(to: points[index - 1])
+                p.addLine(to: points[index])
+            }
+            .stroke(valueColor(max(values[index - 1], values[index])),
+                    style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
         }
     }
 }
@@ -174,17 +161,18 @@ struct DualLineGraph: View {
                 series(secondary, tint: secondaryTint, in: size)
             }
         } else {
-            Rectangle().fill(.clear)
+            CollectingHistoryState(tint: primaryTint)
         }
     }
 
     @ViewBuilder
     private func series(_ values: [Double], tint: Color, in size: CGSize) -> some View {
         if values.count >= 2 {
-            areaPath(values, in: size)
+            let points = values.enumerated().map { point($0.offset, $0.element, values.count, size) }
+            SparkPath.area(under: points, in: size)
                 .fill(LinearGradient(colors: [tint.opacity(0.22), tint.opacity(0.02)],
                                      startPoint: .top, endPoint: .bottom))
-            linePath(values, in: size)
+            SparkPath.line(through: points)
                 .stroke(tint.gradient, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
         }
     }
@@ -195,21 +183,23 @@ struct DualLineGraph: View {
         return CGPoint(x: size.width * CGFloat(i) / CGFloat(n),
                        y: size.height * (1 - CGFloat(normalized)))
     }
+}
 
-    private func areaPath(_ values: [Double], in size: CGSize) -> Path {
-        Path { p in
-            p.move(to: CGPoint(x: 0, y: size.height))
-            for (i, v) in values.enumerated() { p.addLine(to: point(i, v, values.count, size)) }
-            p.addLine(to: CGPoint(x: size.width, y: size.height)); p.closeSubpath()
-        }
-    }
+private struct CollectingHistoryState: View {
+    var tint: Color
 
-    private func linePath(_ values: [Double], in size: CGSize) -> Path {
-        Path { p in
-            for (i, v) in values.enumerated() {
-                i == 0 ? p.move(to: point(i, v, values.count, size)) : p.addLine(to: point(i, v, values.count, size))
-            }
+    var body: some View {
+        VStack(spacing: 4) {
+            Image(systemName: "chart.line.uptrend.xyaxis")
+                .font(.system(size: 13, weight: .semibold))
+            Text("Collecting history…")
+                .font(.caption2.weight(.medium))
         }
+        .foregroundStyle(tint.opacity(0.75))
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Collecting history")
     }
 }
 

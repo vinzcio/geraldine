@@ -217,10 +217,7 @@ final class NetworkMonitor: NSObject, ObservableObject {
     // MARK: - Speed test
 
     func runSpeedTest() {
-        switch speedTest {
-        case .running: return
-        default: break
-        }
+        if case .running = speedTest { return }
         speedTest = .running(.download)
         Task {
             do {

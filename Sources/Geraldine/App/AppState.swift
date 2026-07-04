@@ -11,7 +11,7 @@ enum AppShape: String, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
-        case .menuBarAndWindow: return "Menu Bar and Dock"
+        case .menuBarAndWindow: return "Menu Bar And Dock"
         case .menuBarOnly:      return "Menu Bar Only"
         case .windowOnly:       return "Dock Only"
         }

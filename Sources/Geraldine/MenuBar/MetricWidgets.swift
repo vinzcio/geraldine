@@ -1,5 +1,16 @@
 import SwiftUI
 
+private struct WidgetCustomizationActiveKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var widgetCustomizationActive: Bool {
+        get { self[WidgetCustomizationActiveKey.self] }
+        set { self[WidgetCustomizationActiveKey.self] = newValue }
+    }
+}
+
 // MARK: - Grid
 
 /// Lays out the metric widgets like iOS Home Screen widgets: two small tiles per row,
@@ -8,9 +19,43 @@ struct WidgetGrid: View {
     @EnvironmentObject var layout: WidgetLayoutStore
     @EnvironmentObject private var monitor: SystemMonitor
     @EnvironmentObject private var calendar: CalendarSettingsStore
+    @State private var customizing = false
 
     var body: some View {
         VStack(spacing: 8) {
+            customizationToolbar
+            if customizing { customizationPanel }
+            widgetRows
+        }
+        // Key on the packed result, not raw items, so showing/hiding the calendar or
+        // world clocks (a settings toggle, not an items change) reflows just as smoothly.
+        .animation(.snappy(duration: 0.28), value: packed)
+        .environment(\.widgetCustomizationActive, customizing)
+    }
+
+    @ViewBuilder private func widget(for item: WidgetItem) -> some View {
+        switch item.kind {
+        case .metric(let metric): MetricWidget(kind: metric, size: item.size)
+        case .keepAwake:          KeepAwakeWidget(size: item.size)
+        case .calendar:           CalendarWidget()
+        }
+    }
+
+    @ViewBuilder private var widgetRows: some View {
+        if packed.isEmpty {
+            HStack(spacing: 7) {
+                Image(systemName: "square.grid.2x2")
+                Text("No Widgets Selected")
+                Spacer()
+                Button("Reset") { withAnimation(.snappy(duration: 0.28)) { layout.reset() } }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Theme.accent)
+            }
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(.secondary)
+            .padding(10)
+            .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        } else {
             ForEach(Array(packed.enumerated()), id: \.offset) { _, row in
                 HStack(spacing: 8) {
                     ForEach(row, id: \.kind) { item in
@@ -23,21 +68,80 @@ struct WidgetGrid: View {
                 }
             }
         }
-        // Key on the packed result, not raw items, so showing/hiding the calendar or
-        // world clocks (a settings toggle, not an items change) reflows just as smoothly.
-        .animation(.snappy(duration: 0.28), value: packed)
     }
 
-    @ViewBuilder private func widget(for item: WidgetItem) -> some View {
-        switch item.kind {
-        case .metric(let metric): MetricWidget(kind: metric, size: item.size)
-        case .keepAwake:          KeepAwakeWidget(size: item.size)
-        case .calendar:           CalendarWidget()
+    private var customizationToolbar: some View {
+        HStack(spacing: 6) {
+            Button {
+                withAnimation(.snappy(duration: 0.22)) { customizing.toggle() }
+            } label: {
+                Label(customizing ? "Done" : "Customize",
+                      systemImage: customizing ? "checkmark" : "slider.horizontal.3")
+                    .font(.caption2.weight(.semibold))
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
+                    .background(customizing ? Theme.accent.opacity(0.16) : Color.primary.opacity(0.06),
+                                in: Capsule())
+                    .foregroundStyle(customizing ? Theme.accent : .secondary)
+            }
+            .buttonStyle(.plain)
+            .help(customizing ? "Finish customizing widgets" : "Customize menu bar widgets")
+
+            Spacer(minLength: 4)
+
+            if customizing {
+                Button {
+                    withAnimation(.snappy(duration: 0.28)) { layout.reset() }
+                } label: {
+                    Label("Reset", systemImage: "arrow.counterclockwise")
+                        .font(.caption2.weight(.semibold))
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 5)
+                        .background(Color.primary.opacity(0.06), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("Reset widget layout")
+            }
         }
+    }
+
+    private var customizationPanel: some View {
+        LazyVGrid(columns: [GridItem(.flexible(), spacing: 6), GridItem(.flexible(), spacing: 6)], spacing: 6) {
+            ForEach(layout.items.filter(isCustomizable)) { item in
+                Button {
+                    withAnimation(.snappy(duration: 0.28)) { layout.setShown(item.kind, !item.isShown) }
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: item.isShown ? "checkmark.circle.fill" : "plus.circle")
+                            .foregroundStyle(item.isShown ? Theme.accent : .secondary)
+                        Text(item.kind.title(hasBattery: monitor.hasBattery))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.75)
+                        Spacer(minLength: 0)
+                    }
+                    .font(.caption2.weight(.semibold))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                    .background(item.isShown ? Theme.accent.opacity(0.10) : Color.primary.opacity(0.045),
+                                in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .help(item.isShown ? "Hide \(item.kind.title(hasBattery: monitor.hasBattery))"
+                                    : "Show \(item.kind.title(hasBattery: monitor.hasBattery))")
+            }
+        }
+        .padding(6)
+        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
     /// Whether the kind/setting is currently shown in the popover.
     private func isVisible(_ item: WidgetItem) -> Bool {
+        guard item.isShown else { return false }
+        return isCustomizable(item)
+    }
+
+    private func isCustomizable(_ item: WidgetItem) -> Bool {
         switch item.kind {
         case .metric(let metric): return metric.isAvailable(hasBattery: monitor.hasBattery)
         case .keepAwake:          return true
@@ -75,6 +179,7 @@ struct WidgetGrid: View {
 struct WidgetControls: View {
     @EnvironmentObject var layout: WidgetLayoutStore
     @EnvironmentObject private var monitor: SystemMonitor
+    @Environment(\.widgetCustomizationActive) private var customizationActive
     let kind: WidgetKind
     let size: WidgetSize
 
@@ -82,11 +187,15 @@ struct WidgetControls: View {
         HStack(spacing: 6) {
             Image(systemName: "line.3.horizontal")
                 .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(customizationActive ? Theme.accent : .secondary)
                 .frame(width: 18, height: 18)
+                .background(customizationActive ? Theme.accent.opacity(0.12) : Color.clear, in: Circle())
+                .overlay(Circle().strokeBorder(customizationActive ? Theme.accent.opacity(0.28) : .clear, lineWidth: 1))
                 .contentShape(Rectangle())
                 .help("Drag to reorder")
                 .draggable(kind.id) { dragPreview }
+                .accessibilityLabel("Reorder \(kind.title(hasBattery: monitor.hasBattery))")
+                .accessibilityHint("Drag to reorder this widget.")
 
             if kind.canResize {
                 Button {
@@ -94,12 +203,16 @@ struct WidgetControls: View {
                 } label: {
                     Image(systemName: size == .small ? "arrow.up.left.and.arrow.down.right" : "arrow.down.right.and.arrow.up.left")
                         .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(customizationActive ? Theme.accent : .secondary)
                         .frame(width: 18, height: 18)
-                        .background(Color.primary.opacity(0.07), in: Circle())
+                        .background(customizationActive ? Theme.accent.opacity(0.12) : Color.primary.opacity(0.07), in: Circle())
+                        .overlay(Circle().strokeBorder(customizationActive ? Theme.accent.opacity(0.28) : .clear, lineWidth: 1))
                 }
                 .buttonStyle(.plain)
                 .help(size == .small ? "Expand widget" : "Shrink widget")
+                .accessibilityLabel(size == .small
+                                    ? "Expand \(kind.title(hasBattery: monitor.hasBattery))"
+                                    : "Shrink \(kind.title(hasBattery: monitor.hasBattery))")
             }
         }
     }
@@ -147,6 +260,7 @@ struct MetricWidget: View {
     @EnvironmentObject var state: AppState
     @EnvironmentObject var monitor: SystemMonitor
     @EnvironmentObject var network: NetworkMonitor
+    @Environment(\.widgetCustomizationActive) private var customizationActive
     @State private var freeing = false
 
     private var isSmall: Bool { size == .small }
@@ -163,6 +277,8 @@ struct MetricWidget: View {
         .frame(height: isSmall ? 100 : nil, alignment: .topLeading)
         .padding(10)
         .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous)
+            .strokeBorder(customizationActive ? Theme.accent.opacity(0.24) : .clear, lineWidth: 1))
         .widgetDropTarget(.metric(kind))
     }
 
@@ -222,7 +338,10 @@ struct MetricWidget: View {
     @ViewBuilder private var standardSmall: some View {
         animatedValueText(size: 16, weight: .semibold)
             .foregroundStyle(kind == .temperature ? tint : .primary)
-        if kind != .temperature {
+        if kind == .battery || kind == .storage {
+            normalizedHistoryChart(values: smallChartValues)
+                .frame(height: 28)
+        } else if kind != .temperature {
             StatBar(fraction: fraction, tint: tint, height: 5)
         }
         Spacer(minLength: 0)
@@ -231,7 +350,7 @@ struct MetricWidget: View {
 
     @ViewBuilder private var smallFooter: some View {
         switch kind {
-        case .temperature: caption(monitor.thermal.available ? "CPU die" : "Unavailable")
+        case .temperature: caption(monitor.thermal.available ? "CPU Die" : "Unavailable")
         case .cpu:         actionButton("Details") { state.open(.activity) }
         case .memory:      actionButton("Free Up", busy: freeing) { freeMemory() }
         case .storage:     actionButton("Clean Up") { state.open(.cleanup) }
@@ -253,16 +372,50 @@ struct MetricWidget: View {
                              domain: Thermal.chartDomain,
                              valueColor: Thermal.color)
         case .cpu:
-            ScaledSparkGraph(values: monitor.cpuHistory, tint: tint)
+            ScaledSparkGraph(values: monitor.cpuHistory,
+                             tint: MetricChartStyle.readoutColor(for: .cpu),
+                             gradientColors: MetricChartStyle.gradient(for: .cpu),
+                             domain: MetricChartStyle.normalizedDomain)
         case .memory:
-            ScaledSparkGraph(values: monitor.memHistory, tint: tint)
+            ScaledSparkGraph(values: monitor.memHistory,
+                             tint: MetricChartStyle.readoutColor(for: .memory),
+                             gradientColors: MetricChartStyle.gradient(for: .memory),
+                             domain: MetricChartStyle.normalizedDomain)
         case .battery:
-            SparkGraph(values: monitor.batteryHistory, tint: tint)
+            normalizedHistoryChart(values: expandedChartValues)
         case .storage:
-            SparkGraph(values: monitor.diskHistory, tint: tint)
+            normalizedHistoryChart(values: expandedChartValues)
         case .network:
             EmptyView()
         }
+    }
+
+    private var smallChartValues: [Double] {
+        retainedChartValues(seconds: MetricChartStyle.smallWindowSeconds,
+                            maxPoints: MetricChartStyle.smallMaxPoints)
+    }
+
+    private var expandedChartValues: [Double] {
+        retainedChartValues(seconds: MetricChartStyle.expandedWindowSeconds,
+                            maxPoints: MetricChartStyle.expandedMaxPoints)
+    }
+
+    private func retainedChartValues(seconds: Int, maxPoints: Int) -> [Double] {
+        switch kind {
+        case .battery:
+            return MetricChartStyle.chartValues(monitor.batteryHistory, seconds: seconds, maxPoints: maxPoints)
+        case .storage:
+            return MetricChartStyle.chartValues(monitor.diskHistory, seconds: seconds, maxPoints: maxPoints)
+        default:
+            return []
+        }
+    }
+
+    private func normalizedHistoryChart(values: [Double]) -> some View {
+        ScaledSparkGraph(values: values,
+                         tint: MetricChartStyle.readoutColor(for: kind),
+                         gradientColors: MetricChartStyle.gradient(for: kind),
+                         domain: MetricChartStyle.normalizedDomain)
     }
 
     @ViewBuilder private var largeFooter: some View {
@@ -276,7 +429,7 @@ struct MetricWidget: View {
                 caption("High \(tempString(high))", animationValue: high)
             }
         case .cpu:
-            HStack { caption("Live usage"); Spacer(); actionButton("Activity") { state.open(.activity) } }
+            HStack { caption("Live Usage"); Spacer(); actionButton("Activity") { state.open(.activity) } }
         case .memory:
             HStack {
                 caption("\(Fmt.size(monitor.memoryUsed)) of \(Fmt.size(monitor.memoryTotal))",
@@ -335,7 +488,7 @@ struct MetricWidget: View {
                     speedControl
                 }
                 if let link = network.linkRateMbps {
-                    caption("\(Int(link.rounded())) Mbps link", animationValue: link)
+                    caption("\(Int(link.rounded())) Mbps Link", animationValue: link)
                 }
             }
         }
@@ -360,16 +513,16 @@ struct MetricWidget: View {
                 .font(.rounded(size, .semibold))
                 .lineLimit(1).truncationMode(.middle)
         } else if network.connection == .wifi, !network.canShowName {
-            Button { state.open(.permissions) } label: {
-                Text(network.nameAccess == .denied ? "Location Off" : "Show Name")
+            Button { network.requestNameAccessAndOpenSettings() } label: {
+                Text(network.nameAccess == .denied ? "Open Location" : "Allow Location")
                     .font(.rounded(size, .semibold))
                     .foregroundStyle(Theme.accent2)
             }
             .buttonStyle(.plain)
             .pointingHandCursor()
             .help(network.nameAccess == .denied
-                  ? "Open Permissions to enable Location for Geraldine"
-                  : "Open Permissions to allow Location so macOS reveals the Wi-Fi network name")
+                  ? "Open Location Services to show the Wi-Fi network name"
+                  : "Allow Location so macOS reveals the Wi-Fi network name")
         } else if !network.online {
             Text("Not Connected")
                 .font(.rounded(size, .semibold))
@@ -576,9 +729,11 @@ struct MetricWidget: View {
 struct KeepAwakeWidget: View {
     let size: WidgetSize
     @EnvironmentObject private var keepAwake: KeepAwakeController
+    @Environment(\.widgetCustomizationActive) private var customizationActive
 
     private var isSmall: Bool { size == .small }
     private var active: Bool { keepAwake.isActive }
+    private var lastError: String? { active ? nil : keepAwake.lastError }
 
     var body: some View {
         Group { if isSmall { small } else { large } }
@@ -591,7 +746,9 @@ struct KeepAwakeWidget: View {
                     .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous)
                         .fill(Theme.bad.opacity(active ? 0.10 : 0)))
                     .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous)
-                        .strokeBorder(Theme.bad.opacity(active ? 0.35 : 0), lineWidth: 1))
+                        .strokeBorder(active ? Theme.bad.opacity(0.35)
+                                      : customizationActive ? Theme.accent.opacity(0.24) : .clear,
+                                      lineWidth: 1))
             }
             .animation(.easeInOut(duration: 0.4), value: active)
             .widgetDropTarget(.keepAwake)
@@ -622,10 +779,14 @@ struct KeepAwakeWidget: View {
                 Spacer(minLength: 4)
                 WidgetControls(kind: .keepAwake, size: size)
             }
-            Text(keepAwake.statusLine)
-                .font(.caption2)
-                .foregroundStyle(active ? Theme.bad : .secondary)
-                .lineLimit(1)
+            if let lastError {
+                errorLabel(lastError, lineLimit: 1)
+            } else {
+                Text(keepAwake.statusLine)
+                    .font(.caption2)
+                    .foregroundStyle(active ? Theme.bad : .secondary)
+                    .lineLimit(1)
+            }
             Spacer(minLength: 0)
             DurationStrip(compact: true)
         }
@@ -638,7 +799,20 @@ struct KeepAwakeWidget: View {
                 .font(.caption2)
                 .foregroundStyle(active ? Theme.bad : .secondary)
                 .lineLimit(1)
+            if let lastError {
+                errorLabel(lastError, lineLimit: 2)
+            }
         }
+    }
+
+    private func errorLabel(_ message: String, lineLimit: Int) -> some View {
+        Label(message, systemImage: "exclamationmark.triangle.fill")
+            .font(.caption2)
+            .foregroundStyle(Theme.warn)
+            .lineLimit(lineLimit)
+            .minimumScaleFactor(0.8)
+            .accessibilityLabel("Keep Awake error")
+            .accessibilityValue(message)
     }
 
     private func eye(_ eyeSize: CGFloat) -> some View {

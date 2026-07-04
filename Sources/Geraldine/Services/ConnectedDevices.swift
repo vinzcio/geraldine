@@ -41,6 +41,7 @@ struct ConnectedDevice: Identifiable, Equatable {
 final class DeviceMonitor: ObservableObject {
     @Published private(set) var devices: [ConnectedDevice] = []
     @Published private(set) var scanning = false
+    @Published private(set) var ejectErrors: [String: String] = [:]
 
     private var observing = false
 
@@ -68,6 +69,8 @@ final class DeviceMonitor: ObservableObject {
             let all = (drives + profile.ios + profile.bluetooth).sorted(by: Self.order)
             await MainActor.run {
                 self.devices = all
+                let currentIDs = Set(all.map(\.id))
+                self.ejectErrors = self.ejectErrors.filter { currentIDs.contains($0.key) }
                 self.scanning = false
             }
         }
@@ -75,18 +78,28 @@ final class DeviceMonitor: ObservableObject {
 
     func eject(_ device: ConnectedDevice) {
         guard let url = device.volumeURL else { return }
+        ejectErrors[device.id] = nil
         do {
             try NSWorkspace.shared.unmountAndEjectDevice(at: url)
             refresh()
         } catch {
-            NSSound.beep()
+            ejectErrors[device.id] = "Could not eject: \(Self.ejectMessage(for: error))"
         }
+    }
+
+    func ejectError(for device: ConnectedDevice) -> String? {
+        ejectErrors[device.id]
     }
 
     nonisolated private static func order(_ a: ConnectedDevice, _ b: ConnectedDevice) -> Bool {
         if a.lowBattery != b.lowBattery { return a.lowBattery }       // low battery floats to top
         if a.kind.rank != b.kind.rank { return a.kind.rank < b.kind.rank }
         return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
+    }
+
+    nonisolated private static func ejectMessage(for error: Error) -> String {
+        let message = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        return message.isEmpty ? "macOS reported an unknown error." : message
     }
 
     // MARK: - External drives
@@ -180,7 +193,7 @@ final class DeviceMonitor: ObservableObject {
                     let id = "ios:\((item["serial_num"] as? String) ?? name)"
                     if seen.insert(id).inserted {
                         found.append(ConnectedDevice(id: id, name: name, kind: .iosDevice,
-                                                     battery: nil, detail: "Connected via USB",
+                                                     battery: nil, detail: "Connected Via USB",
                                                      volumeURL: nil))
                     }
                 }

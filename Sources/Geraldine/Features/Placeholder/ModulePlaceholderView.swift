@@ -9,7 +9,7 @@ struct ModulePlaceholderView: View {
         VStack(spacing: 0) {
             ModuleHeader(module: module)
             EmptyState(icon: module.systemImage,
-                       title: "\(module.title) is on the way",
+                       title: "\(module.title) Is On The Way",
                        message: "This module is being built. It'll live right here.",
                        tint: module.tint)
         }
@@ -44,11 +44,15 @@ struct ModuleHeader: View {
         HStack(spacing: 14) {
             ZStack {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(module.tint.opacity(0.16))
+                    .fill(LinearGradient(colors: [module.tint.opacity(0.26), module.tint.opacity(0.10)],
+                                         startPoint: .topLeading, endPoint: .bottomTrailing))
+                    .frame(width: 46, height: 46)
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(module.tint.opacity(0.18), lineWidth: 1)
                     .frame(width: 46, height: 46)
                 Image(systemName: systemImage ?? module.systemImage)
                     .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(module.tint)
+                    .foregroundStyle(module.tint.gradient)
             }
             VStack(alignment: .leading, spacing: 2) {
                 Text(title ?? module.title).font(.rounded(22, .bold))

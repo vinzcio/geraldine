@@ -10,9 +10,9 @@ struct MenuBarView: View {
     private var maxHeight: CGFloat { (NSScreen.main?.visibleFrame.height ?? 860) - 24 }
 
     private var health: (label: String, color: Color) {
-        if monitor.diskFraction > 0.9 || monitor.memoryFraction > 0.9 { return ("Needs attention", Theme.warn) }
-        if (monitor.batteryLevel ?? 1) < 0.15 && !monitor.batteryCharging { return ("Battery low", Theme.warn) }
-        return ("Looking good", Theme.good)
+        if monitor.diskFraction > 0.9 || monitor.memoryFraction > 0.9 { return ("Needs Attention", Theme.warn) }
+        if (monitor.batteryLevel ?? 1) < 0.15 && !monitor.batteryCharging { return ("Battery Low", Theme.warn) }
+        return ("Looking Good", Theme.good)
     }
 
     var body: some View {
@@ -105,14 +105,14 @@ struct MenuBarView: View {
 
     private func recommend() -> Rec {
         if monitor.diskFraction > 0.88 {
-            return Rec(title: "You're low on disk space", subtitle: "Run Cleanup to free some up",
+            return Rec(title: "You're Low On Disk Space", subtitle: "Run Cleanup to free some up",
                        icon: "internaldrive.fill", tint: Theme.warn, actionable: true) { state.open(.cleanup) }
         }
         if monitor.memoryFraction > 0.85 {
-            return Rec(title: "Memory is running high", subtitle: "Free up inactive memory",
+            return Rec(title: "Memory Is Running High", subtitle: "Free up inactive memory",
                        icon: "memorychip", tint: Theme.warn, actionable: true, action: freeMemory)
         }
-        return Rec(title: "Your Mac looks healthy", subtitle: "Run a Smart Care check anytime",
+        return Rec(title: "Your Mac Looks Healthy", subtitle: "Run a Smart Care check anytime",
                    icon: "checkmark.seal.fill", tint: Theme.good, actionable: true) { state.open(.smartCare) }
     }
 
@@ -131,6 +131,7 @@ struct MenuBarView: View {
             Label(title, systemImage: icon).font(.callout).frame(maxWidth: .infinity, alignment: .leading)
         }
         .buttonStyle(.plain)
+        .pointingHandCursor()
     }
 }
 

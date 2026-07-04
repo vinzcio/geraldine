@@ -25,7 +25,8 @@ final class SystemMonitor: ObservableObject {
     @Published var netUp: Double = 0             // bytes/sec
 
     // Rolling histories for sparkline graphs. CPU/memory/battery/disk are normalized
-    // (0…1); thermal is raw Celsius; network is bytes/sec.
+    // (0…1); thermal is raw Celsius; network is bytes/sec. Battery/storage retain a
+    // day of samples so their expanded widgets can show longer-term movement.
     @Published var cpuHistory: [Double] = []
     @Published var memHistory: [Double] = []
     @Published var batteryHistory: [Double] = []
@@ -35,6 +36,7 @@ final class SystemMonitor: ObservableObject {
     @Published var thermalHistory: [Double] = []
     @Published var thermal: Thermal.Reading = .empty
     private let chartHistoryLimit = 300
+    private let dayChartHistoryLimit = 24 * 60 * 60
 
     private var timer: Timer?
     private var prevCPU: host_cpu_load_info?
@@ -76,14 +78,14 @@ final class SystemMonitor: ObservableObject {
         let net = sampleNetwork()
         netDown = net.down; netUp = net.up
 
-        func trim(_ series: inout [Double], _ value: Double) {
+        func trim(_ series: inout [Double], _ value: Double, limit: Int = chartHistoryLimit) {
             series.append(value)
-            if series.count > chartHistoryLimit { series.removeFirst(series.count - chartHistoryLimit) }
+            if series.count > limit { series.removeFirst(series.count - limit) }
         }
         trim(&cpuHistory, cpuUsage)
         trim(&memHistory, memoryFraction)
-        trim(&batteryHistory, batteryLevel ?? batteryHistory.last ?? 1)
-        trim(&diskHistory, diskFraction)
+        trim(&batteryHistory, batteryLevel ?? batteryHistory.last ?? 1, limit: dayChartHistoryLimit)
+        trim(&diskHistory, diskFraction, limit: dayChartHistoryLimit)
         trim(&netDownHistory, netDown)
         trim(&netUpHistory, netUp)
 

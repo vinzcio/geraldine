@@ -149,6 +149,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         guard let button = statusItem?.button else { return }
         let nextPlan = plan()
         let nextImage = drawStatus(nextPlan)
+        applyAccessibility(for: nextPlan, to: button)
         guard let currentStatusPlan,
               shouldAnimateStatus(from: currentStatusPlan, to: nextPlan) else {
             // A fresh non-animated value cleanly cancels any in-flight roll.
@@ -168,8 +169,9 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         switch state.layout.menuBarKind(hasBattery: m.hasBattery) {
         case .temperature:
             guard m.thermal.available else {
-                return StatusPlan(kind: .temperature, series: nil, glyph: "sparkles", label: "", widthSample: "",
-                                  color: .labelColor, animationValue: nil)
+                return StatusPlan(kind: .temperature, series: thermalUnavailableWaveform, glyph: nil,
+                                  label: "", widthSample: "", color: .secondaryLabelColor,
+                                  animationValue: nil, domain: 0...1)
             }
             return StatusPlan(kind: .temperature, series: m.thermalHistory, glyph: nil,
                               label: "\(Int(m.thermal.cpu.rounded()))°", widthSample: "888°",
@@ -181,13 +183,17 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         case .cpu:
             return StatusPlan(kind: .cpu, series: m.cpuHistory, glyph: nil,
                               label: Fmt.percent(m.cpuUsage), widthSample: "100%",
-                              color: NSColor(Theme.status(for: m.cpuUsage)),
-                              animationValue: m.cpuUsage * 100)
+                              color: NSColor(MetricChartStyle.readoutColor(for: .cpu)),
+                              animationValue: m.cpuUsage * 100,
+                              gradient: MetricChartStyle.gradient(for: .cpu)?.map { NSColor($0) },
+                              domain: MetricChartStyle.normalizedDomain)
         case .memory:
             return StatusPlan(kind: .memory, series: m.memHistory, glyph: nil,
                               label: Fmt.percent(m.memoryFraction), widthSample: "100%",
-                              color: NSColor(Theme.status(for: m.memoryFraction)),
-                              animationValue: m.memoryFraction * 100)
+                              color: NSColor(MetricChartStyle.readoutColor(for: .memory)),
+                              animationValue: m.memoryFraction * 100,
+                              gradient: MetricChartStyle.gradient(for: .memory)?.map { NSColor($0) },
+                              domain: MetricChartStyle.normalizedDomain)
         case .network:
             return StatusPlan(kind: .network, series: throughput, glyph: nil,
                               label: "↓\(Fmt.fixedScaled(m.netDown))", widthSample: "↓8888.88M",
@@ -196,13 +202,14 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         case .battery:
             let low = (m.batteryLevel ?? 1) < 0.2
             return StatusPlan(kind: .battery, series: nil, glyph: batteryIcon, label: m.batteryLevel.map(Fmt.percent) ?? "AC",
-                              widthSample: "100%", color: NSColor(low ? Theme.bad : Theme.good),
+                              widthSample: "100%",
+                              color: NSColor(low ? Theme.bad : MetricChartStyle.readoutColor(for: .battery)),
                               animationValue: m.batteryLevel.map { $0 * 100 })
         case .storage:
             let free = max(0, m.diskTotal - m.diskUsed)
             return StatusPlan(kind: .storage, series: nil, glyph: "internaldrive",
                               label: Fmt.fixedScaled(max(0, m.diskTotal - m.diskUsed)), widthSample: "8888.88G",
-                              color: NSColor(Theme.status(for: m.diskFraction)),
+                              color: NSColor(MetricChartStyle.readoutColor(for: .storage)),
                               animationValue: free)
         }
     }
@@ -249,6 +256,34 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         image.unlockFocus()
         image.isTemplate = false
         return image
+    }
+
+    private func applyAccessibility(for plan: StatusPlan, to button: NSStatusBarButton) {
+        button.setAccessibilityLabel("Geraldine status")
+        button.setAccessibilityValue(accessibilityValue(for: plan))
+        button.setAccessibilityHelp("Open Geraldine")
+    }
+
+    private func accessibilityValue(for plan: StatusPlan) -> String {
+        let m = state.monitor
+        switch plan.kind {
+        case .temperature:
+            guard m.thermal.available else { return "Temperature unavailable" }
+            return "Temperature \(Int(m.thermal.cpu.rounded())) degrees Celsius"
+        case .cpu:
+            return "CPU \(Fmt.percent(m.cpuUsage))"
+        case .memory:
+            return "Memory \(Fmt.percent(m.memoryFraction))"
+        case .network:
+            return "Download \(Fmt.rate(m.netDown)), upload \(Fmt.rate(m.netUp))"
+        case .battery:
+            if let level = m.batteryLevel {
+                return "Battery \(Fmt.percent(level))"
+            }
+            return "Power connected"
+        case .storage:
+            return "Storage \(Fmt.size(max(0, m.diskTotal - m.diskUsed))) free"
+        }
     }
 
     private func shouldAnimateStatus(from old: StatusPlan, to new: StatusPlan) -> Bool {
@@ -573,8 +608,8 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     }
 
     /// Draws a filled, gradient sparkline (line + soft area fill). Temperature uses an
-    /// absolute thermal domain and threshold-colored line segments; other metrics use
-    /// visible-series scaling with a single tint.
+    /// absolute thermal domain and threshold-colored line segments; normalized metrics
+    /// use fixed 0...1 domains with stable scale gradients.
     private func drawSparkline(_ values: [Double], in rect: NSRect, gradient: [NSColor]?, baseColor: NSColor,
                                domain: ClosedRange<Double>?, valueColor: ((Double) -> NSColor)?) {
         guard values.count >= 2, let ctx = NSGraphicsContext.current?.cgContext else { return }
@@ -662,6 +697,10 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         let n = min(d.count, u.count)
         guard n >= 2 else { return [0, 0] }
         return (0..<n).map { d[d.count - n + $0] + u[u.count - n + $0] }
+    }
+
+    private var thermalUnavailableWaveform: [Double] {
+        [0.38, 0.48, 0.42, 0.62, 0.34, 0.58, 0.46, 0.54]
     }
 
     private func trimmed(_ v: [Double]) -> [Double] {

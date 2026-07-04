@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct SpaceLensView: View {
+    @EnvironmentObject var state: AppState
     @StateObject private var vm = SpaceLensViewModel()
 
     private static let palette: [Color] = [
@@ -13,9 +14,22 @@ struct SpaceLensView: View {
     var body: some View {
         VStack(spacing: 0) {
             ModuleHeader(module: .spaceLens) {
-                Button { vm.chooseRoot() } label: { Label("Choose folder", systemImage: "folder") }
+                HStack(spacing: 8) {
+                    if vm.loading {
+                        Button { vm.cancelScan() } label: { Label("Cancel", systemImage: "xmark.circle") }
+                    }
+                    Button { vm.revealCurrent() } label: { Label("Reveal", systemImage: "arrow.up.forward.app") }
+                        .disabled(vm.loading)
+                    Button { vm.chooseRoot() } label: { Label("Choose Folder", systemImage: "folder") }
+                        .disabled(vm.loading)
+                }
             }
             breadcrumb
+            SpaceLensScopeBar(freshness: vm.freshnessText,
+                              scope: vm.scopeText,
+                              visibleCount: vm.visibleNodeCount,
+                              totalCount: vm.totalEntryCount,
+                              currentSize: vm.currentSize)
             map
         }
     }
@@ -32,6 +46,7 @@ struct SpaceLensView: View {
                             .foregroundStyle(index == vm.path.count - 1 ? Color.primary : Theme.accent)
                     }
                     .buttonStyle(.plain)
+                    .pointingHandCursor()
                 }
                 Spacer()
                 Text(Fmt.size(vm.currentSize)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
@@ -53,18 +68,128 @@ struct SpaceLensView: View {
                                     color: Self.palette[index % Self.palette.count],
                                     rect: rects[index])
                             .onTapGesture { vm.enter(node) }
+                            .contextMenu {
+                                if node.isAggregate {
+                                    Button("Aggregates \(node.aggregateCount) smaller visible items") {}
+                                        .disabled(true)
+                                } else {
+                                    Button("Reveal in Finder") { vm.reveal(node) }
+                                    Button(node.isDirectory ? "Open Folder" : "Open") { vm.open(node) }
+                                    if node.isDirectory {
+                                        Button("Scan Inside") { vm.enter(node) }
+                                    }
+                                }
+                            }
                     }
                 }
+
                 if vm.loading {
-                    ZStack { Color.black.opacity(0.04); ProgressView().controlSize(.large) }
+                    SpaceLensProgressOverlay(text: vm.progressText,
+                                             fraction: vm.progressFraction,
+                                             cancel: vm.cancelScan)
                 }
+
                 if !vm.loading && vm.children.isEmpty {
-                    EmptyState(icon: "circle.hexagongrid", title: "Nothing to show",
-                               message: "This folder is empty or unreadable.", tint: Module.spaceLens.tint)
+                    SpaceLensIssueState(issue: vm.issue,
+                                        chooseFolder: vm.chooseRoot,
+                                        retry: vm.load,
+                                        openPermissions: { state.open(.permissions) })
                 }
             }
         }
         .padding(.horizontal, 18).padding(.bottom, 18).padding(.top, 4)
+    }
+}
+
+private struct SpaceLensScopeBar: View {
+    var freshness: String
+    var scope: String
+    var visibleCount: Int
+    var totalCount: Int
+    var currentSize: UInt64
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 12) {
+                Label(freshness, systemImage: "clock")
+                Label("\(visibleCount) Shown of \(totalCount) Entries", systemImage: "square.grid.3x3")
+                Spacer()
+                Label(Fmt.size(currentSize), systemImage: "internaldrive")
+            }
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+
+            Text(scope)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, 26)
+        .padding(.vertical, 10)
+        .background(Color.primary.opacity(0.035))
+    }
+}
+
+private struct SpaceLensProgressOverlay: View {
+    var text: String
+    var fraction: Double?
+    var cancel: () -> Void
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.06)
+            VStack(spacing: 12) {
+                if let fraction {
+                    ProgressView(value: fraction)
+                        .tint(Module.spaceLens.tint)
+                        .frame(width: 220)
+                } else {
+                    BrandSpinner(tint: Module.spaceLens.tint,
+                                 icon: Module.spaceLens.systemImage, size: 56)
+                }
+                Text(text)
+                    .font(.rounded(14, .medium))
+                    .foregroundStyle(.secondary)
+                Button(action: cancel) {
+                    Label("Cancel Scan", systemImage: "xmark.circle")
+                }
+                .buttonStyle(.soft(Module.spaceLens.tint))
+            }
+            .padding(18)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+    }
+}
+
+private struct SpaceLensIssueState: View {
+    var issue: SpaceLensViewModel.ScanIssue
+    var chooseFolder: () -> Void
+    var retry: () -> Void
+    var openPermissions: () -> Void
+
+    var body: some View {
+        VStack(spacing: 14) {
+            Spacer()
+            IconBadge(icon: issue.icon, tint: Module.spaceLens.tint, size: 78)
+            Text(issue.title.isEmpty ? "Nothing To Show" : issue.title)
+                .font(.rounded(18, .semibold))
+            Text(issue.message.isEmpty ? "Choose a folder to scan." : issue.message)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 420)
+
+            HStack(spacing: 10) {
+                Button(action: retry) { Label("Try Again", systemImage: "arrow.clockwise") }
+                Button(action: chooseFolder) { Label("Choose Folder", systemImage: "folder") }
+                if issue == .permissionDenied {
+                    Button(action: openPermissions) { Label("Open Permissions", systemImage: "lock.shield") }
+                }
+            }
+            .buttonStyle(.soft(Module.spaceLens.tint))
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -74,6 +199,12 @@ private struct TreemapCell: View {
     var rect: CGRect
 
     private var showsLabel: Bool { rect.width > 56 && rect.height > 30 }
+    private var helpText: String {
+        if node.isAggregate {
+            return "\(node.name) combines \(node.aggregateCount) smaller visible items - \(Fmt.size(node.size))"
+        }
+        return "\(node.name) - \(Fmt.size(node.size))"
+    }
 
     var body: some View {
         RoundedRectangle(cornerRadius: 7, style: .continuous)
@@ -86,7 +217,9 @@ private struct TreemapCell: View {
                 if showsLabel {
                     VStack(alignment: .leading, spacing: 1) {
                         HStack(spacing: 3) {
-                            if node.isDirectory && !node.isAggregate {
+                            if node.isAggregate {
+                                Image(systemName: "square.stack.3d.up.fill").font(.system(size: 9))
+                            } else if node.isDirectory {
                                 Image(systemName: "folder.fill").font(.system(size: 9))
                             }
                             Text(node.name).font(.rounded(12, .semibold)).lineLimit(1)
@@ -99,6 +232,6 @@ private struct TreemapCell: View {
             }
             .frame(width: max(0, rect.width - 3), height: max(0, rect.height - 3))
             .offset(x: rect.minX, y: rect.minY)
-            .help("\(node.name) — \(Fmt.size(node.size))")
+            .help(helpText)
     }
 }

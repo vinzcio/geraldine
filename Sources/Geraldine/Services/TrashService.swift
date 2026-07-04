@@ -1,12 +1,20 @@
 import AppKit
 
 enum TrashService {
+    struct Failure: Identifiable, Hashable {
+        let id = UUID()
+        let url: URL
+        let message: String
+    }
+
     struct Result {
         var removed: Int = 0
         var trashed: Int = 0
         var permanentlyDeleted: Int = 0
         var freed: UInt64 = 0
-        var failed: [URL] = []
+        var failures: [Failure] = []
+
+        var failed: [URL] { failures.map(\.url) }
     }
 
     /// Moves items to the Trash (reversible). Items that already live in the
@@ -27,7 +35,8 @@ enum TrashService {
                 result.removed += 1
                 result.freed += item.size
             } catch {
-                result.failed.append(item.url)
+                result.failures.append(Failure(url: item.url,
+                                               message: (error as NSError).localizedDescription))
             }
         }
         return result

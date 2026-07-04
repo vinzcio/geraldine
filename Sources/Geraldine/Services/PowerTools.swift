@@ -14,9 +14,9 @@ enum DockActiveClickBehavior: String, CaseIterable, Identifiable {
     var label: String {
         switch self {
         case .system: return "System"
-        case .hideApp: return "Hide app"
-        case .minimizeWindows: return "Minimize windows"
-        case .cycleWindows: return "Cycle windows"
+        case .hideApp: return "Hide App"
+        case .minimizeWindows: return "Minimize Windows"
+        case .cycleWindows: return "Cycle Windows"
         }
     }
 }
@@ -33,10 +33,10 @@ enum DockMiddleClickBehavior: String, CaseIterable, Identifiable {
     var label: String {
         switch self {
         case .system: return "System"
-        case .hideApp: return "Hide app"
-        case .minimizeWindows: return "Minimize windows"
-        case .newWindow: return "New window"
-        case .quitApp: return "Quit app"
+        case .hideApp: return "Hide App"
+        case .minimizeWindows: return "Minimize Windows"
+        case .newWindow: return "New Window"
+        case .quitApp: return "Quit App"
         }
     }
 }
@@ -221,10 +221,7 @@ final class PowerToolsController: ObservableObject {
 
     private func applyHooks() {
         guard accessibilityTrusted else {
-            dockService.stop()
-            trafficLightService.stop()
-            keyboardService.stop()
-            windowService.stopActivationObserver()
+            stop()
             return
         }
 
@@ -242,14 +239,23 @@ final class PowerToolsController: ObservableObject {
     }
 }
 
-final class DockInteractionService {
+/// Shared CGEvent-tap plumbing for the Power Tools services: creates the session
+/// tap, keeps its source on the main run loop, re-enables the tap when macOS
+/// disables it after a timeout, and tears everything down on `stop()`. The
+/// handler returns true to swallow the event, false to pass it through.
+final class EventTapService {
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
+    private let mask: CGEventMask
+    private let handler: (CGEventType, CGEvent) -> Bool
+
+    init(mask: CGEventMask, handler: @escaping (CGEventType, CGEvent) -> Bool) {
+        self.mask = mask
+        self.handler = handler
+    }
 
     func start() {
         guard eventTap == nil else { return }
-        let mask = CGEventMask(1 << CGEventType.leftMouseDown.rawValue) |
-            CGEventMask(1 << CGEventType.otherMouseDown.rawValue)
         guard let tap = CGEvent.tapCreate(tap: .cgSessionEventTap,
                                           place: .headInsertEventTap,
                                           options: .defaultTap,
@@ -279,7 +285,7 @@ final class DockInteractionService {
 
     private static let callback: CGEventTapCallBack = { _, type, event, refcon in
         guard let refcon else { return Unmanaged.passUnretained(event) }
-        let service = Unmanaged<DockInteractionService>.fromOpaque(refcon).takeUnretainedValue()
+        let service = Unmanaged<EventTapService>.fromOpaque(refcon).takeUnretainedValue()
 
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             if let tap = service.eventTap {
@@ -288,8 +294,20 @@ final class DockInteractionService {
             return Unmanaged.passUnretained(event)
         }
 
-        return service.handle(type: type, event: event) ? nil : Unmanaged.passUnretained(event)
+        return service.handler(type, event) ? nil : Unmanaged.passUnretained(event)
     }
+}
+
+final class DockInteractionService {
+    private lazy var tap = EventTapService(
+        mask: CGEventMask(1 << CGEventType.leftMouseDown.rawValue) |
+            CGEventMask(1 << CGEventType.otherMouseDown.rawValue)
+    ) { [weak self] type, event in
+        self?.handle(type: type, event: event) ?? false
+    }
+
+    func start() { tap.start() }
+    func stop() { tap.stop() }
 
     private func handle(type: CGEventType, event: CGEvent) -> Bool {
         let defaults = UserDefaults.standard
@@ -398,52 +416,14 @@ private struct DockTarget {
 }
 
 final class TrafficLightButtonService {
-    private var eventTap: CFMachPort?
-    private var runLoopSource: CFRunLoopSource?
-
-    func start() {
-        guard eventTap == nil else { return }
-        let mask = CGEventMask(1 << CGEventType.leftMouseDown.rawValue)
-        guard let tap = CGEvent.tapCreate(tap: .cgSessionEventTap,
-                                          place: .headInsertEventTap,
-                                          options: .defaultTap,
-                                          eventsOfInterest: mask,
-                                          callback: Self.callback,
-                                          userInfo: Unmanaged.passUnretained(self).toOpaque()) else {
-            return
-        }
-        eventTap = tap
-        runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
-        if let runLoopSource {
-            CFRunLoopAddSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
-        }
-        CGEvent.tapEnable(tap: tap, enable: true)
+    private lazy var tap = EventTapService(
+        mask: CGEventMask(1 << CGEventType.leftMouseDown.rawValue)
+    ) { [weak self] _, event in
+        self?.handle(event: event) ?? false
     }
 
-    func stop() {
-        if let eventTap {
-            CFMachPortInvalidate(eventTap)
-        }
-        if let runLoopSource {
-            CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
-        }
-        eventTap = nil
-        runLoopSource = nil
-    }
-
-    private static let callback: CGEventTapCallBack = { _, type, event, refcon in
-        guard let refcon else { return Unmanaged.passUnretained(event) }
-        let service = Unmanaged<TrafficLightButtonService>.fromOpaque(refcon).takeUnretainedValue()
-
-        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            if let tap = service.eventTap {
-                CGEvent.tapEnable(tap: tap, enable: true)
-            }
-            return Unmanaged.passUnretained(event)
-        }
-
-        return service.handle(event: event) ? nil : Unmanaged.passUnretained(event)
-    }
+    func start() { tap.start() }
+    func stop() { tap.stop() }
 
     private func handle(event: CGEvent) -> Bool {
         guard !event.flags.contains(.maskAlternate),
@@ -480,53 +460,19 @@ final class KeyboardPowerToolsService {
         let keyCode: Int64
     }
 
-    private var eventTap: CFMachPort?
-    private var runLoopSource: CFRunLoopSource?
     private var lastSafetyPress: [SafetyPressKey: Date] = [:]
 
-    func start() {
-        guard eventTap == nil else { return }
-        let mask = CGEventMask(1 << CGEventType.keyDown.rawValue)
-        guard let tap = CGEvent.tapCreate(tap: .cgSessionEventTap,
-                                          place: .headInsertEventTap,
-                                          options: .defaultTap,
-                                          eventsOfInterest: mask,
-                                          callback: Self.callback,
-                                          userInfo: Unmanaged.passUnretained(self).toOpaque()) else {
-            return
-        }
-        eventTap = tap
-        runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
-        if let runLoopSource {
-            CFRunLoopAddSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
-        }
-        CGEvent.tapEnable(tap: tap, enable: true)
+    private lazy var tap = EventTapService(
+        mask: CGEventMask(1 << CGEventType.keyDown.rawValue)
+    ) { [weak self] _, event in
+        self?.handle(event: event) ?? false
     }
+
+    func start() { tap.start() }
 
     func stop() {
-        if let eventTap {
-            CFMachPortInvalidate(eventTap)
-        }
-        if let runLoopSource {
-            CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
-        }
-        eventTap = nil
-        runLoopSource = nil
+        tap.stop()
         lastSafetyPress.removeAll()
-    }
-
-    private static let callback: CGEventTapCallBack = { _, type, event, refcon in
-        guard let refcon else { return Unmanaged.passUnretained(event) }
-        let service = Unmanaged<KeyboardPowerToolsService>.fromOpaque(refcon).takeUnretainedValue()
-
-        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            if let tap = service.eventTap {
-                CGEvent.tapEnable(tap: tap, enable: true)
-            }
-            return Unmanaged.passUnretained(event)
-        }
-
-        return service.handle(event: event) ? nil : Unmanaged.passUnretained(event)
     }
 
     private func handle(event: CGEvent) -> Bool {
@@ -694,12 +640,10 @@ final class WindowActionService {
     }
 
     static func unminimizeWindows(of app: NSRunningApplication, firstOnly: Bool) {
-        var restored = 0
         for window in AXTools.windows(of: app) where AXTools.isMinimized(window) {
             AXTools.setMinimized(false, for: window)
             AXTools.perform(window, kAXRaiseAction)
-            restored += 1
-            if firstOnly && restored > 0 { break }
+            if firstOnly { break }
         }
     }
 
@@ -748,8 +692,7 @@ final class FinderPowerToolsService {
             return .failure("Could not find the current Finder folder.")
         }
         let ext = markdown ? "md" : "txt"
-        let base = markdown ? "Untitled" : "Untitled"
-        let url = Self.uniqueFileURL(in: directory, base: base, ext: ext)
+        let url = Self.uniqueFileURL(in: directory, base: "Untitled", ext: ext)
         let contents = markdown ? "# Untitled\n" : ""
         do {
             try contents.write(to: url, atomically: true, encoding: .utf8)
@@ -842,7 +785,7 @@ final class FinderPowerToolsService {
             let output = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
             return output == "No Finder selection." ? .warning(output) : .success("Opened Finder selection.")
         }
-        return .failure("Could not open Finder selection: \(Self.shortError(result.output))")
+        return .failure("Could not open Finder selection: \(shortErrorText(result.output))")
     }
 
     private static func selectedFileURLs() -> [URL] {
@@ -926,11 +869,6 @@ final class FinderPowerToolsService {
         }
         return candidate
     }
-
-    private static func shortError(_ output: String) -> String {
-        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? "unknown error" : trimmed
-    }
 }
 
 final class SystemPowerToolsService {
@@ -941,7 +879,7 @@ final class SystemPowerToolsService {
 
     func sleepDisplays() -> PowerToolResult {
         let result = Shell.run("/usr/bin/pmset", ["displaysleepnow"])
-        return result.status == 0 ? .success("Put displays to sleep.") : .failure("Could not sleep displays: \(Self.shortError(result.output))")
+        return result.status == 0 ? .success("Put displays to sleep.") : .failure("Could not sleep displays: \(shortErrorText(result.output))")
     }
 
     func ejectAllDisks() -> PowerToolResult {
@@ -1009,11 +947,12 @@ final class SystemPowerToolsService {
                                                        files: [url.lastPathComponent],
                                                        tag: &tag)
     }
+}
 
-    private static func shortError(_ output: String) -> String {
-        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? "unknown error" : trimmed
-    }
+/// Trimmed command output for user-facing failure messages, never empty.
+private func shortErrorText(_ output: String) -> String {
+    let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? "unknown error" : trimmed
 }
 
 private enum KeyboardPoster {

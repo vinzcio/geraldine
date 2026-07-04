@@ -28,7 +28,7 @@ struct DashboardView: View {
                     StatTile(icon: "cpu", title: "CPU",
                              value: Fmt.percent(monitor.cpuUsage),
                              valueAnimationValue: monitor.cpuUsage * 100,
-                             caption: "in use",
+                             caption: "In Use",
                              fraction: monitor.cpuUsage,
                              tint: Theme.status(for: monitor.cpuUsage))
 
@@ -43,7 +43,7 @@ struct DashboardView: View {
                     StatTile(icon: "internaldrive", title: "Storage",
                              value: Fmt.percent(monitor.diskFraction),
                              valueAnimationValue: monitor.diskFraction * 100,
-                             caption: "\(Fmt.size(max(0, monitor.diskTotal - monitor.diskUsed))) free",
+                             caption: "\(Fmt.size(max(0, monitor.diskTotal - monitor.diskUsed))) Free",
                              captionAnimationValue: max(0, monitor.diskTotal - monitor.diskUsed),
                              fraction: monitor.diskFraction,
                              tint: Theme.status(for: monitor.diskFraction))
@@ -64,7 +64,9 @@ struct DashboardView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(greeting).font(.rounded(28, .bold))
+            Text(greeting)
+                .font(.rounded(28, .bold))
+                .foregroundStyle(Theme.brandGradient)
             Text("Here's how your \(state.hardware.displayName) is doing right now.")
                 .font(.title3).foregroundStyle(.secondary)
         }
@@ -76,14 +78,14 @@ struct DashboardView: View {
                      title: "Battery",
                      value: Fmt.percent(level),
                      valueAnimationValue: level * 100,
-                     caption: monitor.batteryCharging ? "charging"
-                        : (monitor.batteryHealth.map { "health \(Fmt.percent($0))" } ?? "on battery"),
+                     caption: monitor.batteryCharging ? "Charging"
+                        : (monitor.batteryHealth.map { "Health \(Fmt.percent($0))" } ?? "On Battery"),
                      captionAnimationValue: monitor.batteryHealth.map { $0 * 100 },
                      fraction: level,
                      tint: level < 0.2 ? Theme.bad : Theme.good)
         } else {
             StatTile(icon: "powerplug", title: "Power",
-                     value: "AC", caption: "plugged in",
+                     value: "AC", caption: "Plugged In",
                      fraction: 1, tint: Theme.good)
         }
     }
@@ -118,12 +120,12 @@ struct DashboardView: View {
 
     private var quickActions: some View {
         VStack(alignment: .leading, spacing: 12) {
-            SectionHeader("Quick actions")
+            SectionHeader("Quick Actions")
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 210), spacing: 12)], spacing: 12) {
                 freeRAMChip
                 actionChip(.cleanup, "Run Cleanup")
                 actionChip(.spaceLens, "Open Space Lens")
-                actionChip(.uninstaller, "Uninstall an app")
+                actionChip(.uninstaller, "Uninstall An App")
             }
         }
     }
@@ -139,6 +141,7 @@ struct DashboardView: View {
             .card(padding: 14)
         }
         .buttonStyle(.plain)
+        .pointingHandCursor()
     }
 
     private func actionChip(_ module: Module, _ title: String) -> some View {
@@ -152,5 +155,6 @@ struct DashboardView: View {
             .card(padding: 14)
         }
         .buttonStyle(.plain)
+        .pointingHandCursor()
     }
 }

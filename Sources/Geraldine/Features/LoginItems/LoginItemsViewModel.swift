@@ -9,9 +9,9 @@ struct LaunchItem: Identifiable, Hashable {
     var enabled: Bool
 
     enum Scope: String, CaseIterable {
-        case user = "Starts when you log in"
-        case global = "Starts for all users"
-        case daemon = "System services"
+        case user = "Starts When You Log In"
+        case global = "Starts For All Users"
+        case daemon = "System Services"
     }
     var editable: Bool { scope == .user }
 }
@@ -20,6 +20,8 @@ struct LaunchItem: Identifiable, Hashable {
 final class LoginItemsViewModel: ObservableObject {
     @Published var items: [LaunchItem] = []
     @Published var loading = false
+    @Published var diagnostics: ScanDiagnostics = .empty
+    @Published var lastError: String?
 
     private var disabledDir: URL {
         FileManager.default.homeDirectoryForCurrentUser
@@ -35,10 +37,13 @@ final class LoginItemsViewModel: ObservableObject {
 
     func load() {
         loading = true
+        diagnostics = .empty
         try? FileManager.default.createDirectory(at: disabledDir, withIntermediateDirectories: true)
         let userDir = userAgentsDir, disDir = disabledDir
         Task {
-            self.items = await Self.scan(userDir: userDir, disabledDir: disDir)
+            let report = await Task.detached(priority: .userInitiated) { Self.scan(userDir: userDir, disabledDir: disDir) }.value
+            self.items = report.items
+            self.diagnostics = report.diagnostics
             self.loading = false
         }
     }
@@ -53,23 +58,34 @@ final class LoginItemsViewModel: ObservableObject {
         do {
             if fm.fileExists(atPath: dest.path) { try fm.removeItem(at: dest) }
             try fm.moveItem(at: item.plistURL, to: dest)
+            lastError = nil
             load()
-        } catch { /* keep state on failure */ }
+        } catch {
+            lastError = "Could not \(item.enabled ? "disable" : "enable") \(item.label): \((error as NSError).localizedDescription)"
+        }
     }
 
     func remove(_ item: LaunchItem) {
         guard item.editable else { return }
-        TrashService.clean([ScanItem(url: item.plistURL, size: 0)])
+        let result = TrashService.clean([ScanItem(url: item.plistURL, size: 0)])
+        if let failure = result.failures.first {
+            lastError = "Could not remove \(item.label): \(failure.message)"
+        } else {
+            lastError = nil
+        }
         load()
     }
 
-    private static func scan(userDir: URL, disabledDir: URL) async -> [LaunchItem] {
-        await Task.detached(priority: .userInitiated) { () -> [LaunchItem] in
-            var out: [LaunchItem] = []
-            func read(_ dir: URL, scope: LaunchItem.Scope, enabled: Bool) {
-                guard let files = try? FileManager.default.contentsOfDirectory(
-                    at: dir, includingPropertiesForKeys: nil) else { return }
+    private nonisolated static func scan(userDir: URL, disabledDir: URL) -> LoginItemsScanResult {
+        var out: [LaunchItem] = []
+        var diagnostics = ScanDiagnostics()
+        let fm = FileManager.default
+        func read(_ dir: URL, scope: LaunchItem.Scope, enabled: Bool) {
+            guard fm.fileExists(atPath: dir.path) else { return }
+            do {
+                let files = try fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
                 for url in files where url.pathExtension == "plist" {
+                    diagnostics.noteScanned()
                     let dict = NSDictionary(contentsOf: url)
                     let label = (dict?["Label"] as? String) ?? url.deletingPathExtension().lastPathComponent
                     let program = (dict?["Program"] as? String)
@@ -78,12 +94,20 @@ final class LoginItemsViewModel: ObservableObject {
                     out.append(LaunchItem(label: label, program: program, plistURL: url,
                                           scope: scope, enabled: enabled))
                 }
+            } catch {
+                diagnostics.noteSkipped(dir, error)
             }
-            read(userDir, scope: .user, enabled: true)
-            read(disabledDir, scope: .user, enabled: false)
-            read(URL(fileURLWithPath: "/Library/LaunchAgents"), scope: .global, enabled: true)
-            read(URL(fileURLWithPath: "/Library/LaunchDaemons"), scope: .daemon, enabled: true)
-            return out
-        }.value
+        }
+        read(userDir, scope: .user, enabled: true)
+        read(disabledDir, scope: .user, enabled: false)
+        read(URL(fileURLWithPath: "/Library/LaunchAgents"), scope: .global, enabled: true)
+        read(URL(fileURLWithPath: "/Library/LaunchDaemons"), scope: .daemon, enabled: true)
+        diagnostics.finish()
+        return LoginItemsScanResult(items: out, diagnostics: diagnostics)
     }
+}
+
+private struct LoginItemsScanResult {
+    var items: [LaunchItem]
+    var diagnostics: ScanDiagnostics
 }

@@ -5,6 +5,7 @@ import SwiftUI
 struct ScanResultsView: View {
     let groups: [ScanGroup]
     @Binding var selection: Set<UUID>
+    var diagnostics: ScanDiagnostics = .empty
     var actionTitle: String = "Move to Trash"
     var actionIcon: String = "trash"
     var isBusy: Bool = false
@@ -15,6 +16,12 @@ struct ScanResultsView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            if diagnostics.hasVisibleIssues {
+                ScanDiagnosticsBanner(diagnostics: diagnostics)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 8)
+            }
+
             List {
                 ForEach(groups) { group in
                     Section {
@@ -38,7 +45,7 @@ struct ScanResultsView: View {
             Text(group.title).font(.rounded(13, .semibold))
             Text(Fmt.size(group.totalSize)).font(.caption).foregroundStyle(.secondary)
             Spacer()
-            Button(allSelected(group) ? "Deselect" : "Select all") {
+            Button(allSelected(group) ? "Deselect" : "Select All") {
                 toggleGroup(group)
             }
             .buttonStyle(.plain).font(.caption).foregroundStyle(Theme.accent)
@@ -69,8 +76,8 @@ struct ScanResultsView: View {
 
     private var footer: some View {
         HStack {
-            Text(selectedCount == 0 ? "Nothing selected"
-                 : "\(selectedCount) items · \(Fmt.size(selectedSize)) selected")
+            Text(selectedCount == 0 ? "Nothing Selected"
+                 : "\(selectedCount) Items · \(Fmt.size(selectedSize)) Selected")
                 .font(.callout).foregroundStyle(.secondary)
             Spacer()
             Button(action: onClean) {
@@ -84,8 +91,11 @@ struct ScanResultsView: View {
                 .background(selectedCount == 0 ? AnyShapeStyle(Color.gray.opacity(0.4))
                                                : AnyShapeStyle(Theme.brandGradient),
                             in: Capsule())
+                .shadow(color: selectedCount == 0 ? .clear : Theme.accent.opacity(0.30),
+                        radius: 8, y: 3)
             }
             .buttonStyle(.plain)
+            .pointingHandCursor()
             .disabled(selectedCount == 0 || isBusy)
         }
         .padding(16)
@@ -103,5 +113,52 @@ struct ScanResultsView: View {
         let ids = group.items.map(\.id)
         if allSelected(group) { ids.forEach { selection.remove($0) } }
         else { ids.forEach { selection.insert($0) } }
+    }
+}
+
+struct ScanDiagnosticsBanner: View {
+    var diagnostics: ScanDiagnostics
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: diagnostics.cancelled ? "xmark.circle.fill" : "exclamationmark.triangle.fill")
+                    .foregroundStyle(diagnostics.cancelled ? Color.secondary : Theme.warn)
+                Text(title).font(.callout.weight(.semibold))
+                Spacer()
+                if let finishedAt = diagnostics.finishedAt {
+                    Text(finishedAt.formatted(date: .omitted, time: .shortened))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Text(message).font(.caption).foregroundStyle(.secondary)
+            if let first = diagnostics.skipped.first {
+                Text("\(first.path): \(first.message)")
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .truncationMode(.middle)
+            }
+        }
+        .padding(10)
+        .background((diagnostics.cancelled ? Color.secondary : Theme.warn).opacity(0.10),
+                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder((diagnostics.cancelled ? Color.secondary : Theme.warn).opacity(0.18), lineWidth: 1)
+        )
+    }
+
+    private var title: String {
+        if diagnostics.cancelled { return "Scan Cancelled" }
+        if diagnostics.failure != nil { return "Scan Failed" }
+        return diagnostics.skipped.count == 1 ? "1 Path Skipped" : "\(diagnostics.skipped.count) Paths Skipped"
+    }
+
+    private var message: String {
+        if let failure = diagnostics.failure { return failure }
+        if diagnostics.cancelled { return "Results may be incomplete because the scan was stopped." }
+        return "Geraldine could not read every path. Grant Full Disk Access if important locations are missing."
     }
 }

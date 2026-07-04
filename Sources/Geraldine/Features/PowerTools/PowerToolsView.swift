@@ -55,7 +55,7 @@ struct PowerToolsView: View {
                 .font(.system(size: 24, weight: .semibold))
                 .foregroundStyle(powerTools.accessibilityTrusted ? Theme.good : Theme.warn)
             VStack(alignment: .leading, spacing: 3) {
-                Text(powerTools.accessibilityTrusted ? "Input controls are ready" : "Accessibility is required")
+                Text(powerTools.accessibilityTrusted ? "Input Controls Are Ready" : "Accessibility Is Required")
                     .font(.rounded(15, .semibold))
                 Text("Dock clicks, traffic-light rewrites, keyboard safety, and Finder key handling need Accessibility permission.")
                     .font(.caption)
@@ -76,8 +76,8 @@ struct PowerToolsView: View {
 
             Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 10) {
                 GridRow {
-                    Text("Active app click").foregroundStyle(.secondary)
-                    Picker("Active app click", selection: $powerTools.activeDockClickBehavior) {
+                    Text("Active App Click").foregroundStyle(.secondary)
+                    Picker("Active App Click", selection: $powerTools.activeDockClickBehavior) {
                         ForEach(DockActiveClickBehavior.allCases) { behavior in
                             Text(behavior.label).tag(behavior)
                         }
@@ -86,8 +86,8 @@ struct PowerToolsView: View {
                     .pickerStyle(.menu)
                 }
                 GridRow {
-                    Text("Middle click").foregroundStyle(.secondary)
-                    Picker("Middle click", selection: $powerTools.middleClickBehavior) {
+                    Text("Middle Click").foregroundStyle(.secondary)
+                    Picker("Middle Click", selection: $powerTools.middleClickBehavior) {
                         ForEach(DockMiddleClickBehavior.allCases) { behavior in
                             Text(behavior.label).tag(behavior)
                         }
@@ -193,7 +193,7 @@ struct PowerToolsView: View {
                 ToolButton(title: "Eject Disks", icon: "externaldrive.badge.eject") {
                     powerTools.ejectDisks()
                 }
-                ToolButton(title: "Empty Trash...", icon: "trash", role: .destructive) {
+                ToolButton(title: "Empty Trash…", icon: "trash", role: .destructive) {
                     showEmptyTrashConfirmation = true
                 }
             }

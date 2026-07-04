@@ -35,6 +35,32 @@ for a in "$@"; do
   esac
 done
 
+GIT_COMMIT="unknown"
+GIT_COMMIT_SHORT="unknown"
+GIT_DIRTY="unknown"
+BUILD_DATE="$(/bin/date -u +"%Y-%m-%dT%H:%M:%SZ")"
+if /usr/bin/git -C "$SRC_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  GIT_COMMIT="$(/usr/bin/git -C "$SRC_DIR" rev-parse HEAD)"
+  GIT_COMMIT_SHORT="$(/usr/bin/git -C "$SRC_DIR" rev-parse --short=12 HEAD)"
+  if [ -n "$(/usr/bin/git -C "$SRC_DIR" status --porcelain --untracked-files=normal)" ]; then
+    GIT_DIRTY="true"
+  else
+    GIT_DIRTY="false"
+  fi
+fi
+if [ "$GIT_DIRTY" = "true" ]; then
+  GIT_DIRTY_PLIST="<true/>"
+  GIT_DIRTY_SUFFIX="-dirty"
+elif [ "$GIT_DIRTY" = "false" ]; then
+  GIT_DIRTY_PLIST="<false/>"
+  GIT_DIRTY_SUFFIX=""
+else
+  GIT_DIRTY_PLIST="<false/>"
+  GIT_DIRTY_SUFFIX="-unknown"
+fi
+
+echo "▸ Source revision: $GIT_COMMIT_SHORT$GIT_DIRTY_SUFFIX"
+
 echo "▸ Staging sources → $STAGE"
 mkdir -p "$STAGE"
 rsync -a --delete \
@@ -111,6 +137,11 @@ cat > "$CONTENTS/Info.plist" <<PLIST
     </array>
     <key>CFBundleShortVersionString</key><string>$VERSION</string>
     <key>CFBundleVersion</key><string>$VERSION</string>
+    <key>GeraldineBuildCommit</key><string>$GIT_COMMIT</string>
+    <key>GeraldineBuildCommitShort</key><string>$GIT_COMMIT_SHORT</string>
+    <key>GeraldineBuildDirty</key>$GIT_DIRTY_PLIST
+    <key>GeraldineBuildDate</key><string>$BUILD_DATE</string>
+    <key>GeraldineBuildConfiguration</key><string>$CONFIG</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSPrincipalClass</key><string>NSApplication</string>
@@ -146,6 +177,44 @@ sign_and_verify() {
   /usr/bin/xattr -cr "$app" 2>/dev/null || true
   codesign "${sign_args[@]}" --identifier "$BUNDLE_ID" --sign "$CODESIGN_ID" "$app"
   codesign --verify --verbose=1 "$app" || { echo "✗ signature verification failed"; exit 1; }
+}
+
+verify_bundle_provenance() {
+  local app="$1"
+  local plist="$app/Contents/Info.plist"
+  local actual_commit actual_dirty actual_config actual_date
+
+  actual_commit="$(/usr/libexec/PlistBuddy -c 'Print :GeraldineBuildCommit' "$plist" 2>/dev/null || true)"
+  actual_dirty="$(/usr/libexec/PlistBuddy -c 'Print :GeraldineBuildDirty' "$plist" 2>/dev/null || true)"
+  actual_config="$(/usr/libexec/PlistBuddy -c 'Print :GeraldineBuildConfiguration' "$plist" 2>/dev/null || true)"
+  actual_date="$(/usr/libexec/PlistBuddy -c 'Print :GeraldineBuildDate' "$plist" 2>/dev/null || true)"
+
+  if [ "$GIT_COMMIT" != "unknown" ] && [ "$actual_commit" != "$GIT_COMMIT" ]; then
+    echo "✗ $app does not match the source revision that was just built." >&2
+    echo "  expected: $GIT_COMMIT" >&2
+    echo "  actual:   ${actual_commit:-missing}" >&2
+    exit 1
+  fi
+  if [ "$GIT_DIRTY" != "unknown" ] && [ "$actual_dirty" != "$GIT_DIRTY" ]; then
+    echo "✗ $app has mismatched dirty-state provenance." >&2
+    echo "  expected: $GIT_DIRTY" >&2
+    echo "  actual:   ${actual_dirty:-missing}" >&2
+    exit 1
+  fi
+  if [ "$actual_config" != "$CONFIG" ]; then
+    echo "✗ $app has mismatched build configuration provenance." >&2
+    echo "  expected: $CONFIG" >&2
+    echo "  actual:   ${actual_config:-missing}" >&2
+    exit 1
+  fi
+  if [ "$actual_date" != "$BUILD_DATE" ]; then
+    echo "✗ $app has mismatched build timestamp provenance." >&2
+    echo "  expected: $BUILD_DATE" >&2
+    echo "  actual:   ${actual_date:-missing}" >&2
+    exit 1
+  fi
+
+  echo "✓ Build provenance: $GIT_COMMIT_SHORT$GIT_DIRTY_SUFFIX ($CONFIG, $BUILD_DATE)"
 }
 
 notarize_app_bundle() {
@@ -239,6 +308,7 @@ launch_app_bundle() {
 }
 
 sign_and_verify "$APP"
+verify_bundle_provenance "$APP"
 echo "✓ Built & signed: $APP"
 
 if [ "$DO_INSTALL" -eq 1 ]; then
@@ -252,6 +322,7 @@ if [ "$DO_INSTALL" -eq 1 ]; then
   rsync -a --delete "$APP/" "/Applications/$APP_NAME.app/"
   APP="/Applications/$APP_NAME.app"
   sign_and_verify "$APP"
+  verify_bundle_provenance "$APP"
   if [ "$DO_NOTARIZE" -eq 1 ]; then
     notarize_app_bundle "$APP"
   fi

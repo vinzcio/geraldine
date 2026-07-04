@@ -50,7 +50,7 @@ struct CalendarWidget: View {
     private var header: some View {
         HStack(spacing: 5) {
             Image(systemName: "calendar").font(.caption).foregroundStyle(Theme.accent)
-            Text("Calendar").font(.caption.weight(.medium)).foregroundStyle(.secondary)
+            Text("Calendar & Clocks").font(.caption.weight(.medium)).foregroundStyle(.secondary)
             Spacer(minLength: 4)
             WidgetControls(kind: .calendar, size: .large)
         }

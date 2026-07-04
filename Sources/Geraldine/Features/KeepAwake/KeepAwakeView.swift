@@ -52,7 +52,7 @@ struct KeepAwakeView: View {
             .help(keepAwake.isActive ? "Stop keeping your Mac awake" : "Keep your Mac awake")
 
             VStack(alignment: .leading, spacing: 6) {
-                Text(keepAwake.isActive ? "Awake" : "Idle sleep allowed")
+                Text(keepAwake.isActive ? "Awake" : "Idle Sleep Allowed")
                     .font(.rounded(34, .bold))
                     .foregroundStyle(keepAwake.isActive ? tint : .primary)
                     .lineLimit(1)
@@ -129,13 +129,13 @@ struct KeepAwakeView: View {
             SectionHeader("Power")
 
             Toggle(isOn: $keepAwake.allowDisplaySleep) {
-                Label("Allow display sleep", systemImage: "display")
+                Label("Allow Display Sleep", systemImage: "display")
             }
             Toggle(isOn: $keepAwake.deactivateOnBattery) {
-                Label("Deactivate on battery", systemImage: "battery.25")
+                Label("Deactivate On Battery", systemImage: "battery.25")
             }
             Toggle(isOn: $keepAwake.pauseWhenScreenLocked) {
-                Label("Pause while screen is locked", systemImage: "lock.display")
+                Label("Pause While Screen Is Locked", systemImage: "lock.display")
             }
         }
         .toggleStyle(.switch)

@@ -14,6 +14,7 @@ struct RootView: View {
         .background(WindowAccessor { window in state.bind(window: window) })
         .sheet(isPresented: Binding(get: { !didOnboard }, set: { if !$0 { didOnboard = true } })) {
             WelcomeView { didOnboard = true }
+                .environmentObject(state.layout)
         }
     }
 }
@@ -55,7 +56,7 @@ private struct BrandHeader: View {
             }
             VStack(alignment: .leading, spacing: 0) {
                 Text("Geraldine").font(.rounded(16, .bold))
-                Text("Mac care").font(.caption2).foregroundStyle(.secondary)
+                Text("Mac Care").font(.caption2).foregroundStyle(.secondary)
             }
             Spacer()
         }
@@ -91,7 +92,7 @@ private struct SidebarFooter: View {
             Image(systemName: "internaldrive")
                 .foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 2) {
-                AnimatedNumberText("\(Fmt.size(max(0, monitor.diskTotal - monitor.diskUsed))) free",
+                AnimatedNumberText("\(Fmt.size(max(0, monitor.diskTotal - monitor.diskUsed))) Free",
                                    value: max(0, monitor.diskTotal - monitor.diskUsed))
                     .font(.caption.weight(.medium))
                 StatBar(fraction: monitor.diskFraction,
@@ -136,13 +137,17 @@ struct DetailHost: View {
     }
 }
 
-/// Subtle gradient wash behind every detail screen.
+/// Subtle two-tone brand wash behind every detail screen: violet falling in
+/// from the top leading edge, blue from the trailing edge — quiet, but
+/// unmistakably Geraldine instead of a flat window.
 struct WindowBackground: View {
     var body: some View {
-        LinearGradient(
-            colors: [Theme.accent.opacity(0.06), Color.clear],
-            startPoint: .top, endPoint: .center
-        )
+        ZStack {
+            LinearGradient(colors: [Theme.accent.opacity(0.07), .clear],
+                           startPoint: .topLeading, endPoint: .center)
+            LinearGradient(colors: [Theme.accent2.opacity(0.05), .clear],
+                           startPoint: .topTrailing, endPoint: .center)
+        }
         .ignoresSafeArea()
     }
 }

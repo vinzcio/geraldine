@@ -27,6 +27,13 @@ struct ScanGroup: Identifiable {
     var totalSize: UInt64 { items.reduce(0) { $0 + $1.size } }
 }
 
+/// What a background scan hands back to its view model: the grouped results
+/// plus the diagnostics gathered along the way.
+struct ScanReport {
+    var groups: [ScanGroup]
+    var diagnostics: ScanDiagnostics
+}
+
 extension Array where Element == ScanGroup {
     func items(in selection: Set<UUID>) -> [ScanItem] {
         flatMap { $0.items }.filter { selection.contains($0.id) }

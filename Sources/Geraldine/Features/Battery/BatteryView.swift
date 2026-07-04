@@ -61,16 +61,18 @@ struct BatteryView: View {
         .card()
     }
 
+    // Mirrors the menu-bar widget's battery language ("Plugged In · Optimized
+    // Charging", never a worrying "not charging") so the two never disagree.
     private var statusText: String {
         let charging = monitor.batteryCharging
-        if vm.detail.fullyCharged || (charging && level >= 0.995) { return "Fully charged" }
+        if vm.detail.fullyCharged || (charging && level >= 0.995) { return "Fully Charged" }
         if charging {
-            if let m = vm.detail.minutesToFull { return "Charging · \(BatteryInfo.durationString(m)) until full" }
+            if let m = vm.detail.minutesToFull { return "Charging · \(BatteryInfo.durationString(m)) To Full" }
             return "Charging"
         }
-        if vm.detail.externalConnected { return "Plugged in · Not charging" }
-        if let m = vm.detail.minutesToEmpty { return "On battery · \(BatteryInfo.durationString(m)) remaining" }
-        return "On battery"
+        if vm.detail.externalConnected { return "Plugged In · Optimized Charging" }
+        if let m = vm.detail.minutesToEmpty { return "On Battery · \(BatteryInfo.durationString(m)) Left" }
+        return "On Battery"
     }
 
     private var adapterLabel: String? {
@@ -83,20 +85,15 @@ struct BatteryView: View {
 
     private var powerStatusCard: some View {
         HStack(spacing: 18) {
-            ZStack {
-                Circle().fill(tint.opacity(0.14)).frame(width: 78, height: 78)
-                Image(systemName: "powerplug.fill")
-                    .font(.system(size: 34, weight: .semibold))
-                    .foregroundStyle(tint)
-            }
+            IconBadge(icon: "powerplug.fill", tint: tint, size: 78)
             VStack(alignment: .leading, spacing: 5) {
                 Text("Plugged In")
                     .font(.rounded(32, .bold))
-                Text(adapterLabel ?? "Running on AC power")
+                Text(adapterLabel ?? "Running On AC Power")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                 if monitor.loadAverage > 0 {
-                    AnimatedNumberText("System load \(String(format: "%.2f", monitor.loadAverage))",
+                    AnimatedNumberText("System Load \(String(format: "%.2f", monitor.loadAverage))",
                                        value: monitor.loadAverage)
                         .font(.caption.weight(.medium))
                         .padding(.horizontal, 10).padding(.vertical, 4)
@@ -123,7 +120,7 @@ struct BatteryView: View {
             }
 
             if !vm.loadedHistory {
-                placeholder { ProgressView() }
+                placeholder { BrandSpinner(tint: tint, icon: "battery.100", size: 48) }
             } else if vm.history.isEmpty {
                 placeholder {
                     Text("No battery history available yet.")
@@ -135,8 +132,8 @@ struct BatteryView: View {
                                    currentOnAC: monitor.batteryCharging || vm.detail.externalConnected)
                     .frame(height: 168)
                 HStack(spacing: 16) {
-                    legendSwatch(tint.opacity(0.18), "Charging / plugged in")
-                    legendSwatch(tint, "Battery level")
+                    legendSwatch(tint.opacity(0.18), "Charging / Plugged In")
+                    legendSwatch(tint, "Battery Level")
                     Spacer()
                 }
                 .font(.caption2).foregroundStyle(.secondary)
@@ -204,14 +201,14 @@ struct BatteryView: View {
                     VStack(spacing: 1) {
                         Text(d.maxCapacityPercent.map { "\($0)%" } ?? "—")
                             .font(.rounded(22, .bold))
-                        Text("capacity").font(.caption2).foregroundStyle(.secondary)
+                        Text("Capacity").font(.caption2).foregroundStyle(.secondary)
                     }
                 }
                 .frame(width: 104, height: 104)
 
                 VStack(alignment: .leading, spacing: 9) {
                     infoRow("Condition", d.condition ?? "Unknown", color: conditionColor(d.condition))
-                    infoRow("Cycle count", d.cycleCount.map(String.init) ?? "—")
+                    infoRow("Cycle Count", d.cycleCount.map(String.init) ?? "—")
                     if let t = d.temperatureC {
                         infoRow("Temperature", "\(String(format: "%.1f", t))°C", color: Thermal.color(t))
                     }
@@ -223,10 +220,10 @@ struct BatteryView: View {
 
             LazyVGrid(columns: [GridItem(.flexible(), alignment: .leading),
                                 GridItem(.flexible(), alignment: .leading)], spacing: 12) {
-                if let cur = d.currentMaxCapacity { cell("Current capacity", "\(cur) mAh") }
-                if let des = d.designCapacity { cell("Design capacity", "\(des) mAh") }
+                if let cur = d.currentMaxCapacity { cell("Current Capacity", "\(cur) mAh") }
+                if let des = d.designCapacity { cell("Design Capacity", "\(des) mAh") }
                 if let v = d.voltageV { cell("Voltage", "\(String(format: "%.2f", v)) V") }
-                if let adapter = adapterLabel, d.adapterConnected { cell("Power adapter", adapter) }
+                if let adapter = adapterLabel, d.adapterConnected { cell("Power Adapter", adapter) }
             }
         }
         .card()
@@ -410,17 +407,22 @@ struct ChargeHistoryChart: View {
         } else {
             var t = cal.startOfDay(for: start)
             while t < start { t = cal.date(byAdding: .day, value: 1, to: t) ?? end.addingTimeInterval(1) }
-            let df = DateFormatter()
-            df.locale = Locale(identifier: "en_US_POSIX")
-            df.dateFormat = "MMM d"
             while t <= end {
-                ticks.append((t, df.string(from: t)))
+                ticks.append((t, Self.dayTickFormatter.string(from: t)))
                 guard let next = cal.date(byAdding: .day, value: 2, to: t) else { break }
                 t = next
             }
         }
         return ticks
     }
+
+    /// The chart redraws on every monitor tick; don't rebuild a DateFormatter each time.
+    private static let dayTickFormatter: DateFormatter = {
+        let df = DateFormatter()
+        df.locale = Locale(identifier: "en_US_POSIX")
+        df.dateFormat = "MMM d"
+        return df
+    }()
 
     private func hourLabel(_ date: Date, _ cal: Calendar) -> String {
         let h = cal.component(.hour, from: date)

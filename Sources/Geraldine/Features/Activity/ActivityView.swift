@@ -45,7 +45,7 @@ struct ActivityView: View {
                           valueAnimationValue: monitor.cpuUsage * 100,
                           history: monitor.cpuHistory,
                           tint: Theme.status(for: monitor.cpuUsage),
-                          footnote: String(format: "Load average %.2f", monitor.loadAverage),
+                          footnote: String(format: "Load Average %.2f", monitor.loadAverage),
                           footnoteAnimationValue: monitor.loadAverage)
 
                 graphCard("Memory", systemImage: "memorychip",
@@ -114,11 +114,11 @@ struct ActivityView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 HStack(spacing: 10) {
-                    tempChip("Sensor peak", th.peak)
+                    tempChip("Sensor Peak", th.peak)
                     if let b = th.battery { tempChip("Battery", b) }
                     if let s = th.storage { tempChip("Storage", s) }
                 }
-                DisclosureGroup("All sensors") {
+                DisclosureGroup("All Sensors") {
                     VStack(spacing: 0) {
                         ForEach(th.sensors) { s in
                             HStack {

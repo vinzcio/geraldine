@@ -14,15 +14,15 @@ struct DevicesCard: View {
         VStack(alignment: .leading, spacing: 8) {
             header
             if devices.devices.isEmpty {
-                Text(devices.scanning ? "Looking for devices…" : "No external devices")
+                Text(devices.scanning ? "Looking For Devices…" : "No External Devices")
                     .font(.caption2).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else {
                 ForEach(visible) { device in
-                    DeviceRow(device: device) { devices.eject(device) }
+                    DeviceRow(device: device, error: devices.ejectError(for: device)) { devices.eject(device) }
                 }
                 if devices.devices.count > collapsedLimit {
-                    Button(showAll ? "Show less" : "Show \(devices.devices.count - collapsedLimit) more") {
+                    Button(showAll ? "Show Less" : "Show \(devices.devices.count - collapsedLimit) More") {
                         withAnimation(.snappy(duration: 0.2)) { showAll.toggle() }
                     }
                     .buttonStyle(.plain)
@@ -55,28 +55,40 @@ struct DevicesCard: View {
 
 private struct DeviceRow: View {
     let device: ConnectedDevice
+    let error: String?
     let eject: () -> Void
 
     var body: some View {
-        HStack(spacing: 9) {
-            Image(systemName: device.kind.icon)
-                .font(.system(size: 13))
-                .foregroundStyle(device.lowBattery ? Theme.bad : Theme.accent2)
-                .frame(width: 18)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(device.name).font(.caption.weight(.semibold)).lineLimit(1)
-                Text(device.detail).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 9) {
+                Image(systemName: device.kind.icon)
+                    .font(.system(size: 13))
+                    .foregroundStyle(device.lowBattery ? Theme.bad : Theme.accent2)
+                    .frame(width: 18)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(device.name).font(.caption.weight(.semibold)).lineLimit(1)
+                    Text(device.detail).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
+                }
+                Spacer(minLength: 4)
+                if let battery = device.battery {
+                    AnimatedNumberText("\(Int((battery * 100).rounded()))%", value: battery * 100)
+                        .font(.caption2.weight(.semibold).monospacedDigit())
+                        .foregroundStyle(device.lowBattery ? Theme.bad : .secondary)
+                }
+                if device.ejectable {
+                    Button(action: eject) { Image(systemName: "eject.fill").font(.caption) }
+                        .buttonStyle(.plain).foregroundStyle(.secondary)
+                        .help("Eject \(device.name)")
+                }
             }
-            Spacer(minLength: 4)
-            if let battery = device.battery {
-                AnimatedNumberText("\(Int((battery * 100).rounded()))%", value: battery * 100)
-                    .font(.caption2.weight(.semibold).monospacedDigit())
-                    .foregroundStyle(device.lowBattery ? Theme.bad : .secondary)
-            }
-            if device.ejectable {
-                Button(action: eject) { Image(systemName: "eject.fill").font(.caption) }
-                    .buttonStyle(.plain).foregroundStyle(.secondary)
-                    .help("Eject \(device.name)")
+            if let error {
+                Label(error, systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(Theme.warn)
+                    .lineLimit(2)
+                    .padding(.leading, 27)
+                    .accessibilityLabel("Eject error")
+                    .accessibilityValue(error)
             }
         }
     }

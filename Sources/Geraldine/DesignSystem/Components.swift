@@ -334,6 +334,116 @@ struct StatBar: View {
     }
 }
 
+// MARK: - Icon badge
+
+/// Soft, gradient-lit circular icon badge — the shared hero mark for empty,
+/// idle, error, and done states, so they read as Geraldine rather than a stock
+/// grey circle. Purely decorative.
+struct IconBadge: View {
+    var icon: String
+    var tint: Color
+    var size: CGFloat = 96
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(RadialGradient(colors: [tint.opacity(0.22), tint.opacity(0.05)],
+                                     center: UnitPoint(x: 0.38, y: 0.30),
+                                     startRadius: size * 0.06, endRadius: size * 0.78))
+            Circle()
+                .strokeBorder(tint.opacity(0.16), lineWidth: 1)
+            Image(systemName: icon)
+                .font(.system(size: size * 0.40, weight: .medium))
+                .foregroundStyle(tint.gradient)
+        }
+        .frame(width: size, height: size)
+    }
+}
+
+// MARK: - Brand spinner
+
+/// Geraldine's activity indicator: a rotating brand-tinted arc around a gently
+/// breathing icon. Replaces the stock spinner on scanning states; only alive
+/// while a scan screen is on-screen.
+struct BrandSpinner: View {
+    var tint: Color
+    var icon: String = "sparkles"
+    var size: CGFloat = 72
+
+    @State private var spinning = false
+    @State private var breathing = false
+
+    private var lineWidth: CGFloat { max(4, size * 0.07) }
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .stroke(tint.opacity(0.14), lineWidth: lineWidth)
+            Circle()
+                .trim(from: 0, to: 0.34)
+                .stroke(AngularGradient(colors: [tint.opacity(0), tint],
+                                        center: .center),
+                        style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+                .rotationEffect(.degrees(spinning ? 360 : 0))
+                .animation(.linear(duration: 1.1).repeatForever(autoreverses: false), value: spinning)
+            Image(systemName: icon)
+                .font(.system(size: size * 0.30, weight: .semibold))
+                .foregroundStyle(tint.gradient)
+                .scaleEffect(breathing ? 1.05 : 0.93)
+                .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: breathing)
+        }
+        .frame(width: size, height: size)
+        .onAppear { spinning = true; breathing = true }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Working")
+    }
+}
+
+// MARK: - Buttons
+
+/// The brand gradient capsule: white label, violet→blue fill, soft brand
+/// shadow, and a slight press. One look for every primary call to action.
+struct BrandProminentButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.rounded(14, .semibold))
+            .padding(.horizontal, 18).padding(.vertical, 10)
+            .foregroundStyle(.white)
+            .background(Theme.brandGradient, in: Capsule())
+            .shadow(color: Theme.accent.opacity(configuration.isPressed ? 0.16 : 0.32),
+                    radius: configuration.isPressed ? 4 : 9,
+                    y: configuration.isPressed ? 1 : 3)
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+            .pointingHandCursor()
+    }
+}
+
+/// Quiet tinted capsule for secondary actions (Scan Again, Cancel Scan, …) so
+/// they match the brand language instead of the stock bordered push button.
+struct SoftCapsuleButtonStyle: ButtonStyle {
+    var tint: Color = Theme.accent
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.rounded(13, .semibold))
+            .padding(.horizontal, 14).padding(.vertical, 7)
+            .foregroundStyle(tint)
+            .background(tint.opacity(configuration.isPressed ? 0.24 : 0.12), in: Capsule())
+            .overlay(Capsule().strokeBorder(tint.opacity(0.22), lineWidth: 1))
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+            .pointingHandCursor()
+    }
+}
+
+extension ButtonStyle where Self == SoftCapsuleButtonStyle {
+    /// `.buttonStyle(.soft(tint))` — the quiet brand capsule in a module's tint.
+    static func soft(_ tint: Color = Theme.accent) -> SoftCapsuleButtonStyle {
+        SoftCapsuleButtonStyle(tint: tint)
+    }
+}
+
 // MARK: - Primary button
 
 struct PrimaryButton: View {
@@ -345,13 +455,10 @@ struct PrimaryButton: View {
         Button(action: action) {
             HStack(spacing: 7) {
                 if let icon { Image(systemName: icon) }
-                Text(title).font(.rounded(14, .semibold))
+                Text(title)
             }
-            .padding(.horizontal, 18).padding(.vertical, 10)
-            .foregroundStyle(.white)
-            .background(Theme.brandGradient, in: Capsule())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(BrandProminentButtonStyle())
     }
 }
 
@@ -381,10 +488,7 @@ struct EmptyState: View {
 
     var body: some View {
         VStack(spacing: 14) {
-            ZStack {
-                Circle().fill(tint.opacity(0.12)).frame(width: 76, height: 76)
-                Image(systemName: icon).font(.system(size: 30, weight: .medium)).foregroundStyle(tint)
-            }
+            IconBadge(icon: icon, tint: tint, size: 76)
             Text(title).font(.rounded(18, .semibold))
             Text(message).font(.callout).foregroundStyle(.secondary)
                 .multilineTextAlignment(.center).frame(maxWidth: 360)

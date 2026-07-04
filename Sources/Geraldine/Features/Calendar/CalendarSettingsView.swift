@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The dedicated Calendar page in the main window. Everything the calendar popover
+/// The dedicated Calendar & Clocks page in the main window. Everything the calendar popover
 /// shows is configured here — what appears, how the date and time read, and which
 /// world clocks are listed.
 struct CalendarSettingsView: View {
@@ -10,8 +10,8 @@ struct CalendarSettingsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Calendar").font(.rounded(28, .bold))
-                    Text("Set up the calendar and world clocks that appear in the menu bar popover.")
+                    Text("Calendar & Clocks").font(.rounded(28, .bold))
+                    Text("Set up the calendar, time display, and world clocks that appear in the menu bar popover.")
                         .font(.title3).foregroundStyle(.secondary)
                 }
 

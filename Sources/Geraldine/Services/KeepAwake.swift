@@ -30,13 +30,13 @@ enum KeepAwakeDuration: String, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
-        case .tenMinutes: return "10 minutes"
-        case .thirtyMinutes: return "30 minutes"
-        case .oneHour: return "1 hour"
-        case .twoHours: return "2 hours"
-        case .fourHours: return "4 hours"
-        case .eightHours: return "8 hours"
-        case .twelveHours: return "12 hours"
+        case .tenMinutes: return "10 Minutes"
+        case .thirtyMinutes: return "30 Minutes"
+        case .oneHour: return "1 Hour"
+        case .twoHours: return "2 Hours"
+        case .fourHours: return "4 Hours"
+        case .eightHours: return "8 Hours"
+        case .twelveHours: return "12 Hours"
         case .indefinitely: return "Indefinitely"
         }
     }
@@ -100,7 +100,7 @@ final class KeepAwakeController: ObservableObject {
         }
     }
 
-    private static let screenLockPauseReason = "Screen locked"
+    private static let screenLockPauseReason = "Screen Locked"
     private let defaults: UserDefaults
     private var idleAssertion: IOPMAssertionID = 0
     private var displayAssertion: IOPMAssertionID = 0
@@ -125,7 +125,7 @@ final class KeepAwakeController: ObservableObject {
     var statusLine: String {
         guard isActive else { return "Off" }
         if isPaused, let pauseReason { return "Paused · \(pauseReason)" }
-        if let remaining { return "On · \(Self.durationString(remaining)) left" }
+        if let remaining { return "On · \(Self.durationString(remaining)) Left" }
         return "On · Indefinitely"
     }
 
@@ -133,7 +133,7 @@ final class KeepAwakeController: ObservableObject {
         if let activeUntil {
             return "Until \(activeUntil.formatted(date: .omitted, time: .shortened))"
         }
-        return "No scheduled end"
+        return "No Scheduled End"
     }
 
     func activateDefault() {
@@ -157,12 +157,18 @@ final class KeepAwakeController: ObservableObject {
     }
 
     func deactivate() {
+        endSession()
+        lastError = nil
+    }
+
+    /// Stops the session: clears the published state, both timers, and the assertions.
+    /// Callers decide what happens to `lastError`.
+    private func endSession() {
         isActive = false
         isPaused = false
         pauseReason = nil
         activeUntil = nil
         remaining = nil
-        lastError = nil
         expirationTimer?.invalidate()
         expirationTimer = nil
         ticker?.invalidate()
@@ -332,16 +338,7 @@ final class KeepAwakeController: ObservableObject {
     }
 
     private func deactivateAfterAssertionFailure(_ message: String) {
-        releaseAssertions()
-        isActive = false
-        isPaused = false
-        pauseReason = nil
-        activeUntil = nil
-        remaining = nil
-        expirationTimer?.invalidate()
-        expirationTimer = nil
-        ticker?.invalidate()
-        ticker = nil
+        endSession()
         lastError = message
     }
 

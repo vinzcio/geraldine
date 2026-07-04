@@ -97,7 +97,7 @@ enum WidgetKind: Hashable, Identifiable {
         switch self {
         case .metric(let metric): return metric.title
         case .keepAwake:          return "Keep Awake"
-        case .calendar:           return "Calendar"
+        case .calendar:           return "Calendar & Clocks"
         }
     }
 
@@ -105,7 +105,7 @@ enum WidgetKind: Hashable, Identifiable {
         switch self {
         case .metric(let metric): return metric.title(hasBattery: hasBattery)
         case .keepAwake:          return "Keep Awake"
-        case .calendar:           return "Calendar"
+        case .calendar:           return "Calendar & Clocks"
         }
     }
 }
@@ -136,16 +136,36 @@ enum WidgetSize: String, Codable {
 struct WidgetItem: Codable, Identifiable, Equatable {
     var kind: WidgetKind
     var size: WidgetSize
+    var isShown: Bool
     var id: String { kind.id }
 
-    init(_ kind: WidgetKind, _ size: WidgetSize) {
+    init(_ kind: WidgetKind, _ size: WidgetSize, isShown: Bool = true) {
         self.kind = kind
         self.size = size
+        self.isShown = isShown
     }
 
     /// Convenience for the common metric case: `WidgetItem(.cpu, .small)`.
-    init(_ metric: MetricKind, _ size: WidgetSize) {
-        self.init(.metric(metric), size)
+    init(_ metric: MetricKind, _ size: WidgetSize, isShown: Bool = true) {
+        self.init(.metric(metric), size, isShown: isShown)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case kind, size, isShown
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try container.decode(WidgetKind.self, forKey: .kind)
+        size = try container.decode(WidgetSize.self, forKey: .size)
+        isShown = try container.decodeIfPresent(Bool.self, forKey: .isShown) ?? true
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(kind, forKey: .kind)
+        try container.encode(size, forKey: .size)
+        try container.encode(isShown, forKey: .isShown)
     }
 }
 
@@ -156,32 +176,45 @@ struct WidgetItem: Codable, Identifiable, Equatable {
 final class WidgetLayoutStore: ObservableObject {
     @Published private(set) var items: [WidgetItem]
 
-    private let key = "geraldine.widgetLayout.v1"
+    private static let key = "geraldine.widgetLayout.v1"
 
     static let defaults: [WidgetItem] = [
         WidgetItem(.temperature, .large),
-        WidgetItem(.keepAwake, .large),
+        WidgetItem(.keepAwake, .small),
         WidgetItem(.cpu, .small),
         WidgetItem(.memory, .small),
-        WidgetItem(.storage, .small),
-        WidgetItem(.battery, .small),
         WidgetItem(.network, .large),
-        WidgetItem(.calendar, .large)
+        WidgetItem(.storage, .small, isShown: false),
+        WidgetItem(.battery, .small, isShown: false),
+        WidgetItem(.calendar, .large, isShown: false)
     ]
 
     init() {
-        items = Self.load(key: "geraldine.widgetLayout.v1") ?? Self.defaults
+        items = Self.load(key: Self.key) ?? Self.defaults
     }
 
     /// The metric mirrored live in the menu-bar status item. Non-metric widgets
     /// (Keep Awake, Calendar) are skipped, so they never drive the bar even from the top slot.
     func menuBarKind(hasBattery: Bool) -> MetricKind {
-        items.compactMap(\.kind.metric).first { $0.isAvailable(hasBattery: hasBattery) } ?? .temperature
+        let visibleMetric = items
+            .filter(\.isShown)
+            .compactMap(\.kind.metric)
+            .first { $0.isAvailable(hasBattery: hasBattery) }
+        let fallbackMetric = items
+            .compactMap(\.kind.metric)
+            .first { $0.isAvailable(hasBattery: hasBattery) }
+        return visibleMetric ?? fallbackMetric ?? .temperature
     }
 
     func toggleSize(_ kind: WidgetKind) {
         guard kind.canResize, let idx = items.firstIndex(where: { $0.kind == kind }) else { return }
         items[idx].size.toggle()
+        persist()
+    }
+
+    func setShown(_ kind: WidgetKind, _ isShown: Bool) {
+        guard let idx = items.firstIndex(where: { $0.kind == kind }) else { return }
+        items[idx].isShown = isShown
         persist()
     }
 
@@ -204,7 +237,7 @@ final class WidgetLayoutStore: ObservableObject {
 
     private func persist() {
         guard let data = try? JSONEncoder().encode(items) else { return }
-        UserDefaults.standard.set(data, forKey: key)
+        UserDefaults.standard.set(data, forKey: Self.key)
     }
 
     /// Mirrors a persisted `WidgetItem` but keeps the kind as a raw string, so a saved
@@ -213,13 +246,16 @@ final class WidgetLayoutStore: ObservableObject {
     private struct StoredItem: Decodable {
         let kind: String
         let size: WidgetSize
+        let isShown: Bool?
     }
 
     private static func load(key: String) -> [WidgetItem]? {
         guard let data = UserDefaults.standard.data(forKey: key),
               let stored = try? JSONDecoder().decode([StoredItem].self, from: data) else { return nil }
         let decoded = stored.compactMap { item in
-            WidgetKind(id: item.kind).map { WidgetItem($0, item.size) }
+            WidgetKind(id: item.kind).map { kind in
+                WidgetItem(kind, item.size, isShown: item.isShown ?? true)
+            }
         }
         guard !decoded.isEmpty else { return nil }
         // Drop duplicates and append any newly-added widgets (including Keep Awake,
@@ -227,14 +263,18 @@ final class WidgetLayoutStore: ObservableObject {
         var seen = Set<WidgetKind>()
         var result = decoded.filter { seen.insert($0.kind).inserted }
         for kind in MetricKind.allCases where !seen.contains(.metric(kind)) {
-            result.append(WidgetItem(kind, .small))
+            result.append(defaultItem(for: .metric(kind)))
         }
         if !seen.contains(.keepAwake) {
-            result.append(WidgetItem(.keepAwake, .large))
+            result.append(defaultItem(for: .keepAwake))
         }
         if !seen.contains(.calendar) {
-            result.append(WidgetItem(.calendar, .large))
+            result.append(defaultItem(for: .calendar))
         }
         return result
+    }
+
+    private static func defaultItem(for kind: WidgetKind) -> WidgetItem {
+        defaults.first { $0.kind == kind } ?? WidgetItem(kind, kind.canResize ? .small : .large)
     }
 }
