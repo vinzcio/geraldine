@@ -116,7 +116,7 @@ private struct AnimatedNumberColumnView: View {
                 .accessibilityHidden(true)
             if let character = column.current {
                 Text(String(character))
-                    .contentTransition(column.animates ? .numericText(value: value) : .identity)
+                    .contentTransition(column.animates ? .numericText(value: -value) : .identity)
             }
         }
     }

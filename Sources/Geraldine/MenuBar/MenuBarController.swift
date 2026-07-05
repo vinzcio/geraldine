@@ -299,8 +299,8 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
 
     private func animationDirection(from old: StatusPlan, to new: StatusPlan) -> CGFloat {
         guard let oldValue = old.animationValue, let newValue = new.animationValue else { return 0 }
-        if newValue > oldValue { return 1 }
-        if newValue < oldValue { return -1 }
+        if newValue > oldValue { return -1 }
+        if newValue < oldValue { return 1 }
         return 0
     }
 
