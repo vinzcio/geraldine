@@ -49,7 +49,7 @@ struct KeepAwakeView: View {
             }
             .buttonStyle(.plain)
             .pointingHandCursor()
-            .help(keepAwake.isActive ? "Stop keeping your Mac awake" : "Keep your Mac awake")
+            .help(keepAwake.isActive ? "Poke eyes to let your Mac sleep." : "Poke eyes to keep awake.")
 
             VStack(alignment: .leading, spacing: 6) {
                 Text(keepAwake.isActive ? "Awake" : "Idle Sleep Allowed")
