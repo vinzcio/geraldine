@@ -91,31 +91,25 @@ struct DashboardView: View {
     }
 
     private var networkCard: some View {
-        HStack(spacing: 28) {
-            netStat(icon: "arrow.down", label: "Download", value: monitor.netDown, tint: Theme.accent2)
-            Divider().frame(height: 34)
-            netStat(icon: "arrow.up", label: "Upload", value: monitor.netUp, tint: Theme.accent)
-            Spacer()
-            Image(systemName: "wifi").font(.title2).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Label("Network", systemImage: "wifi")
+                    .font(.rounded(13, .medium))
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+
+            NetworkTrafficChart(samples: monitor.networkHistory,
+                                stats: networkStats,
+                                chartHeight: 72)
         }
         .card()
     }
 
-    private func netStat(icon: String, label: String, value: Double, tint: Color) -> some View {
-        let animationValue = value.isFinite ? max(0, value) : 0
-
-        return HStack(spacing: 10) {
-            Image(systemName: icon).foregroundStyle(tint).font(.headline)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(label).font(.caption).foregroundStyle(.secondary)
-                AnimatedNumberText(Fmt.rate(value), value: animationValue)
-                    .font(.rounded(15, .semibold))
-                    .monospacedDigit()
-                    .lineLimit(1)
-                    .frame(minWidth: 82, alignment: .leading)
-            }
-        }
-        .layoutPriority(1)
+    private var networkStats: NetworkThroughputStats {
+        NetworkThroughputStats(samples: monitor.networkHistory,
+                               currentDown: monitor.netDown,
+                               currentUp: monitor.netUp)
     }
 
     private var quickActions: some View {

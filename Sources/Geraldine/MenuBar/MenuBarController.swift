@@ -13,6 +13,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     private var cancellables = Set<AnyCancellable>()
     private let menuBarRefreshInterval: RunLoop.SchedulerTimeType.Stride = .seconds(2)
     private let menuBarSparklineLimit = 60
+    private let statusItemHorizontalPadding: CGFloat = 8
     private let statusAnimationDuration: TimeInterval = 0.24
 
     // Digit-roll animation state. The roll is paced by a persistent, paused
@@ -115,7 +116,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
             // Refresh the on-demand panels right before the popover appears.
             state.network.refreshWiFi()
             state.devices.refresh()
-            popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
+            popover.show(relativeTo: popoverAnchorRect(for: sender), of: sender, preferredEdge: .minY)
             sender.highlight(true)
             popover.contentViewController?.view.window?.makeKey()
         }
@@ -135,6 +136,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     private struct StatusPlan {
         var kind: MetricKind
         var series: [Double]?     // sparkline values (nil → use glyph)
+        var networkSamples: [NetworkSample]? = nil
         var glyph: String?        // SF Symbol name for slow metrics
         var label: String
         var widthSample: String   // widest value this metric can show; fixes the item width
@@ -155,7 +157,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
             // A fresh non-animated value cleanly cancels any in-flight roll.
             statusDisplayLink?.isPaused = true
             clearStatusAnimation()
-            button.image = nextImage
+            applyStatusImage(nextImage, to: button)
             self.currentStatusPlan = nextPlan
             return
         }
@@ -195,7 +197,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
                               gradient: MetricChartStyle.gradient(for: .memory)?.map { NSColor($0) },
                               domain: MetricChartStyle.normalizedDomain)
         case .network:
-            return StatusPlan(kind: .network, series: throughput, glyph: nil,
+            return StatusPlan(kind: .network, series: nil, networkSamples: m.networkHistory, glyph: nil,
                               label: "↓\(Fmt.fixedScaled(m.netDown))", widthSample: "↓8888.88M",
                               color: NSColor(Theme.accent2),
                               animationValue: m.netDown)
@@ -264,6 +266,24 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         button.setAccessibilityHelp("Open Geraldine")
     }
 
+    private func applyStatusImage(_ image: NSImage, to button: NSStatusBarButton) {
+        let width = max(24, ceil(image.size.width + statusItemHorizontalPadding))
+        if statusItem?.length != width {
+            statusItem?.length = width
+        }
+        button.image = image
+    }
+
+    private func popoverAnchorRect(for button: NSStatusBarButton) -> NSRect {
+        let bounds = button.bounds
+        guard bounds.width > 1, bounds.height > 1 else {
+            return NSRect(x: 0, y: 0,
+                          width: max(statusItem?.length ?? 24, 24),
+                          height: NSStatusBar.system.thickness)
+        }
+        return bounds
+    }
+
     private func accessibilityValue(for plan: StatusPlan) -> String {
         let m = state.monitor
         switch plan.kind {
@@ -317,6 +337,9 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         statusAnimTo = newPlan
         statusAnimCompletion = completion
         statusAnimStart = CACurrentMediaTime()
+        if statusItem?.length != ceil(geometry.size.width + statusItemHorizontalPadding) {
+            statusItem?.length = max(24, ceil(geometry.size.width + statusItemHorizontalPadding))
+        }
 
         ensureStatusDisplayLink(for: button)
         statusDisplayLink?.isPaused = false
@@ -341,13 +364,14 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
             return
         }
         let progress = min(1, (CACurrentMediaTime() - statusAnimStart) / statusAnimationDuration)
-        button.image = composeAnimatedStatus(base: base, from: oldPlan, to: newPlan,
-                                             geometry: geometry, progress: progress)
+        applyStatusImage(composeAnimatedStatus(base: base, from: oldPlan, to: newPlan,
+                                               geometry: geometry, progress: progress),
+                         to: button)
         if progress >= 1 {
             link.isPaused = true
             let completion = statusAnimCompletion
             clearStatusAnimation()
-            button.image = drawStatus(newPlan)
+            applyStatusImage(drawStatus(newPlan), to: button)
             completion?()
         }
     }
@@ -420,7 +444,8 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         let samplePrefixWidth = textWidth(sampleParts.prefix, attrs: attrs)
         let sampleSuffixWidth = textWidth(sampleParts.suffix, attrs: attrs)
         let valueWidth = samplePrefixWidth + runningNumberWidth + sampleSuffixWidth
-        let leadingWidth: CGFloat = plan.series != nil ? 22 : (plan.glyph != nil ? 14 : 0)
+        let hasSparkline = plan.series != nil || plan.networkSamples != nil
+        let leadingWidth: CGFloat = hasSparkline ? 22 : (plan.glyph != nil ? 14 : 0)
         let gap: CGFloat = (leadingWidth > 0 && valueWidth > 0) ? 4 : 0
         let width = max(12, leadingWidth + gap + valueWidth)
 
@@ -465,7 +490,10 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     }
 
     private func drawStatusLeading(_ plan: StatusPlan, geometry: StatusGeometry) {
-        if let series = plan.series {
+        if let samples = plan.networkSamples {
+            drawNetworkSparkline(samples, in: NSRect(x: 0, y: 1, width: geometry.leadingWidth, height: geometry.height - 2),
+                                 baseColor: plan.color)
+        } else if let series = plan.series {
             drawSparkline(trimmed(series), in: NSRect(x: 0, y: 1, width: geometry.leadingWidth, height: geometry.height - 2),
                           gradient: plan.gradient, baseColor: plan.color, domain: plan.domain, valueColor: plan.valueColor)
         } else if let glyph = plan.glyph, let symbol = tintedSymbol(glyph, color: plan.color) {
@@ -673,6 +701,71 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         }
     }
 
+    private func drawNetworkSparkline(_ samples: [NetworkSample], in rect: NSRect, baseColor: NSColor) {
+        guard samples.count >= 2, let ctx = NSGraphicsContext.current?.cgContext else { return }
+
+        let now = Date().timeIntervalSinceReferenceDate
+        let window = SystemMonitor.networkHistoryWindow
+        let start = now - window
+        let visible = samples.filter { $0.timestamp >= start && $0.timestamp <= now }
+        guard visible.count >= 2 else { return }
+
+        let maxValue = max(visible.map { $0.down + $0.up }.max() ?? 0, 1)
+        func point(_ sample: NetworkSample) -> CGPoint {
+            let x = min(max((sample.timestamp - start) / max(window, 0.001), 0), 1)
+            let y = min(max((sample.down + sample.up) / maxValue, 0), 1)
+            return CGPoint(x: rect.minX + rect.width * CGFloat(x),
+                           y: rect.minY + rect.height * CGFloat(y))
+        }
+
+        let line = CGMutablePath()
+        let area = CGMutablePath()
+        var current: [CGPoint] = []
+        var previous: NetworkSample?
+
+        func appendCurrentSegment() {
+            guard current.count >= 2, let first = current.first, let last = current.last else { return }
+            line.move(to: first)
+            area.move(to: CGPoint(x: first.x, y: rect.minY))
+            for point in current {
+                line.addLine(to: point)
+                area.addLine(to: point)
+            }
+            area.addLine(to: CGPoint(x: last.x, y: rect.minY))
+            area.closeSubpath()
+        }
+
+        for sample in visible {
+            if let previous, sample.timestamp - previous.timestamp > SystemMonitor.networkSampleGapThreshold {
+                appendCurrentSegment()
+                current.removeAll(keepingCapacity: true)
+            }
+            current.append(point(sample))
+            previous = sample
+        }
+        appendCurrentSegment()
+        guard !line.isEmpty else { return }
+
+        let lineColors = [baseColor.withAlphaComponent(0.68), baseColor]
+        let areaColors = [baseColor.withAlphaComponent(0.24), baseColor.withAlphaComponent(0.03)]
+        let top = CGPoint(x: rect.midX, y: rect.maxY), bottom = CGPoint(x: rect.midX, y: rect.minY)
+        let opts: CGGradientDrawingOptions = [.drawsBeforeStartLocation, .drawsAfterEndLocation]
+
+        if let g = makeGradient(areaColors) {
+            ctx.saveGState(); ctx.addPath(area); ctx.clip()
+            ctx.drawLinearGradient(g, start: top, end: bottom, options: opts)
+            ctx.restoreGState()
+        }
+        if let g = makeGradient(lineColors) {
+            ctx.saveGState()
+            ctx.addPath(line)
+            ctx.setLineWidth(1.5); ctx.setLineCap(.round); ctx.setLineJoin(.round)
+            ctx.replacePathWithStrokedPath(); ctx.clip()
+            ctx.drawLinearGradient(g, start: top, end: bottom, options: opts)
+            ctx.restoreGState()
+        }
+    }
+
     private func makeGradient(_ colors: [NSColor]) -> CGGradient? {
         let space = CGColorSpace(name: CGColorSpace.sRGB)!
         let cg = colors.compactMap { $0.usingColorSpace(.sRGB)?.cgColor }
@@ -691,13 +784,6 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     }
 
     // MARK: Data helpers
-
-    private var throughput: [Double] {
-        let d = state.monitor.netDownHistory, u = state.monitor.netUpHistory
-        let n = min(d.count, u.count)
-        guard n >= 2 else { return [0, 0] }
-        return (0..<n).map { d[d.count - n + $0] + u[u.count - n + $0] }
-    }
 
     private var thermalUnavailableWaveform: [Double] {
         [0.38, 0.48, 0.42, 0.62, 0.34, 0.58, 0.46, 0.54]

@@ -3,9 +3,31 @@ import Darwin
 import IOKit
 import IOKit.ps
 
+struct NetworkSample: Codable, Equatable, Identifiable {
+    var timestamp: TimeInterval
+    var down: Double
+    var up: Double
+
+    var id: TimeInterval { timestamp }
+    var date: Date { Date(timeIntervalSinceReferenceDate: timestamp) }
+
+    init(timestamp: TimeInterval, down: Double, up: Double) {
+        self.timestamp = timestamp
+        self.down = Self.rate(down)
+        self.up = Self.rate(up)
+    }
+
+    private static func rate(_ value: Double) -> Double {
+        value.isFinite ? max(0, value) : 0
+    }
+}
+
 /// Samples live system vitals on a timer. Drives both the menu bar and the dashboard.
 @MainActor
 final class SystemMonitor: ObservableObject {
+    static let networkHistoryWindow: TimeInterval = 5 * 60
+    static let networkSampleGapThreshold: TimeInterval = 4
+
     @Published var cpuUsage: Double = 0          // 0…1
     @Published var memoryUsed: Double = 0        // bytes
     @Published var memoryTotal: Double = 0       // bytes
@@ -31,20 +53,23 @@ final class SystemMonitor: ObservableObject {
     @Published var memHistory: [Double] = []
     @Published var batteryHistory: [Double] = []
     @Published var diskHistory: [Double] = []
-    @Published var netDownHistory: [Double] = []
-    @Published var netUpHistory: [Double] = []
+    @Published var networkHistory: [NetworkSample] = []
     @Published var thermalHistory: [Double] = []
     @Published var thermal: Thermal.Reading = .empty
     private let chartHistoryLimit = 300
     private let dayChartHistoryLimit = 24 * 60 * 60
+    private let networkHistoryKey = "geraldine.networkHistory.v1"
+    private let defaults: UserDefaults
 
     private var timer: Timer?
     private var prevCPU: host_cpu_load_info?
     private var prevNet: (rx: UInt64, tx: UInt64, time: TimeInterval)?
     private var thermalInFlight = false
 
-    init() {
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
         memoryTotal = Double(ProcessInfo.processInfo.physicalMemory)
+        networkHistory = Self.loadNetworkHistory(defaults: defaults, key: networkHistoryKey, now: Date())
         refresh()
     }
 
@@ -75,8 +100,10 @@ final class SystemMonitor: ObservableObject {
         batteryHealth = bat.health; batteryCycles = bat.cycles
         batteryMinutesToEmpty = bat.toEmpty; batteryMinutesToFull = bat.toFull
         batteryOnAC = bat.onAC; batteryDraining = bat.draining; batteryFull = bat.full
-        let net = sampleNetwork()
-        netDown = net.down; netUp = net.up
+        let networkSample = sampleNetwork()
+        if let networkSample {
+            netDown = networkSample.down; netUp = networkSample.up
+        }
 
         func trim(_ series: inout [Double], _ value: Double, limit: Int = chartHistoryLimit) {
             series.append(value)
@@ -86,8 +113,13 @@ final class SystemMonitor: ObservableObject {
         trim(&memHistory, memoryFraction)
         trim(&batteryHistory, batteryLevel ?? batteryHistory.last ?? 1, limit: dayChartHistoryLimit)
         trim(&diskHistory, diskFraction, limit: dayChartHistoryLimit)
-        trim(&netDownHistory, netDown)
-        trim(&netUpHistory, netUp)
+        if let networkSample {
+            appendNetworkSample(networkSample)
+        } else {
+            if pruneNetworkHistory(now: Date()) {
+                saveNetworkHistory()
+            }
+        }
 
         // Thermal sampling does ~130 synchronous IOKit/SMC round-trips (~70–100ms).
         // Running it inline blocks the main run loop once per second and starves the
@@ -271,10 +303,10 @@ final class SystemMonitor: ObservableObject {
 
     // MARK: - Network
 
-    private func sampleNetwork() -> (down: Double, up: Double) {
+    private func sampleNetwork() -> NetworkSample? {
         var rx: UInt64 = 0, tx: UInt64 = 0
         var addrs: UnsafeMutablePointer<ifaddrs>?
-        guard getifaddrs(&addrs) == 0 else { return (netDown, netUp) }
+        guard getifaddrs(&addrs) == 0 else { return nil }
         defer { freeifaddrs(addrs) }
         var ptr = addrs
         while let p = ptr {
@@ -291,13 +323,49 @@ final class SystemMonitor: ObservableObject {
         }
         let now = Date().timeIntervalSinceReferenceDate
         defer { prevNet = (rx, tx, now) }
-        guard let prev = prevNet, now > prev.time else { return (0, 0) }
+        guard let prev = prevNet, now > prev.time else { return nil }
         let dt = now - prev.time
         // Guard against counter resets / interface changes: if a cumulative counter
         // appears to decrease, report 0 rather than letting unsigned wraparound (&-)
         // produce a gigantic bogus rate.
         let down = rx >= prev.rx ? Double(rx - prev.rx) / dt : 0
         let up = tx >= prev.tx ? Double(tx - prev.tx) / dt : 0
-        return (down, up)
+        return NetworkSample(timestamp: now, down: down, up: up)
+    }
+
+    private func appendNetworkSample(_ sample: NetworkSample) {
+        networkHistory.append(sample)
+        _ = pruneNetworkHistory(now: sample.date)
+        saveNetworkHistory()
+    }
+
+    @discardableResult
+    private func pruneNetworkHistory(now: Date) -> Bool {
+        let cutoff = now.timeIntervalSinceReferenceDate - Self.networkHistoryWindow
+        let originalCount = networkHistory.count
+        networkHistory.removeAll { $0.timestamp < cutoff }
+        return networkHistory.count != originalCount
+    }
+
+    private func saveNetworkHistory() {
+        if networkHistory.isEmpty {
+            defaults.removeObject(forKey: networkHistoryKey)
+            return
+        }
+        if let data = try? JSONEncoder().encode(networkHistory) {
+            defaults.set(data, forKey: networkHistoryKey)
+        }
+    }
+
+    private static func loadNetworkHistory(defaults: UserDefaults, key: String, now: Date) -> [NetworkSample] {
+        guard let data = defaults.data(forKey: key),
+              let samples = try? JSONDecoder().decode([NetworkSample].self, from: data) else {
+            return []
+        }
+
+        let cutoff = now.timeIntervalSinceReferenceDate - networkHistoryWindow
+        return samples
+            .filter { $0.timestamp >= cutoff && $0.timestamp <= now.timeIntervalSinceReferenceDate }
+            .sorted { $0.timestamp < $1.timestamp }
     }
 }

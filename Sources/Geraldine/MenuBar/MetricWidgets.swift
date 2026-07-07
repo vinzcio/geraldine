@@ -478,20 +478,21 @@ struct MetricWidget: View {
                     Spacer()
                     securityPill
                 }
-                DualLineGraph(primary: monitor.netDownHistory, secondary: monitor.netUpHistory,
-                              primaryTint: Theme.accent2, secondaryTint: Theme.accent)
-                    .frame(height: 66)
-                HStack(spacing: 12) {
-                    rate("arrow.down", monitor.netDown, Theme.accent2)
-                    rate("arrow.up", monitor.netUp, Theme.accent)
-                    Spacer()
+                NetworkTrafficChart(samples: monitor.networkHistory, stats: networkStats)
+                HStack(spacing: 8) {
+                    if let link = network.linkRateMbps {
+                        caption("\(Int(link.rounded())) Mbps Link", animationValue: link)
+                    }
+                    Spacer(minLength: 6)
                     speedControl
-                }
-                if let link = network.linkRateMbps {
-                    caption("\(Int(link.rounded())) Mbps Link", animationValue: link)
                 }
             }
         }
+    }
+
+    private var networkStats: NetworkThroughputStats {
+        NetworkThroughputStats(samples: monitor.networkHistory,
+                               currentDown: monitor.netDown, currentUp: monitor.netUp)
     }
 
     private var networkHeader: some View {

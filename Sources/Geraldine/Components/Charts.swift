@@ -19,6 +19,16 @@ private enum SparkPath {
             p.closeSubpath()
         }
     }
+
+    static func area(underSegment points: [CGPoint], baselineY: CGFloat) -> Path {
+        Path { p in
+            guard let first = points.first, let last = points.last else { return }
+            p.move(to: CGPoint(x: first.x, y: baselineY))
+            for pt in points { p.addLine(to: pt) }
+            p.addLine(to: CGPoint(x: last.x, y: baselineY))
+            p.closeSubpath()
+        }
+    }
 }
 
 /// Filled sparkline for a series of 0…1 values.
@@ -135,13 +145,18 @@ struct ScaledSparkGraph: View {
     }
 }
 
-/// Two overlaid line series sharing one vertical scale, so the two magnitudes stay
-/// directly comparable (used for the network up/down chart).
-struct DualLineGraph: View {
-    var primary: [Double]
-    var secondary: [Double]
-    var primaryTint: Color
-    var secondaryTint: Color
+/// Two overlaid network throughput series on a fixed time domain. Unlike the
+/// count-based spark graphs, this chart uses sample timestamps for x-positioning
+/// so a 5-minute window starts scrolling immediately and preserves sampling gaps.
+struct NetworkTimelineGraph: View {
+    var samples: [NetworkSample]
+    var window: TimeInterval
+    var now: Date
+    var downTint: Color
+    var upTint: Color
+    var downReference: Double? = nil
+    var upReference: Double? = nil
+    var gapThreshold: TimeInterval = SystemMonitor.networkSampleGapThreshold
 
     var body: some View {
         GeometryReader { geo in
@@ -149,27 +164,65 @@ struct DualLineGraph: View {
         }
     }
 
+    private var nowTimestamp: TimeInterval {
+        now.timeIntervalSinceReferenceDate
+    }
+
+    private var windowStart: TimeInterval {
+        nowTimestamp - window
+    }
+
+    private var visibleSamples: [NetworkSample] {
+        samples.filter { $0.timestamp >= windowStart && $0.timestamp <= nowTimestamp }
+    }
+
     private var scale: Double {
-        max(primary.max() ?? 0, secondary.max() ?? 0, 1)
+        let samplePeak = visibleSamples.reduce(0) { peak, sample in
+            max(peak, sample.down, sample.up)
+        }
+        return max(samplePeak, downReference ?? 0, upReference ?? 0, 1)
     }
 
     @ViewBuilder
     private func content(in size: CGSize) -> some View {
-        if primary.count >= 2 || secondary.count >= 2 {
-            ZStack {
-                series(primary, tint: primaryTint, in: size)
-                series(secondary, tint: secondaryTint, in: size)
-            }
+        let downSegments = segments(for: \.down, in: size)
+        let upSegments = segments(for: \.up, in: size)
+
+        if downSegments.isEmpty && upSegments.isEmpty {
+            CollectingHistoryState(tint: downTint)
         } else {
-            CollectingHistoryState(tint: primaryTint)
+            ZStack {
+                referenceLine(downReference, tint: downTint, in: size)
+                referenceLine(upReference, tint: upTint, in: size)
+                series(segments: downSegments, tint: downTint, in: size)
+                series(segments: upSegments, tint: upTint, in: size)
+            }
         }
     }
 
+    private func segments(for keyPath: KeyPath<NetworkSample, Double>, in size: CGSize) -> [[CGPoint]] {
+        var result: [[CGPoint]] = []
+        var current: [CGPoint] = []
+        var previous: NetworkSample?
+
+        for sample in visibleSamples {
+            if let previous, sample.timestamp - previous.timestamp > gapThreshold {
+                if current.count >= 2 { result.append(current) }
+                current.removeAll(keepingCapacity: true)
+            }
+            current.append(point(sample, value: sample[keyPath: keyPath], in: size))
+            previous = sample
+        }
+
+        if current.count >= 2 { result.append(current) }
+        return result
+    }
+
     @ViewBuilder
-    private func series(_ values: [Double], tint: Color, in size: CGSize) -> some View {
-        if values.count >= 2 {
-            let points = values.enumerated().map { point($0.offset, $0.element, values.count, size) }
-            SparkPath.area(under: points, in: size)
+    private func series(segments: [[CGPoint]], tint: Color, in size: CGSize) -> some View {
+        ForEach(segments.indices, id: \.self) { index in
+            let points = segments[index]
+            SparkPath.area(underSegment: points, baselineY: size.height)
                 .fill(LinearGradient(colors: [tint.opacity(0.22), tint.opacity(0.02)],
                                      startPoint: .top, endPoint: .bottom))
             SparkPath.line(through: points)
@@ -177,11 +230,24 @@ struct DualLineGraph: View {
         }
     }
 
-    private func point(_ i: Int, _ v: Double, _ count: Int, _ size: CGSize) -> CGPoint {
-        let n = max(count - 1, 1)
-        let normalized = min(max(v / scale, 0), 1)
-        return CGPoint(x: size.width * CGFloat(i) / CGFloat(n),
-                       y: size.height * (1 - CGFloat(normalized)))
+    @ViewBuilder
+    private func referenceLine(_ value: Double?, tint: Color, in size: CGSize) -> some View {
+        if let value, value.isFinite, value > 0 {
+            let y = size.height * (1 - CGFloat(min(max(value / scale, 0), 1)))
+            Path { p in
+                p.move(to: CGPoint(x: 0, y: y))
+                p.addLine(to: CGPoint(x: size.width, y: y))
+            }
+            .stroke(tint.opacity(0.34),
+                    style: StrokeStyle(lineWidth: 1, lineCap: .round, dash: [3, 4]))
+        }
+    }
+
+    private func point(_ sample: NetworkSample, value: Double, in size: CGSize) -> CGPoint {
+        let x = min(max((sample.timestamp - windowStart) / max(window, 0.001), 0), 1)
+        let y = min(max(value / scale, 0), 1)
+        return CGPoint(x: size.width * CGFloat(x),
+                       y: size.height * (1 - CGFloat(y)))
     }
 }
 
