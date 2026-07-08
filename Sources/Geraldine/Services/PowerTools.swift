@@ -254,15 +254,16 @@ final class EventTapService {
         self.handler = handler
     }
 
-    func start() {
-        guard eventTap == nil else { return }
+    @discardableResult
+    func start() -> Bool {
+        guard eventTap == nil else { return true }
         guard let tap = CGEvent.tapCreate(tap: .cgSessionEventTap,
                                           place: .headInsertEventTap,
                                           options: .defaultTap,
                                           eventsOfInterest: mask,
                                           callback: Self.callback,
                                           userInfo: Unmanaged.passUnretained(self).toOpaque()) else {
-            return
+            return false
         }
         eventTap = tap
         runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
@@ -270,6 +271,7 @@ final class EventTapService {
             CFRunLoopAddSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
         }
         CGEvent.tapEnable(tap: tap, enable: true)
+        return true
     }
 
     func stop() {

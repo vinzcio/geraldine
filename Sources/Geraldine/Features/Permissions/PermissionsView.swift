@@ -144,8 +144,8 @@ struct PermissionsView: View {
             tint: Module.powerTools.tint,
             title: "Accessibility",
             status: state.hasAccessibility ? .ready : .needsSetup,
-            summary: "Required for Power Tools automation.",
-            impact: "Feature impact: window controls, Dock behavior, keyboard shortcuts, and other system-level helpers stay limited until macOS trusts Geraldine."
+            summary: "Required for Power Tools and Idle Activity.",
+            impact: "Feature impact: window controls, Dock behavior, keyboard shortcuts, Idle Activity pulses, and other system-level helpers stay limited until macOS trusts Geraldine."
         ) {
             if !state.hasAccessibility {
                 Button("Grant Access") {

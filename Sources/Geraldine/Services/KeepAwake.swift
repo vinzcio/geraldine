@@ -62,6 +62,8 @@ final class KeepAwakeController: ObservableObject {
         static let allowDisplaySleep = "keepAwake.allowDisplaySleep"
         static let deactivateOnBattery = "keepAwake.deactivateOnBattery"
         static let pauseWhenScreenLocked = "keepAwake.pauseWhenScreenLocked"
+        static let simulateIdleActivity = "keepAwake.simulateIdleActivity"
+        static let idleActivityDelayMinutes = "keepAwake.idleActivityDelayMinutes"
     }
 
     @Published private(set) var isActive = false
@@ -70,6 +72,10 @@ final class KeepAwakeController: ObservableObject {
     @Published private(set) var activeUntil: Date?
     @Published private(set) var remaining: TimeInterval?
     @Published private(set) var lastError: String?
+    @Published private(set) var idleActivityPhase: IdleActivitySimulationPhase = .off
+    @Published private(set) var idleActivityLastPulse: Date?
+    @Published private(set) var idleActivityLastUserInput: Date?
+    @Published private(set) var idleActivityError: String?
 
     @Published var defaultDuration: KeepAwakeDuration {
         didSet { defaults.set(defaultDuration.rawValue, forKey: DefaultsKey.defaultDuration) }
@@ -100,8 +106,31 @@ final class KeepAwakeController: ObservableObject {
         }
     }
 
+    @Published var simulateIdleActivity: Bool {
+        didSet {
+            defaults.set(simulateIdleActivity, forKey: DefaultsKey.simulateIdleActivity)
+            applyIdleActivitySimulation()
+        }
+    }
+
+    @Published var idleActivityDelayMinutes: Int {
+        didSet {
+            let clamped = Self.clampedIdleActivityDelayMinutes(idleActivityDelayMinutes)
+            if idleActivityDelayMinutes != clamped {
+                idleActivityDelayMinutes = clamped
+                return
+            }
+            defaults.set(idleActivityDelayMinutes, forKey: DefaultsKey.idleActivityDelayMinutes)
+            if simulateIdleActivity {
+                idleActivitySimulator.start(idleDelay: idleActivityDelay)
+            }
+        }
+    }
+
     private static let screenLockPauseReason = "Screen Locked"
     private let defaults: UserDefaults
+    private let idleActivitySimulator = IdleActivitySimulationService()
+    private var activeSince: Date?
     private var idleAssertion: IOPMAssertionID = 0
     private var displayAssertion: IOPMAssertionID = 0
     private var expirationTimer: Timer?
@@ -117,9 +146,14 @@ final class KeepAwakeController: ObservableObject {
         allowDisplaySleep = defaults.bool(forKey: DefaultsKey.allowDisplaySleep)
         deactivateOnBattery = defaults.bool(forKey: DefaultsKey.deactivateOnBattery)
         pauseWhenScreenLocked = defaults.bool(forKey: DefaultsKey.pauseWhenScreenLocked)
+        simulateIdleActivity = defaults.bool(forKey: DefaultsKey.simulateIdleActivity)
+        let rawIdleDelay = defaults.object(forKey: DefaultsKey.idleActivityDelayMinutes) as? Int ?? 2
+        idleActivityDelayMinutes = Self.clampedIdleActivityDelayMinutes(rawIdleDelay)
 
         installPowerSourceObserver()
         installWorkspaceObservers()
+        configureIdleActivitySimulator()
+        applyIdleActivitySimulation()
     }
 
     var statusLine: String {
@@ -136,6 +170,44 @@ final class KeepAwakeController: ObservableObject {
         return "No Scheduled End"
     }
 
+    var idleActivityStatusLine: String {
+        guard simulateIdleActivity else { return "Off" }
+
+        switch idleActivityPhase {
+        case .off:
+            return "Off"
+        case .waiting:
+            return "On · Waiting \(idleActivityDelayLabel)"
+        case .pulsing:
+            return "On · Simulating Activity"
+        case .needsAccessibility:
+            return "Needs Accessibility"
+        case .failed:
+            return idleActivityError ?? "Unavailable"
+        }
+    }
+
+    var idleActivityDelay: TimeInterval {
+        TimeInterval(idleActivityDelayMinutes * 60)
+    }
+
+    var idleActivityDelayLabel: String {
+        idleActivityDelayMinutes == 1 ? "1m" : "\(idleActivityDelayMinutes)m"
+    }
+
+    var idleActivityNeedsAccessibility: Bool {
+        simulateIdleActivity && idleActivityPhase == .needsAccessibility
+    }
+
+    /// Fraction of the current timed session that has elapsed, 0…1. `nil` for an indefinite
+    /// session (nothing to measure against) or when inactive.
+    var progressFraction: Double? {
+        guard isActive, let activeSince, let activeUntil, let remaining else { return nil }
+        let total = activeUntil.timeIntervalSince(activeSince)
+        guard total > 0 else { return nil }
+        return min(1, max(0, 1 - remaining / total))
+    }
+
     func activateDefault() {
         activate(duration: defaultDuration.seconds)
     }
@@ -149,11 +221,22 @@ final class KeepAwakeController: ObservableObject {
         isActive = true
         isPaused = false
         pauseReason = nil
-        activeUntil = duration.map { Date().addingTimeInterval(max(1, $0)) }
+        let now = Date()
+        activeSince = now
+        activeUntil = duration.map { now.addingTimeInterval(max(1, $0)) }
         updateRemaining()
         scheduleExpirationTimer()
         startTicker()
         refreshAssertions()
+    }
+
+    /// Adds time to a running, finite session without resetting elapsed progress. No-op when
+    /// inactive or indefinite; leaves the power assertions untouched.
+    func extend(by seconds: TimeInterval) {
+        guard isActive, seconds > 0, let current = activeUntil else { return }
+        activeUntil = current.addingTimeInterval(seconds)
+        updateRemaining()
+        scheduleExpirationTimer()
     }
 
     func deactivate() {
@@ -167,6 +250,7 @@ final class KeepAwakeController: ObservableObject {
         isActive = false
         isPaused = false
         pauseReason = nil
+        activeSince = nil
         activeUntil = nil
         remaining = nil
         expirationTimer?.invalidate()
@@ -186,6 +270,7 @@ final class KeepAwakeController: ObservableObject {
 
     func shutdown() {
         deactivate()
+        idleActivitySimulator.stop()
         if let powerSourceRunLoopSource {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), powerSourceRunLoopSource, .defaultMode)
             self.powerSourceRunLoopSource = nil
@@ -218,6 +303,40 @@ final class KeepAwakeController: ObservableObject {
             return false
         }
         return true
+    }
+
+    func refreshIdleActivityAccess(prompt: Bool = false) {
+        if prompt {
+            Permissions.requestAccessibilityAccess()
+        }
+        guard simulateIdleActivity else {
+            idleActivitySimulator.stop()
+            return
+        }
+        idleActivitySimulator.start(idleDelay: idleActivityDelay)
+    }
+
+    private func configureIdleActivitySimulator() {
+        idleActivitySimulator.onSnapshotChange = { [weak self] snapshot in
+            Task { @MainActor in
+                self?.idleActivityPhase = snapshot.phase
+                self?.idleActivityLastPulse = snapshot.lastPulse
+                self?.idleActivityLastUserInput = snapshot.lastUserInput
+                self?.idleActivityError = snapshot.errorMessage
+            }
+        }
+    }
+
+    private func applyIdleActivitySimulation() {
+        if simulateIdleActivity {
+            idleActivitySimulator.start(idleDelay: idleActivityDelay)
+        } else {
+            idleActivitySimulator.stop()
+        }
+    }
+
+    private static func clampedIdleActivityDelayMinutes(_ minutes: Int) -> Int {
+        min(120, max(1, minutes))
     }
 
     private func installWorkspaceObservers() {

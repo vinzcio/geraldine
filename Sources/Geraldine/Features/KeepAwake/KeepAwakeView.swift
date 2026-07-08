@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct KeepAwakeView: View {
+    @EnvironmentObject private var state: AppState
     @EnvironmentObject private var keepAwake: KeepAwakeController
     @State private var selectedDuration: KeepAwakeDuration = .oneHour
 
@@ -24,6 +25,7 @@ struct KeepAwakeView: View {
                     hero
                     durationCard
                     policyCard
+                    idleActivityCard
                     automationCard
                 }
                 .padding(20)
@@ -140,6 +142,73 @@ struct KeepAwakeView: View {
         }
         .toggleStyle(.switch)
         .card()
+    }
+
+    private var idleActivityCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .firstTextBaseline) {
+                SectionHeader("Idle Activity")
+                Spacer()
+                Label(keepAwake.idleActivityStatusLine, systemImage: idleActivityIcon)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(idleActivityTint)
+            }
+
+            Toggle(isOn: $keepAwake.simulateIdleActivity) {
+                Label("Simulate Activity After Idle", systemImage: "cursorarrow")
+            }
+
+            Stepper(value: $keepAwake.idleActivityDelayMinutes, in: 1...120, step: 1) {
+                HStack {
+                    Label("Start After", systemImage: "timer")
+                    Spacer()
+                    Text(keepAwake.idleActivityDelayLabel)
+                        .font(.callout.monospacedDigit().weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if keepAwake.idleActivityNeedsAccessibility {
+                HStack(spacing: 8) {
+                    Button("Grant Access") {
+                        keepAwake.refreshIdleActivityAccess(prompt: true)
+                        state.refreshAccessibility()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Theme.warn)
+
+                    Button("Open Settings") { Permissions.openAccessibilitySettings() }
+                        .buttonStyle(.bordered)
+                }
+            }
+
+            if let lastPulse = keepAwake.idleActivityLastPulse {
+                LabeledContent("Last Pulse") {
+                    Text(lastPulse.formatted(date: .omitted, time: .shortened))
+                        .foregroundStyle(.secondary)
+                }
+                .font(.caption)
+            }
+        }
+        .toggleStyle(.switch)
+        .card()
+    }
+
+    private var idleActivityIcon: String {
+        switch keepAwake.idleActivityPhase {
+        case .pulsing: return "keyboard"
+        case .needsAccessibility, .failed: return "exclamationmark.triangle.fill"
+        default: return "cursorarrow"
+        }
+    }
+
+    private var idleActivityTint: Color {
+        guard keepAwake.simulateIdleActivity else { return .secondary }
+        switch keepAwake.idleActivityPhase {
+        case .pulsing: return tint
+        case .needsAccessibility, .failed: return Theme.warn
+        default: return .secondary
+        }
     }
 
     private var automationCard: some View {

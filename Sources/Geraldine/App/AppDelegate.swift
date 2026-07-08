@@ -25,6 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidBecomeActive(_ notification: Notification) {
         AppState.shared.refreshPermissions()
         AppState.shared.network.refreshNameAccess()
+        AppState.shared.keepAwake.refreshIdleActivityAccess()
         AppState.shared.powerTools.refreshAccessibility()
     }
 
