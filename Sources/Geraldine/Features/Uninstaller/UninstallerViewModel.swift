@@ -1,7 +1,6 @@
 import SwiftUI
 
 struct AppEntry: Identifiable, Hashable {
-    let id = UUID()
     let url: URL
     let name: String
     let bundleID: String
@@ -9,6 +8,7 @@ struct AppEntry: Identifiable, Hashable {
     let size: UInt64
     let protectedReason: String?
 
+    var id: String { url.standardizedFileURL.path }
     var isProtected: Bool { protectedReason != nil }
 }
 
@@ -88,10 +88,10 @@ private struct UninstallerDiscovery {
 
 @MainActor
 final class LeftoversModel: ObservableObject {
-    enum Phase { case scanning, results, uninstalling, done }
+    enum Phase: Hashable { case scanning, results, uninstalling, done }
     @Published var phase: Phase = .scanning
     @Published var groups: [ScanGroup] = []
-    @Published var selection: Set<UUID> = []
+    @Published var selection: Set<String> = []
     @Published var result: TrashService.Result?
     @Published var diagnostics: ScanDiagnostics = .empty
 

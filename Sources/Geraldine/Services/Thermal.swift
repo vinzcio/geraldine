@@ -3,9 +3,10 @@ import CThermal
 
 enum Thermal {
     struct Sensor: Identifiable, Hashable, Sendable {
-        let id = UUID()
         let name: String
         let temp: Double
+
+        var id: String { name }
     }
 
     struct Reading: Sendable {
@@ -158,8 +159,8 @@ enum Thermal {
     }
 
     /// Hot/critical bands beyond the shared Theme status colors.
-    static let hot = Color(red: 0.97, green: 0.52, blue: 0.22)          // orange
-    static let critical = Color(red: 0.725, green: 0.169, blue: 0.839)  // #B92BD6 purple
+    static let hot = Theme.orange
+    static let critical = Theme.plum
 
     /// Fixed temperature-scale gradient stops, top (critical) → bottom (cool).
     static let scaleColors: [Color] = [critical, Theme.bad, hot, Theme.warn, Theme.good]

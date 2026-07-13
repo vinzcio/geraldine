@@ -121,9 +121,7 @@ final class KeepAwakeController: ObservableObject {
                 return
             }
             defaults.set(idleActivityDelayMinutes, forKey: DefaultsKey.idleActivityDelayMinutes)
-            if simulateIdleActivity {
-                idleActivitySimulator.start(idleDelay: idleActivityDelay)
-            }
+            applyIdleActivitySimulation()
         }
     }
 
@@ -172,10 +170,12 @@ final class KeepAwakeController: ObservableObject {
 
     var idleActivityStatusLine: String {
         guard simulateIdleActivity else { return "Off" }
+        guard isActive else { return "Starts With Keep Awake" }
+        if isPaused { return "Paused · \(pauseReason ?? "Keep Awake Paused")" }
 
         switch idleActivityPhase {
         case .off:
-            return "Off"
+            return "Starting"
         case .waiting:
             return "On · Waiting \(idleActivityDelayLabel)"
         case .pulsing:
@@ -228,6 +228,7 @@ final class KeepAwakeController: ObservableObject {
         scheduleExpirationTimer()
         startTicker()
         refreshAssertions()
+        applyIdleActivitySimulation()
     }
 
     /// Adds time to a running, finite session without resetting elapsed progress. No-op when
@@ -258,6 +259,7 @@ final class KeepAwakeController: ObservableObject {
         ticker?.invalidate()
         ticker = nil
         releaseAssertions()
+        applyIdleActivitySimulation()
     }
 
     func toggle() {
@@ -309,11 +311,7 @@ final class KeepAwakeController: ObservableObject {
         if prompt {
             Permissions.requestAccessibilityAccess()
         }
-        guard simulateIdleActivity else {
-            idleActivitySimulator.stop()
-            return
-        }
-        idleActivitySimulator.start(idleDelay: idleActivityDelay)
+        applyIdleActivitySimulation()
     }
 
     private func configureIdleActivitySimulator() {
@@ -327,8 +325,15 @@ final class KeepAwakeController: ObservableObject {
         }
     }
 
+    /// Idle activity only runs while a Keep Awake session is active and not paused:
+    /// synthetic input must never fire when the user believes Keep Awake is off,
+    /// or into a locked screen.
+    private var idleActivityShouldRun: Bool {
+        simulateIdleActivity && isActive && !isPaused
+    }
+
     private func applyIdleActivitySimulation() {
-        if simulateIdleActivity {
+        if idleActivityShouldRun {
             idleActivitySimulator.start(idleDelay: idleActivityDelay)
         } else {
             idleActivitySimulator.stop()
@@ -372,6 +377,7 @@ final class KeepAwakeController: ObservableObject {
         isPaused = true
         pauseReason = Self.screenLockPauseReason
         releaseAssertions()
+        applyIdleActivitySimulation()
     }
 
     private func resumeFromPolicyPause() {
@@ -379,6 +385,7 @@ final class KeepAwakeController: ObservableObject {
         isPaused = false
         pauseReason = nil
         refreshAssertions()
+        applyIdleActivitySimulation()
     }
 
     private func handlePowerSourceChange() {

@@ -6,17 +6,20 @@ import IOKit.ps
 
 /// A single battery-charge reading reconstructed from the system power log.
 struct ChargeSample: Identifiable, Sendable {
-    let id = UUID()
     var date: Date
     var level: Double   // 0…1
     var onAC: Bool       // drawing from the adapter for the interval starting here
+
+    var id: Date { date }
 }
 
 /// One app's energy impact, mirroring Activity Monitor's "Energy" tab.
 struct EnergyConsumer: Identifiable, Sendable {
-    let id = UUID()
+    let pid: Int
     var name: String
     var impact: Double
+
+    var id: Int { pid }
 }
 
 /// Detailed battery condition & lifecycle, like CleanMyMac's battery popup.
@@ -135,7 +138,11 @@ enum BatteryInfo {
         guard !ranked.isEmpty else { return [] }
 
         let names = processNames(for: ranked.map(\.pid))
-        return ranked.map { EnergyConsumer(name: names[$0.pid] ?? "PID \($0.pid)", impact: $0.impact) }
+        return ranked.map {
+            EnergyConsumer(pid: $0.pid,
+                           name: names[$0.pid] ?? "PID \($0.pid)",
+                           impact: $0.impact)
+        }
     }
 
     /// Maps PIDs to friendly executable names in one `ps` call.

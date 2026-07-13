@@ -5,18 +5,17 @@ import SwiftUI
 /// world clocks are listed.
 struct CalendarSettingsView: View {
     @EnvironmentObject private var calendar: CalendarSettingsStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Calendar & Clocks").font(.rounded(28, .bold))
-                    Text("Set up the calendar, time display, and world clocks that appear in the menu bar popover.")
-                        .font(.title3).foregroundStyle(.secondary)
-                }
+        ModulePage(module: .calendar, widthRole: .focused) {
+            preview
 
-                preview
-
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: 310), spacing: Theme.Spacing.md)],
+                alignment: .leading,
+                spacing: Theme.Spacing.md
+            ) {
                 VStack(alignment: .leading, spacing: 14) {
                     SectionHeader("In The Popover", subtitle: "Choose what shows when you open Geraldine.")
                     Toggle("Show Month Calendar", isOn: $calendar.showCalendar)
@@ -30,7 +29,7 @@ struct CalendarSettingsView: View {
                     }
                     .disabled(!calendar.showCalendar)
                 }
-                .card()
+                .card(tier: .base)
 
                 VStack(alignment: .leading, spacing: 14) {
                     SectionHeader("Date & Time", subtitle: "How today's date and the clocks read.")
@@ -44,43 +43,71 @@ struct CalendarSettingsView: View {
                     }
                     if calendar.dateStyle == .custom {
                         customFormatField
+                            .transition(GeraldineMotion.stateTransition(reduceMotion: reduceMotion))
                     }
                 }
-                .card()
-
-                WorldClocksSettings()
+                .card(tier: .base)
+                .animation(GeraldineMotion.animation(.standard, reduceMotion: reduceMotion),
+                           value: calendar.dateStyle)
             }
-            .padding(26)
-            .frame(maxWidth: 720, alignment: .leading)
+
+            WorldClocksSettings()
         }
     }
 
     // MARK: Live preview
 
     private var preview: some View {
-        TimelineView(.periodic(from: Date(), by: calendar.tickInterval)) { context in
-            HStack(spacing: 12) {
-                Image(systemName: "calendar")
-                    .font(.system(size: 22, weight: .semibold))
-                    .foregroundStyle(Theme.accent)
-                    .frame(width: 38)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(calendar.dateString(for: context.date))
-                        .font(.rounded(17, .semibold))
-                    Text(calendar.timeString(for: context.date))
-                        .font(.rounded(14, .medium))
+        GeraldinePeriodicTimeline(from: Date(), by: calendar.tickInterval) { date in
+            HStack(spacing: Theme.Spacing.lg) {
+                ModuleGlyph(systemImage: "calendar", tint: Module.calendar.tint, size: 58)
+
+                VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
+                    Text("POPOVER PREVIEW")
+                        .font(.geraldineLabel)
+                        .tracking(0.8)
+                        .foregroundStyle(Module.calendar.tint)
+                    Text(calendar.dateString(for: date))
+                        .font(.geraldineTitle)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                    Text(calendar.timeString(for: date))
+                        .font(.geraldineMetric)
                         .monospacedDigit()
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Module.calendar.tint)
                 }
+
                 Spacer()
-                Text("Live Preview")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 8).padding(.vertical, 4)
-                    .background(Theme.accent.opacity(0.12), in: Capsule())
+
+                VStack(alignment: .trailing, spacing: Theme.Spacing.xs) {
+                    previewPill("Month", icon: "calendar", enabled: calendar.showCalendar)
+                    previewPill("Week Numbers", icon: "number", enabled: calendar.showWeekNumbers)
+                    previewPill("World Clocks", icon: "globe", enabled: calendar.hasVisibleClocks)
+                }
             }
-            .card()
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Calendar popover preview")
+            .accessibilityValue("\(calendar.dateString(for: date)), \(calendar.timeString(for: date))")
+            .card(padding: Theme.Spacing.xl, tier: .tinted(Module.calendar.tint))
         }
+    }
+
+    private func previewPill(_ title: String, icon: String, enabled: Bool) -> some View {
+        HStack(spacing: Theme.Spacing.xxs) {
+            ContextualSymbol(
+                inactive: "circle",
+                active: icon,
+                isActive: enabled,
+                tint: enabled ? Module.calendar.tint : Color.secondary,
+                size: 10
+            )
+            Text(title)
+        }
+        .font(.caption2.weight(.semibold))
+        .foregroundStyle(enabled ? Module.calendar.tint : Color.secondary)
+        .padding(.horizontal, Theme.Spacing.xs)
+        .padding(.vertical, Theme.Spacing.xxs)
+        .background((enabled ? Module.calendar.tint : Color.secondary).opacity(0.10), in: Capsule())
     }
 
     private var customFormatField: some View {
@@ -98,6 +125,7 @@ struct CalendarSettingsView: View {
 
 private struct WorldClocksSettings: View {
     @EnvironmentObject private var calendar: CalendarSettingsStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var picking = false
 
     var body: some View {
@@ -110,7 +138,7 @@ private struct WorldClocksSettings: View {
                 } label: {
                     Label("Add Time Zone", systemImage: "plus")
                 }
-                .controlSize(.small)
+                .buttonStyle(.soft(Module.calendar.tint))
             }
 
             Toggle("Show World Clocks", isOn: $calendar.showWorldClocks)
@@ -121,31 +149,38 @@ private struct WorldClocksSettings: View {
             Text("Drag the slider in the popover to see your time against each zone at any hour.")
                 .font(.caption).foregroundStyle(.secondary)
 
-            if calendar.clocks.isEmpty {
-                HStack(spacing: 10) {
-                    Image(systemName: "globe")
-                        .foregroundStyle(.secondary)
-                    Text("No world clocks yet. Add a time zone to see it in the popover.")
-                        .font(.callout).foregroundStyle(.secondary)
-                    Spacer()
+            WorkflowPhaseHost(phase: calendar.clocks.isEmpty) {
+                if calendar.clocks.isEmpty {
+                    HStack(spacing: Theme.Spacing.sm) {
+                        ModuleGlyph(systemImage: "globe", tint: Module.calendar.tint, size: 36)
+                        Text("No world clocks yet. Add a time zone to see it in the popover.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                    }
+                    .padding(Theme.Spacing.sm)
+                    .background(Theme.surfaceMuted,
+                                in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+                } else {
+                    clockList
                 }
-                .padding(.vertical, 6)
-            } else {
-                clockList
             }
         }
-        .card()
+        .card(tier: .raised)
         .sheet(isPresented: $picking) {
             TimeZonePickerSheet(existing: Set(calendar.clocks.map(\.timeZoneID))) { id in
-                calendar.addClock(timeZoneID: id)
+                if let animation = GeraldineMotion.animation(.standard, reduceMotion: reduceMotion) {
+                    withAnimation(animation) { calendar.addClock(timeZoneID: id) }
+                } else {
+                    calendar.addClock(timeZoneID: id)
+                }
             }
         }
     }
 
     private var clockList: some View {
-        VStack(spacing: 0) {
-            ForEach(Array(calendar.clocks.enumerated()), id: \.element.id) { index, clock in
-                if index > 0 { Divider() }
+        VStack(spacing: Theme.Spacing.xs) {
+            ForEach(calendar.clocks) { clock in
                 ClockRow(clock: clock)
             }
         }
@@ -153,11 +188,13 @@ private struct WorldClocksSettings: View {
 
     private struct ClockRow: View {
         @EnvironmentObject private var calendar: CalendarSettingsStore
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
         let clock: WorldClock
         @State private var label: String = ""
 
         var body: some View {
-            HStack(spacing: 10) {
+            HStack(spacing: Theme.Spacing.sm) {
+                ModuleGlyph(systemImage: "globe.americas.fill", tint: Module.calendar.tint, size: 34)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(WorldClock.cityName(for: clock.timeZoneID))
                         .font(.callout.weight(.medium))
@@ -173,15 +210,24 @@ private struct WorldClocksSettings: View {
                     .onChange(of: label) { _, newValue in calendar.setLabel(newValue, for: clock) }
                 Button(role: .destructive) {
                     if let idx = calendar.clocks.firstIndex(where: { $0.id == clock.id }) {
-                        calendar.removeClocks(at: IndexSet(integer: idx))
+                        if let animation = GeraldineMotion.animation(.standard, reduceMotion: reduceMotion) {
+                            withAnimation(animation) {
+                                calendar.removeClocks(at: IndexSet(integer: idx))
+                            }
+                        } else {
+                            calendar.removeClocks(at: IndexSet(integer: idx))
+                        }
                     }
                 } label: {
                     Image(systemName: "trash")
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(.quiet(Theme.bad))
                 .help("Remove This Clock")
+                .accessibilityLabel("Remove \(clock.name)")
             }
-            .padding(.vertical, 8)
+            .padding(Theme.Spacing.xs)
+            .background(Theme.surfaceMuted,
+                        in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
             .onAppear { label = clock.label }
         }
     }
@@ -226,51 +272,69 @@ private struct TimeZonePickerSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("Add Time Zone").font(.rounded(16, .bold))
+                HStack(spacing: Theme.Spacing.xs) {
+                    ModuleGlyph(systemImage: "globe", tint: Module.calendar.tint, size: 34)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Add Time Zone").font(.geraldineSection)
+                        Text("Choose a city for the menu bar popover.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
                 Spacer()
                 Button("Done") { dismiss() }
+                    .buttonStyle(.quiet(Module.calendar.tint))
             }
-            .padding(16)
+            .padding(Theme.Spacing.md)
 
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                 TextField("Search cities or zones", text: $query)
                     .textFieldStyle(.plain)
             }
-            .padding(8)
-            .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .padding(.horizontal, 16)
+            .padding(Theme.Spacing.sm)
+            .background(Theme.surfaceMuted,
+                        in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+            .padding(.horizontal, Theme.Spacing.md)
 
             List(zones) { zone in
+                let isExisting = existing.contains(zone.id)
                 Button {
                     onPick(zone.id)
                     dismiss()
                 } label: {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(zone.city)
-                                .foregroundStyle(.primary)
-                            if !zone.region.isEmpty {
-                                Text(zone.region).font(.caption2).foregroundStyle(.secondary)
-                            }
-                        }
-                        Spacer()
-                        if existing.contains(zone.id) {
-                            Image(systemName: "checkmark.circle.fill")
-                                .foregroundStyle(Theme.good)
-                        } else {
-                            Text(zone.gmt)
-                                .font(.caption.monospaced())
-                                .foregroundStyle(.secondary)
+                    CareLedgerRow(
+                        icon: "globe.americas.fill",
+                        tint: Module.calendar.tint,
+                        title: zone.city,
+                        detail: zone.region.isEmpty ? zone.id : zone.region
+                    ) {
+                        HStack(spacing: Theme.Spacing.xs) {
+                            Text(isExisting ? "Added" : zone.gmt)
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(isExisting ? Theme.good : Color.secondary)
+                            ContextualSymbol(
+                                inactive: "plus.circle",
+                                active: "checkmark.circle.fill",
+                                isActive: isExisting,
+                                tint: isExisting ? Theme.good : Module.calendar.tint,
+                                size: 14
+                            )
                         }
                     }
-                    .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
-                .disabled(existing.contains(zone.id))
+                .buttonStyle(.geraldineSelection(Module.calendar.tint,
+                                                  isSelected: isExisting,
+                                                  cornerRadius: Theme.Radius.control))
+                .disabled(isExisting)
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
+                .accessibilityLabel(isExisting ? "\(zone.city), already added" : "Add \(zone.city), \(zone.gmt)")
             }
             .listStyle(.inset)
+            .scrollContentBackground(.hidden)
         }
         .frame(width: 440, height: 520)
+        .background(Theme.canvas)
     }
 }

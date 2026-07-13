@@ -52,7 +52,7 @@ enum Module: String, CaseIterable, Identifiable {
         case .activity:    return "waveform.path.ecg"
         case .storage:     return "chart.pie.fill"
         case .battery:     return "battery.100"
-        case .keepAwake:   return "cup.and.saucer.fill"
+        case .keepAwake:   return "eye.fill"
         case .calendar:    return "calendar"
         case .powerTools:  return "bolt.horizontal.circle.fill"
         case .cleanup:     return "sparkles"
@@ -73,28 +73,32 @@ enum Module: String, CaseIterable, Identifiable {
         case .dashboard:   return Theme.accent
         case .smartCare:   return Theme.accent
         case .activity:    return Theme.accent2
-        case .storage:     return Color(red: 0.20, green: 0.70, blue: 0.62)
-        case .battery:     return Color(red: 0.30, green: 0.78, blue: 0.45)
-        case .keepAwake:   return Color(red: 0.94, green: 0.58, blue: 0.26)
-        case .calendar:    return Color(red: 0.40, green: 0.52, blue: 0.96)
-        case .powerTools:  return Color(red: 0.45, green: 0.58, blue: 0.95)
+        case .storage:     return Theme.mint
+        case .battery:     return Theme.green
+        case .keepAwake:   return Theme.orange
+        case .calendar:    return Theme.indigo
+        case .powerTools:  return Theme.indigo
         case .cleanup:     return Theme.accent2
-        case .largeFiles:  return Color(red: 0.95, green: 0.55, blue: 0.35)
-        case .spaceLens:   return Color(red: 0.86, green: 0.42, blue: 0.86)
-        case .uninstaller: return Color(red: 0.96, green: 0.45, blue: 0.50)
-        case .privacy:     return Color(red: 0.30, green: 0.74, blue: 0.74)
-        case .loginItems:  return Color(red: 0.55, green: 0.60, blue: 0.98)
-        case .maintenance: return Color(red: 0.40, green: 0.72, blue: 0.50)
-        case .updater:     return Color(red: 0.50, green: 0.66, blue: 0.96)
-        case .permissions: return Color(red: 0.36, green: 0.56, blue: 0.86)
+        case .largeFiles:  return Theme.orange
+        case .spaceLens:   return Theme.plum
+        case .uninstaller: return Theme.rose
+        case .privacy:     return Theme.aqua
+        case .loginItems:  return Theme.indigo
+        case .maintenance: return Theme.green
+        case .updater:     return Theme.accent2
+        case .permissions: return Theme.accent2
         case .settings:    return Color.secondary
         }
+    }
+
+    var navigationIndex: Int {
+        Self.allCases.firstIndex(of: self) ?? 0
     }
 
     var subtitle: String {
         switch self {
         case .dashboard:   return "Live system vitals at a glance"
-        case .smartCare:   return "One-tap health check & cleanup"
+        case .smartCare:   return "One-tap health check and guided next steps"
         case .activity:    return "CPU, memory & top processes"
         case .storage:     return "What's using your disk"
         case .battery:     return "Charge history, consumers & health"
@@ -110,7 +114,7 @@ enum Module: String, CaseIterable, Identifiable {
         case .maintenance: return "Run macOS upkeep tasks"
         case .updater:     return "Find apps that are out of date"
         case .permissions: return "Access Geraldine needs to do its job"
-        case .settings:    return "Appearance and Geraldine launch-at-login"
+        case .settings:    return "Appearance, behavior, access, and startup"
         }
     }
 

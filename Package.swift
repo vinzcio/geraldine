@@ -21,6 +21,11 @@ let package = Package(
                 .linkedFramework("Network"),
                 .linkedFramework("ApplicationServices")
             ]
+        ),
+        .testTarget(
+            name: "GeraldineTests",
+            dependencies: ["Geraldine"],
+            path: "Tests/GeraldineTests"
         )
     ]
 )

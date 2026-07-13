@@ -1,9 +1,10 @@
 import Foundation
 
 struct ScanIssue: Identifiable, Hashable {
-    let id = UUID()
     let path: String
     let message: String
+
+    var id: String { "\(path)|\(message)" }
 
     init(url: URL, error: Error) {
         path = url.path

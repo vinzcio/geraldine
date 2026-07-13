@@ -6,13 +6,19 @@ import Foundation
 /// being held awake. Purely decorative, driven by `isActive`; every detail scales with
 /// `size` so it reads from 16pt to 120pt.
 struct EyeView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.geraldineSurfaceActive) private var surfaceActive
+
     var isActive: Bool
     var size: CGFloat = 40
+    var isPressed = false
 
     @State private var pulse = false
 
     private var irisDiameter: CGFloat { size * 0.46 }
-    private var pupilDiameter: CGFloat { irisDiameter * (isActive ? 0.56 : 0.48) }
+    private var pupilDiameter: CGFloat {
+        irisDiameter * (isPressed ? 0.40 : (isActive ? 0.56 : 0.48))
+    }
     private var lineWidth: CGFloat { max(0.6, size * 0.017) }
 
     var body: some View {
@@ -28,8 +34,11 @@ struct EyeView: View {
                 EyeVeins()
                     .stroke(veinGradient,
                             style: StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round))
-                    .shadow(color: Theme.bad.opacity(pulse ? 0.5 : 0.18), radius: pulse ? size * 0.06 : size * 0.025)
-                    .opacity(isActive ? (pulse ? 1.0 : 0.5) : 0)
+                    .shadow(
+                        color: Theme.bad.opacity(reduceMotion ? 0.22 : (pulse ? 0.5 : 0.18)),
+                        radius: reduceMotion ? size * 0.025 : (pulse ? size * 0.06 : size * 0.025)
+                    )
+                    .opacity(isActive ? (reduceMotion ? 0.72 : (pulse ? 1.0 : 0.5)) : 0)
 
                 iris
             }
@@ -39,9 +48,17 @@ struct EyeView: View {
                 .strokeBorder(Color.black.opacity(0.16), lineWidth: max(0.7, size * 0.02))
         }
         .frame(width: size, height: size)
-        .animation(.easeInOut(duration: 0.4), value: isActive)
+        .animation(GeraldineMotion.animation(.emphasis,
+                                             reduceMotion: reduceMotion || !surfaceActive),
+                   value: isActive)
+        .animation(GeraldineMotion.animation(.quick,
+                                             reduceMotion: reduceMotion || !surfaceActive),
+                   value: isPressed)
         .onAppear(perform: startPulsing)
         .onChange(of: isActive) { _, _ in startPulsing() }
+        .onChange(of: reduceMotion) { _, _ in startPulsing() }
+        .onChange(of: surfaceActive) { _, _ in startPulsing() }
+        .onDisappear { pulse = false }
         .accessibilityLabel(isActive ? "Keep Awake on" : "Keep Awake off")
     }
 
@@ -64,9 +81,18 @@ struct EyeView: View {
             Circle()
                 .fill(.white.opacity(0.92))
                 .frame(width: irisDiameter * 0.22, height: irisDiameter * 0.22)
-                .offset(x: -irisDiameter * 0.16, y: -irisDiameter * 0.18)
+                .offset(
+                    x: -irisDiameter * (isPressed ? 0.10 : 0.16),
+                    y: -irisDiameter * (isPressed ? 0.12 : 0.18)
+                )
+                .opacity(isPressed ? 0.62 : 0.92)
         }
-        .animation(.easeInOut(duration: 0.35), value: isActive)
+        .animation(GeraldineMotion.animation(.standard,
+                                             reduceMotion: reduceMotion || !surfaceActive),
+                   value: isActive)
+        .animation(GeraldineMotion.animation(.quick,
+                                             reduceMotion: reduceMotion || !surfaceActive),
+                   value: isPressed)
     }
 
     private var veinGradient: RadialGradient {
@@ -77,8 +103,8 @@ struct EyeView: View {
 
     private func startPulsing() {
         pulse = false
-        guard isActive else { return }
-        withAnimation(.easeInOut(duration: 0.95).repeatForever(autoreverses: true)) {
+        guard surfaceActive, isActive, !reduceMotion else { return }
+        withAnimation(GeraldineMotion.breathing(reduceMotion: false)) {
             pulse = true
         }
     }

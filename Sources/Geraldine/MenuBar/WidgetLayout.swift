@@ -230,6 +230,15 @@ final class WidgetLayoutStore: ObservableObject {
         persist()
     }
 
+    func moveToEnd(_ kind: WidgetKind) {
+        guard let index = items.firstIndex(where: { $0.kind == kind }) else { return }
+        var updated = items
+        let moved = updated.remove(at: index)
+        updated.append(moved)
+        items = updated
+        persist()
+    }
+
     func reset() {
         items = Self.defaults
         persist()

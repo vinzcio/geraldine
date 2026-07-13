@@ -2,7 +2,9 @@ import SwiftUI
 import AppKit
 
 struct DiskNode: Identifiable, Hashable {
-    let id = UUID()
+    /// A filesystem-derived identity keeps cells stable across rescans and lets
+    /// SwiftUI preserve focus, color, and spatial continuity.
+    let id: String
     let url: URL
     let name: String
     let size: UInt64
@@ -11,12 +13,27 @@ struct DiskNode: Identifiable, Hashable {
     let aggregateCount: Int
 
     init(url: URL, name: String, size: UInt64, isDirectory: Bool, isAggregate: Bool = false, aggregateCount: Int = 0) {
-        self.url = url
+        let canonicalURL = url.standardizedFileURL
+        self.id = isAggregate
+            ? "\(canonicalURL.path)::geraldine-other-visible-items"
+            : canonicalURL.path
+        self.url = canonicalURL
         self.name = name
         self.size = size
         self.isDirectory = isDirectory
         self.isAggregate = isAggregate
         self.aggregateCount = aggregateCount
+    }
+
+    /// A deterministic palette position. `Hasher` is intentionally avoided
+    /// because its seed changes between launches.
+    var paletteIndex: Int {
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for byte in id.utf8 {
+            hash ^= UInt64(byte)
+            hash = hash &* 1_099_511_628_211
+        }
+        return Int(hash % 8)
     }
 }
 
@@ -76,6 +93,9 @@ final class SpaceLensViewModel: ObservableObject {
     @Published var progressCompleted = 0
     @Published var progressTotal = 0
     @Published var progressText = "Preparing Scan…"
+    @Published private(set) var snapshotRevision = 0
+    @Published private(set) var navigationDirection = 0
+    @Published private(set) var snapshotDirectory: URL?
 
     private let maxCells = 45
     private var scanTask: Task<Void, Never>?
@@ -88,6 +108,7 @@ final class SpaceLensViewModel: ObservableObject {
     var current: URL { path.last ?? FileManager.default.homeDirectoryForCurrentUser }
     var currentSize: UInt64 { children.reduce(0) { $0 + $1.size } }
     var visibleNodeCount: Int { children.filter { !$0.isAggregate }.count }
+    var canGoBack: Bool { path.count > 1 }
     var progressFraction: Double? {
         guard progressTotal > 0 else { return nil }
         return min(1, max(0, Double(progressCompleted) / Double(progressTotal)))
@@ -97,6 +118,14 @@ final class SpaceLensViewModel: ObservableObject {
         return "Scanned At \(DateFormatter.localizedString(from: scannedAt, dateStyle: .none, timeStyle: .short))"
     }
     var scopeText: String {
+        if loading, let snapshotDirectory, snapshotDirectory != current, !children.isEmpty {
+            return "Scanning \(Self.displayName(for: current)). The \(Self.displayName(for: snapshotDirectory)) map remains visible so you do not lose your place."
+        }
+
+        if issue == .cancelled, !children.isEmpty {
+            return "Scan cancelled. Showing the last completed map for \(Self.displayName(for: current))."
+        }
+
         var parts = [
             "Showing top-level visible entries in \(Self.displayName(for: current)).",
             "Folder sizes include readable package contents; hidden top-level entries are skipped."
@@ -112,14 +141,21 @@ final class SpaceLensViewModel: ObservableObject {
 
     func enter(_ node: DiskNode) {
         guard node.isDirectory, !node.isAggregate else { return }
+        navigationDirection = 1
         path.append(node.url)
         load()
     }
 
     func goTo(_ index: Int) {
         guard index < path.count - 1 else { return }
+        navigationDirection = -1
         path = Array(path.prefix(index + 1))
         load()
+    }
+
+    func goBack() {
+        guard canGoBack else { return }
+        goTo(path.count - 2)
     }
 
     func chooseRoot() {
@@ -128,20 +164,19 @@ final class SpaceLensViewModel: ObservableObject {
         panel.canChooseFiles = false
         panel.directoryURL = current
         if panel.runModal() == .OK, let url = panel.url {
-            path = [url]
+            navigationDirection = 0
+            path = [url.standardizedFileURL]
             load()
         }
     }
 
     func load() {
         scanTask?.cancel()
+        if snapshotDirectory == current {
+            navigationDirection = 0
+        }
         loading = true
         issue = .none
-        children = []
-        scannedAt = nil
-        totalEntryCount = 0
-        cappedItemCount = 0
-        unreadableItemCount = 0
         progressCompleted = 0
         progressTotal = 0
         progressText = "Preparing Scan…"
@@ -161,6 +196,7 @@ final class SpaceLensViewModel: ObservableObject {
 
             guard let self, !Task.isCancelled, self.current == dir else { return }
             self.children = result.nodes
+            self.snapshotDirectory = dir
             self.issue = result.issue
             self.scannedAt = result.issue == .cancelled ? self.scannedAt : Date()
             self.totalEntryCount = result.totalEntries
@@ -170,6 +206,7 @@ final class SpaceLensViewModel: ObservableObject {
             self.progressTotal = result.totalEntries
             self.progressText = result.issue == .none ? "Scan Complete" : result.issue.title
             self.loading = false
+            self.snapshotRevision &+= 1
         }
     }
 
@@ -179,6 +216,11 @@ final class SpaceLensViewModel: ObservableObject {
         loading = false
         issue = .cancelled
         progressText = "Scan Cancelled"
+        if snapshotDirectory != current {
+            children = []
+            snapshotDirectory = current
+            snapshotRevision &+= 1
+        }
     }
 
     func revealCurrent() {
@@ -197,6 +239,16 @@ final class SpaceLensViewModel: ObservableObject {
     func open(_ node: DiskNode) {
         guard !node.isAggregate else { return }
         NSWorkspace.shared.open(node.url)
+    }
+
+    func activate(_ node: DiskNode) {
+        if node.isAggregate {
+            revealCurrent()
+        } else if node.isDirectory {
+            enter(node)
+        } else {
+            open(node)
+        }
     }
 
     nonisolated private static func displayName(for url: URL) -> String {
@@ -270,7 +322,10 @@ final class SpaceLensViewModel: ObservableObject {
                                             label: "Scanning \(index + 1) of \(entries.count) Items…"))
             }
 
-            nodes.sort { $0.size > $1.size }
+            nodes.sort {
+                if $0.size != $1.size { return $0.size > $1.size }
+                return $0.id.localizedStandardCompare($1.id) == .orderedAscending
+            }
 
             let uncappedCount = nodes.count
             var cappedItems = 0

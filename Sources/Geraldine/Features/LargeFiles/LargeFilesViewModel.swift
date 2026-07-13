@@ -3,13 +3,13 @@ import AppKit
 
 @MainActor
 final class LargeFilesViewModel: ObservableObject {
-    enum Phase { case idle, scanning, results, cleaning, done }
+    enum Phase: Hashable { case idle, scanning, results, cleaning, done }
 
     @Published var phase: Phase = .idle
     @Published var root: URL = FileManager.default.homeDirectoryForCurrentUser
     @Published var minSizeMB: Double = 100
     @Published var groups: [ScanGroup] = []
-    @Published var selection: Set<UUID> = []
+    @Published var selection: Set<String> = []
     @Published var result: TrashService.Result?
     @Published var scannedCount = 0
     @Published var diagnostics: ScanDiagnostics = .empty
@@ -18,7 +18,11 @@ final class LargeFilesViewModel: ObservableObject {
     private var scanID = UUID()
 
     var scanProgressText: String {
-        "Scanning can take a while in large folders. Geraldine skips packages and hidden files."
+        "Reading \(root.lastPathComponent.isEmpty ? root.path : root.lastPathComponent) for files over \(thresholdLabel). Packages and hidden files stay out of scope."
+    }
+
+    var thresholdLabel: String {
+        minSizeMB >= 1_000 ? "\(Int(minSizeMB / 1_000)) GB" : "\(Int(minSizeMB)) MB"
     }
     var emptyMessage: String {
         diagnostics.hasVisibleIssues

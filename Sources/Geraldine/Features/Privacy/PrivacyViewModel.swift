@@ -1,12 +1,40 @@
 import SwiftUI
 
+enum BrowserIdentity: String, CaseIterable, Identifiable {
+    case safari = "Safari"
+    case chrome = "Chrome"
+    case brave = "Brave"
+    case edge = "Edge"
+    case firefox = "Firefox"
+
+    var id: String { rawValue }
+
+    var applicationURL: URL? {
+        let names: [String]
+        switch self {
+        case .safari: names = ["/System/Applications/Safari.app", "/Applications/Safari.app"]
+        case .chrome: names = ["/Applications/Google Chrome.app"]
+        case .brave: names = ["/Applications/Brave Browser.app"]
+        case .edge: names = ["/Applications/Microsoft Edge.app"]
+        case .firefox: names = ["/Applications/Firefox.app"]
+        }
+        let fm = FileManager.default
+        return names.lazy.map { URL(fileURLWithPath: $0) }
+            .first { fm.fileExists(atPath: $0.path) }
+    }
+
+    static func applicationURL(for browser: String) -> URL? {
+        allCases.first { $0.rawValue == browser }?.applicationURL
+    }
+}
+
 @MainActor
 final class PrivacyViewModel: ObservableObject {
-    enum Phase { case idle, scanning, results, cleaning, done }
+    enum Phase: Hashable { case idle, scanning, results, cleaning, done }
 
     @Published var phase: Phase = .idle
     @Published var groups: [ScanGroup] = []
-    @Published var selection: Set<UUID> = []
+    @Published var selection: Set<String> = []
     @Published var result: TrashService.Result?
     @Published var diagnostics: ScanDiagnostics = .empty
 
@@ -88,7 +116,8 @@ final class PrivacyViewModel: ObservableObject {
             guard !Task.isCancelled, fm.fileExists(atPath: url.path) else { return nil }
             let size = DiskScan.size(of: url, diagnostics: &diagnostics)
             diagnostics.noteScanned()
-            return ScanItem(url: url, name: browser, detail: category, size: size)
+            return ScanItem(url: url, name: browser, detail: category, size: size,
+                            identityURL: BrowserIdentity.applicationURL(for: browser))
         }
         func cache(_ b: String, _ u: URL)   { if let i = item(b, "Cache", u) { cacheItems.append(i) } }
         func cookie(_ b: String, _ u: URL)  { if let i = item(b, "Cookies", u) { cookieItems.append(i) } }

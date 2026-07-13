@@ -35,9 +35,14 @@ static void load_symbols(void) {
     g_getFloat     = (GetFloatFn)     dlsym(io, "IOHIDEventGetFloatValue");
 }
 
-int thermal_read(double *temps, char *names, int nameStride, int maxCount) {
-    load_symbols();
-    if (!g_create || !g_setMatching || !g_copyServices || !g_copyEvent || !g_getFloat) return 0;
+// Cached for the lifetime of the process. Creating an IOHIDEventSystemClient
+// opens a connection to the system-wide HID event server — the same one that
+// services the keyboard and mouse — so it must be reused, never recreated per
+// sample (this is polled every second).
+static CFTypeRef g_thermal_client = NULL;
+
+static CFTypeRef thermal_client(void) {
+    if (g_thermal_client) return g_thermal_client;
 
     int32_t page = 0xff00, usage = 5; // AppleVendor temperature sensors
     CFNumberRef pageN  = CFNumberCreate(0, kCFNumberSInt32Type, &page);
@@ -48,40 +53,58 @@ int thermal_read(double *temps, char *names, int nameStride, int maxCount) {
         &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
 
     CFTypeRef client = g_create(kCFAllocatorDefault);
-    int count = 0;
     if (client) {
         g_setMatching(client, match);
-        CFArrayRef svcs = g_copyServices(client);
-        if (svcs) {
-            CFIndex n = CFArrayGetCount(svcs);
-            for (CFIndex i = 0; i < n && count < maxCount; i++) {
-                CFTypeRef s = CFArrayGetValueAtIndex(svcs, i);
-                CFTypeRef ev = g_copyEvent(s, 15 /* kIOHIDEventTypeTemperature */, 0, 0);
-                if (ev) {
-                    double t = g_getFloat(ev, 15 << 16 /* IOHIDEventFieldBase */);
-                    if (t > 1.0 && t < 150.0) {
-                        temps[count] = t;
-                        char *dst = names + (size_t)count * nameStride;
-                        dst[0] = '\0';
-                        if (g_copyProp) {
-                            CFStringRef nm = g_copyProp(s, CFSTR("Product"));
-                            if (nm) {
-                                CFStringGetCString(nm, dst, nameStride, kCFStringEncodingUTF8);
-                                CFRelease(nm);
-                            }
-                        }
-                        count++;
-                    }
-                    CFRelease(ev);
-                }
-            }
-            CFRelease(svcs);
-        }
-        CFRelease(client);
+        g_thermal_client = client;
     }
+
     if (match)  CFRelease(match);
     if (pageN)  CFRelease(pageN);
     if (usageN) CFRelease(usageN);
+    return g_thermal_client;
+}
+
+int thermal_read(double *temps, char *names, int nameStride, int maxCount) {
+    load_symbols();
+    if (!g_create || !g_setMatching || !g_copyServices || !g_copyEvent || !g_getFloat) return 0;
+
+    CFTypeRef client = thermal_client();
+    if (!client) return 0;
+
+    CFArrayRef svcs = g_copyServices(client);
+    if (!svcs) {
+        // A NULL service list (as opposed to an empty one) means the connection
+        // to the HID event server is gone; drop the client so the next sample
+        // reconnects.
+        CFRelease(g_thermal_client);
+        g_thermal_client = NULL;
+        return 0;
+    }
+
+    int count = 0;
+    CFIndex n = CFArrayGetCount(svcs);
+    for (CFIndex i = 0; i < n && count < maxCount; i++) {
+        CFTypeRef s = CFArrayGetValueAtIndex(svcs, i);
+        CFTypeRef ev = g_copyEvent(s, 15 /* kIOHIDEventTypeTemperature */, 0, 0);
+        if (ev) {
+            double t = g_getFloat(ev, 15 << 16 /* IOHIDEventFieldBase */);
+            if (t > 1.0 && t < 150.0) {
+                temps[count] = t;
+                char *dst = names + (size_t)count * nameStride;
+                dst[0] = '\0';
+                if (g_copyProp) {
+                    CFStringRef nm = g_copyProp(s, CFSTR("Product"));
+                    if (nm) {
+                        CFStringGetCString(nm, dst, nameStride, kCFStringEncodingUTF8);
+                        CFRelease(nm);
+                    }
+                }
+                count++;
+            }
+            CFRelease(ev);
+        }
+    }
+    CFRelease(svcs);
     return count;
 }
 
@@ -155,6 +178,9 @@ static double smc_decode_temperature(const char type[5], const uint8_t *bytes, u
     return -1;
 }
 
+// Distinguish an unavailable key from a dead kernel connection. Missing keys
+// are normal across Mac models; transport failures require reconnecting.
+//  1 = temperature read, 0 = key unavailable/invalid, -1 = connection failed.
 static int smc_read_key(io_connect_t conn, const char *key, double *temp) {
     SMCParamStruct input;
     SMCParamStruct output;
@@ -165,7 +191,8 @@ static int smc_read_key(io_connect_t conn, const char *key, double *temp) {
     input.data8 = 9; // read key info
     size_t outputSize = sizeof(output);
     kern_return_t kr = IOConnectCallStructMethod(conn, 2, &input, sizeof(input), &output, &outputSize);
-    if (kr != KERN_SUCCESS || output.result != 0) return 0;
+    if (kr != KERN_SUCCESS) return -1;
+    if (output.result != 0) return 0;
 
     input.keyInfo.dataSize = output.keyInfo.dataSize;
     input.keyInfo.dataType = output.keyInfo.dataType;
@@ -174,7 +201,8 @@ static int smc_read_key(io_connect_t conn, const char *key, double *temp) {
     memset(&output, 0, sizeof(output));
     outputSize = sizeof(output);
     kr = IOConnectCallStructMethod(conn, 2, &input, sizeof(input), &output, &outputSize);
-    if (kr != KERN_SUCCESS || output.result != 0) return 0;
+    if (kr != KERN_SUCCESS) return -1;
+    if (output.result != 0) return 0;
 
     char type[5];
     smc_fourcc_string(input.keyInfo.dataType, type);
@@ -208,26 +236,53 @@ static void smc_write_sensor_name(char *names, int nameStride, int index, const 
     snprintf(dst, (size_t)nameStride, "SMC %s", key);
 }
 
-int smc_thermal_read(double *temps, char *names, int nameStride, int maxCount) {
+// Kept open for the lifetime of the process: opening and closing an AppleSMC
+// user client every sample (this is polled every second) churns the kernel
+// service with connect–disconnect traffic for no benefit.
+static io_connect_t g_smc_conn = IO_OBJECT_NULL;
+
+static void smc_invalidate_connection(void) {
+    if (g_smc_conn == IO_OBJECT_NULL) return;
+    IOServiceClose(g_smc_conn);
+    g_smc_conn = IO_OBJECT_NULL;
+}
+
+static io_connect_t smc_connection(void) {
+    if (g_smc_conn != IO_OBJECT_NULL) return g_smc_conn;
+
     io_service_t service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSMC"));
-    if (!service) return 0;
+    if (!service) return IO_OBJECT_NULL;
 
     io_connect_t conn = IO_OBJECT_NULL;
     kern_return_t kr = IOServiceOpen(service, mach_task_self(), 0, &conn);
     IOObjectRelease(service);
-    if (kr != KERN_SUCCESS) return 0;
+    if (kr != KERN_SUCCESS) return IO_OBJECT_NULL;
+
+    g_smc_conn = conn;
+    return conn;
+}
+
+int smc_thermal_read(double *temps, char *names, int nameStride, int maxCount) {
+    io_connect_t conn = smc_connection();
+    if (conn == IO_OBJECT_NULL) return 0;
 
     int count = 0;
     for (size_t i = 0; i < smc_temperature_key_count() && count < maxCount; i++) {
         const char *key = kCleanMyMacSMCTemperatureKeys[i];
         double t = 0;
-        if (smc_read_key(conn, key, &t)) {
+        int status = smc_read_key(conn, key, &t);
+        if (status < 0) {
+            // Sleep/wake and AppleSMC service restarts can invalidate an open
+            // user client. The next sample will establish a fresh connection.
+            smc_invalidate_connection();
+            return count;
+        }
+        if (status > 0) {
             temps[count] = t;
             smc_write_sensor_name(names, nameStride, count, key);
             count++;
         }
     }
 
-    IOServiceClose(conn);
     return count;
 }

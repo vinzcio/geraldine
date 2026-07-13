@@ -3,6 +3,8 @@ import SwiftUI
 struct BatteryView: View {
     @EnvironmentObject var state: AppState
     @EnvironmentObject var monitor: SystemMonitor
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.geraldineSurfaceActive) private var surfaceActive
     @StateObject private var vm = BatteryViewModel()
     @State private var range: HistoryRange = .day
 
@@ -12,28 +14,29 @@ struct BatteryView: View {
     private var hasInternalBattery: Bool { monitor.hasBattery || vm.detail.hasBattery }
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 16) {
-                ModuleHeader(module: .battery,
-                             title: hasInternalBattery ? nil : "Power",
-                             subtitle: hasInternalBattery ? nil : "AC power status for \(hardwareName)",
-                             systemImage: hasInternalBattery ? nil : "powerplug")
-                    .padding(.horizontal, -26)
-
-                if !hasInternalBattery {
-                    powerStatusCard
-                    consumersCard(title: "Power Consumers", subtitle: "Apps using the most energy")
-                } else {
-                    hero
-                    historyCard
-                    consumersCard(title: "Battery Consumers", subtitle: "Apps using the most energy")
-                    healthCard
-                }
+        ModulePage(
+            module: .battery,
+            title: hasInternalBattery ? nil : "Power",
+            subtitle: hasInternalBattery ? nil : "AC power status for \(hardwareName)",
+            systemImage: hasInternalBattery ? nil : "powerplug",
+            headerStyle: .data,
+            widthRole: .fluid
+        ) {
+            if !hasInternalBattery {
+                powerStatusCard
+                consumersCard(title: "Power Consumers", subtitle: "Apps using the most energy")
+            } else {
+                hero
+                historyCard
+                consumersCard(title: "Battery Consumers", subtitle: "Apps using the most energy")
+                healthCard
             }
-            .padding(26)
         }
-        .onAppear { vm.start() }
+        .onAppear { if surfaceActive { vm.start() } }
         .onDisappear { vm.stop() }
+        .onChange(of: surfaceActive) { _, isActive in
+            isActive ? vm.start() : vm.stop()
+        }
     }
 
     // MARK: Hero
@@ -58,7 +61,8 @@ struct BatteryView: View {
             }
             Spacer()
         }
-        .card()
+        .card(tier: .tinted(BatteryGlyph.color(level: level, charging: monitor.batteryCharging)),
+              cornerRadius: Theme.Radius.hero)
     }
 
     // Mirrors the menu-bar widget's battery language ("Plugged In · Optimized
@@ -104,7 +108,7 @@ struct BatteryView: View {
             }
             Spacer()
         }
-        .card()
+        .card(tier: .tinted(tint), cornerRadius: Theme.Radius.hero)
     }
 
     // MARK: Charge history
@@ -131,6 +135,8 @@ struct BatteryView: View {
                                    currentLevel: monitor.batteryLevel,
                                    currentOnAC: monitor.batteryCharging || vm.detail.externalConnected)
                     .frame(height: 168)
+                    .id(range)
+                    .transition(GeraldineMotion.stateTransition(reduceMotion: reduceMotion))
                 HStack(spacing: 16) {
                     legendSwatch(tint.opacity(0.18), "Charging / Plugged In")
                     legendSwatch(tint, "Battery Level")
@@ -139,7 +145,8 @@ struct BatteryView: View {
                 .font(.caption2).foregroundStyle(.secondary)
             }
         }
-        .card()
+        .animation(GeraldineMotion.animation(.standard, reduceMotion: reduceMotion), value: range)
+        .card(tier: .raised, cornerRadius: Theme.Radius.raised)
     }
 
     private func placeholder<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
@@ -186,7 +193,7 @@ struct BatteryView: View {
                     }
                 }
             }
-            .card()
+            .card(tier: .base)
         }
     }
 
@@ -226,7 +233,7 @@ struct BatteryView: View {
                 if let adapter = adapterLabel, d.adapterConnected { cell("Power Adapter", adapter) }
             }
         }
-        .card()
+        .card(tier: .raised, cornerRadius: Theme.Radius.raised)
     }
 
     private func healthColor(_ d: BatteryDetail) -> Color {
@@ -259,8 +266,12 @@ struct BatteryView: View {
 
 /// A horizontal battery icon whose inner bar fills to `level`, with a charging bolt.
 struct BatteryGlyph: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     var level: Double
     var charging: Bool
+
+    @State private var plugHaloProgress: CGFloat = 1
 
     static func color(level: Double, charging: Bool) -> Color {
         if charging || level > 0.2 { return Theme.good }
@@ -274,28 +285,50 @@ struct BatteryGlyph: View {
     var body: some View {
         HStack(spacing: 2) {
             ZStack {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                Capsule()
+                    .stroke(
+                        Self.color(level: level, charging: charging)
+                            .opacity((1 - plugHaloProgress) * 0.46),
+                        lineWidth: 2
+                    )
+                    .frame(width: bodyWidth + 16, height: bodyHeight + 16)
+                    .scaleEffect(0.90 + (0.38 * plugHaloProgress))
+                RoundedRectangle(cornerRadius: Theme.Radius.badge, style: .continuous)
                     .strokeBorder(Color.primary.opacity(0.35), lineWidth: 2)
                     .frame(width: bodyWidth, height: bodyHeight)
                 HStack(spacing: 0) {
                     RoundedRectangle(cornerRadius: 4, style: .continuous)
                         .fill(Self.color(level: level, charging: charging).gradient)
                         .frame(width: max(4, (bodyWidth - 8) * min(1, max(0, level))), height: bodyHeight - 8)
-                        .animation(.easeInOut(duration: 0.5), value: level)
+                        .animation(GeraldineMotion.animation(.emphasis, reduceMotion: reduceMotion), value: level)
                     Spacer(minLength: 0)
                 }
                 .frame(width: bodyWidth - 8, height: bodyHeight - 8)
                 if charging {
-                    Image(systemName: "bolt.fill")
-                        .font(.system(size: 14, weight: .bold))
-                        .foregroundStyle(.white)
-                        .shadow(color: .black.opacity(0.25), radius: 1)
+                    ContextualSymbol(
+                        inactive: "bolt",
+                        active: "bolt.fill",
+                        isActive: charging,
+                        tint: .white,
+                        size: 14
+                    )
+                    .shadow(color: .black.opacity(0.25), radius: 1)
                 }
             }
             Capsule()
                 .fill(Color.primary.opacity(0.35))
                 .frame(width: 3, height: 11)
         }
+        .onChange(of: charging) { oldValue, newValue in
+            guard !oldValue, newValue, !reduceMotion else { return }
+            plugHaloProgress = 0
+            withAnimation(GeraldineMotion.animation(.emphasis, reduceMotion: false)) {
+                plugHaloProgress = 1
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(charging ? "Battery charging" : "Battery")
+        .accessibilityValue(Fmt.percent(level))
     }
 }
 
@@ -304,6 +337,13 @@ struct BatteryGlyph: View {
 /// Reconstructs the macOS Battery-settings graph: charge level over time with
 /// shaded charging/plugged-in windows behind the level curve.
 struct ChargeHistoryChart: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.geraldineSurfaceActive) private var surfaceActive
+    @FocusState private var accessibilityFocused: Bool
+    @State private var endpointReveal: CGFloat = 0
+    @State private var inspectionLocation: CGPoint?
+    @State private var accessibilityIndex: Int?
+
     var samples: [ChargeSample]
     var range: HistoryRange
     var tint: Color
@@ -311,7 +351,8 @@ struct ChargeHistoryChart: View {
     var currentOnAC: Bool
 
     var body: some View {
-        Canvas { ctx, size in
+        ZStack {
+            Canvas { ctx, size in
             let rightAxis: CGFloat = 36
             let bottomAxis: CGFloat = 18
             let plotW = max(1, size.width - rightAxis)
@@ -326,6 +367,13 @@ struct ChargeHistoryChart: View {
                 CGFloat(min(max(date.timeIntervalSince(start) / span, 0), 1)) * plotW
             }
             func y(_ level: Double) -> CGFloat { (1 - CGFloat(min(max(level, 0), 1))) * plotH }
+
+            // A whisper of low-charge context, kept behind the actual data.
+            let lowChargeY = y(0.20)
+            ctx.fill(
+                Path(CGRect(x: 0, y: lowChargeY, width: plotW, height: plotH - lowChargeY)),
+                with: .color(Theme.bad.opacity(0.035))
+            )
 
             // Horizontal gridlines + % labels (100 / 50 / 0).
             for frac in [0.0, 0.5, 1.0] {
@@ -365,11 +413,203 @@ struct ChargeHistoryChart: View {
             }
             ctx.stroke(line, with: .color(tint), style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
 
+            if let last = pts.last, endpointReveal > 0 {
+                let point = CGPoint(x: x(last.date), y: y(last.level))
+                let haloRadius = 7 * endpointReveal
+                ctx.fill(Path(ellipseIn: CGRect(x: point.x - haloRadius,
+                                                y: point.y - haloRadius,
+                                                width: haloRadius * 2,
+                                                height: haloRadius * 2)),
+                         with: .color(tint.opacity(0.18 * Double(endpointReveal))))
+                let dotRadius = 3 * endpointReveal
+                ctx.fill(Path(ellipseIn: CGRect(x: point.x - dotRadius,
+                                                y: point.y - dotRadius,
+                                                width: dotRadius * 2,
+                                                height: dotRadius * 2)),
+                         with: .color(tint))
+            }
+
             // X-axis time labels.
             for tick in axisTicks(start: start, end: end) {
                 ctx.draw(Text(tick.label).font(.system(size: 10)).foregroundStyle(.secondary),
                          at: CGPoint(x: x(tick.date), y: size.height - 7), anchor: .center)
             }
+            }
+
+            GeometryReader { proxy in
+                if let inspection = displayedInspection(size: proxy.size) {
+                    Path { path in
+                        path.move(to: CGPoint(x: inspection.point.x, y: 0))
+                        path.addLine(to: CGPoint(x: inspection.point.x, y: max(0, proxy.size.height - 18)))
+                    }
+                    .stroke(Theme.focusRing.opacity(0.46),
+                            style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+
+                    Circle()
+                        .fill(tint)
+                        .frame(width: 8, height: 8)
+                        .position(inspection.point)
+
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(Fmt.percent(inspection.sample.level))
+                            .font(.caption.weight(.semibold).monospacedDigit())
+                        Text(inspection.sample.onAC ? "Plugged in" : "On battery")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        Text(inspection.sample.date, style: .time)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .adaptiveMaterialBackground(
+                        .regular,
+                        in: RoundedRectangle(cornerRadius: Theme.Radius.badge, style: .continuous)
+                    )
+                    .overlay(RoundedRectangle(cornerRadius: Theme.Radius.badge, style: .continuous)
+                        .strokeBorder(Theme.separator))
+                    .position(x: min(max(inspection.point.x, 58), proxy.size.width - 84), y: 31)
+                }
+            }
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: Theme.Radius.badge, style: .continuous)
+                .strokeBorder(accessibilityFocused ? Theme.focusRing : .clear,
+                              lineWidth: 2)
+        }
+        .contentShape(Rectangle())
+        .focusable()
+        .focused($accessibilityFocused)
+        .focusEffectDisabled()
+        .onMoveCommand(perform: moveAccessibilitySelection)
+        .onContinuousHover { phase in
+            switch phase {
+            case .active(let point): inspectionLocation = point
+            case .ended: inspectionLocation = nil
+            }
+        }
+        .onChange(of: accessibilityFocused) { _, isFocused in
+            if isFocused, accessibilityIndex == nil {
+                accessibilityIndex = accessibilitySamples.indices.last
+            } else if !isFocused {
+                accessibilityIndex = nil
+            }
+        }
+        .onChange(of: accessibilitySamples.count) { _, _ in clampAccessibilitySelection() }
+        .onAppear {
+            guard surfaceActive,
+                  !reduceMotion,
+                  let animation = GeraldineMotion.animation(.emphasis, reduceMotion: false) else {
+                endpointReveal = 1
+                return
+            }
+            withAnimation(animation) { endpointReveal = 1 }
+        }
+        .onDisappear {
+            endpointReveal = 0
+            inspectionLocation = nil
+            accessibilityIndex = nil
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Battery charge history")
+        .accessibilityValue(accessibilityValue)
+        .accessibilityHint("Use left and right arrow keys, or increment and decrement, to inspect samples.")
+        .accessibilityAdjustableAction(adjustAccessibilitySelection)
+    }
+
+    private struct Inspection {
+        let sample: ChargeSample
+        let point: CGPoint
+    }
+
+    private func inspection(at location: CGPoint?, size: CGSize) -> Inspection? {
+        guard let location else { return nil }
+        let rightAxis: CGFloat = 36
+        let plotWidth = max(1, size.width - rightAxis)
+        let end = Date()
+        let start = end.addingTimeInterval(-range.seconds)
+        let points = plotPoints(start: start, end: end)
+        guard !points.isEmpty else { return nil }
+        let fraction = Double(min(max(location.x / plotWidth, 0), 1))
+        let target = start.addingTimeInterval(range.seconds * fraction)
+        guard let sample = points.min(by: {
+            abs($0.date.timeIntervalSince(target)) < abs($1.date.timeIntervalSince(target))
+        }) else { return nil }
+        return inspection(for: sample, start: start, end: end, size: size)
+    }
+
+    private func displayedInspection(size: CGSize) -> Inspection? {
+        if let hoverInspection = inspection(at: inspectionLocation, size: size) {
+            return hoverInspection
+        }
+        guard let accessibilityIndex,
+              accessibilitySamples.indices.contains(accessibilityIndex) else { return nil }
+        let end = Date()
+        let start = end.addingTimeInterval(-range.seconds)
+        return inspection(for: accessibilitySamples[accessibilityIndex],
+                          start: start,
+                          end: end,
+                          size: size)
+    }
+
+    private func inspection(for sample: ChargeSample, start: Date, end: Date, size: CGSize) -> Inspection {
+        let rightAxis: CGFloat = 36
+        let bottomAxis: CGFloat = 18
+        let plotWidth = max(1, size.width - rightAxis)
+        let plotHeight = max(1, size.height - bottomAxis)
+        let x = CGFloat(min(max(sample.date.timeIntervalSince(start) / max(range.seconds, 1), 0), 1)) * plotWidth
+        let y = (1 - CGFloat(min(max(sample.level, 0), 1))) * plotHeight
+        return Inspection(sample: sample, point: CGPoint(x: x, y: y))
+    }
+
+    private var accessibilityValue: String {
+        if let accessibilityIndex,
+           accessibilitySamples.indices.contains(accessibilityIndex) {
+            let sample = accessibilitySamples[accessibilityIndex]
+            return "\(Fmt.percent(sample.level)), \(sample.onAC ? "plugged in" : "on battery"), \(Self.accessibilityDateFormatter.string(from: sample.date)), sample \(accessibilityIndex + 1) of \(accessibilitySamples.count)"
+        }
+        guard let latest = accessibilitySamples.last else {
+            if let currentLevel { return "Current level \(Fmt.percent(currentLevel)); collecting history" }
+            return "Collecting history"
+        }
+        return "Latest level \(Fmt.percent(currentLevel ?? latest.level)), \(currentOnAC ? "plugged in" : "on battery")"
+    }
+
+    private var accessibilitySamples: [ChargeSample] {
+        let end = Date()
+        return plotPoints(start: end.addingTimeInterval(-range.seconds), end: end)
+    }
+
+    private func adjustAccessibilitySelection(_ direction: AccessibilityAdjustmentDirection) {
+        switch direction {
+        case .increment: stepAccessibilitySelection(by: 1)
+        case .decrement: stepAccessibilitySelection(by: -1)
+        @unknown default: break
+        }
+    }
+
+    private func moveAccessibilitySelection(_ direction: MoveCommandDirection) {
+        switch direction {
+        case .right, .down: stepAccessibilitySelection(by: 1)
+        case .left, .up: stepAccessibilitySelection(by: -1)
+        @unknown default: break
+        }
+    }
+
+    private func stepAccessibilitySelection(by offset: Int) {
+        let samples = accessibilitySamples
+        guard !samples.isEmpty else { return }
+        let current = accessibilityIndex ?? (samples.count - 1)
+        accessibilityIndex = min(max(current + offset, 0), samples.count - 1)
+    }
+
+    private func clampAccessibilitySelection() {
+        guard let accessibilityIndex else { return }
+        let count = accessibilitySamples.count
+        if count == 0 {
+            self.accessibilityIndex = nil
+        } else {
+            self.accessibilityIndex = min(accessibilityIndex, count - 1)
         }
     }
 
@@ -422,6 +662,13 @@ struct ChargeHistoryChart: View {
         df.locale = Locale(identifier: "en_US_POSIX")
         df.dateFormat = "MMM d"
         return df
+    }()
+
+    private static let accessibilityDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return formatter
     }()
 
     private func hourLabel(_ date: Date, _ cal: Calendar) -> String {

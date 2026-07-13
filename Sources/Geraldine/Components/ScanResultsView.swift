@@ -4,7 +4,7 @@ import SwiftUI
 /// Used by Cleanup, Privacy, Uninstaller leftovers, and Large & Old Files.
 struct ScanResultsView: View {
     let groups: [ScanGroup]
-    @Binding var selection: Set<UUID>
+    @Binding var selection: Set<String>
     var diagnostics: ScanDiagnostics = .empty
     var actionTitle: String = "Move to Trash"
     var actionIcon: String = "trash"
@@ -23,14 +23,15 @@ struct ScanResultsView: View {
             }
 
             List {
-                ForEach(groups) { group in
+                ForEach(Array(groups.enumerated()), id: \.element.id) { index, group in
                     Section {
                         ForEach(group.items) { item in
-                            row(item)
+                            row(item, in: group)
                         }
                     } header: {
                         groupHeader(group)
                     }
+                    .geraldineEntrance(delay: min(Double(index) * 0.07, 0.21), distance: 6)
                 }
             }
             .listStyle(.inset)
@@ -48,37 +49,84 @@ struct ScanResultsView: View {
             Button(allSelected(group) ? "Deselect" : "Select All") {
                 toggleGroup(group)
             }
-            .buttonStyle(.plain).font(.caption).foregroundStyle(Theme.accent)
+            .buttonStyle(.quiet(group.tint))
+            .controlSize(.small)
         }
         .padding(.vertical, 2)
     }
 
-    private func row(_ item: ScanItem) -> some View {
-        Button {
+    private func row(_ item: ScanItem, in group: ScanGroup) -> some View {
+        let isSelected = selection.contains(item.id)
+        return Button {
             toggle(item.id)
         } label: {
-            HStack(spacing: 10) {
-                Image(systemName: selection.contains(item.id) ? "checkmark.circle.fill" : "circle")
-                    .foregroundStyle(selection.contains(item.id) ? Theme.accent : Color.secondary)
+            HStack(spacing: Theme.Spacing.sm) {
+                ContextualSymbol(inactive: "circle",
+                                 active: "checkmark.circle.fill",
+                                 isActive: isSelected,
+                                 tint: group.tint,
+                                 size: 17)
+
+                identity(for: item, group: group)
+
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(item.name).lineLimit(1)
+                    Text(item.name)
+                        .font(.rounded(13, .semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
                     if !item.detail.isEmpty {
-                        Text(item.detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        Text(item.detail)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
                     }
                 }
                 Spacer()
-                Text(Fmt.size(item.size)).font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+                AnimatedNumberText(Fmt.size(item.size), value: Double(item.size))
+                    .font(.callout.monospacedDigit())
+                    .foregroundStyle(.secondary)
             }
+            .padding(.vertical, Theme.Spacing.xxs)
+            .padding(.horizontal, Theme.Spacing.xxs)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.geraldineSelection(group.tint, isSelected: isSelected))
+        .accessibilityLabel(item.name)
+        .accessibilityValue("\(Fmt.size(item.size)), \(isSelected ? "selected" : "not selected")")
+    }
+
+    @ViewBuilder
+    private func identity(for item: ScanItem, group: ScanGroup) -> some View {
+        if let url = item.identityURL {
+            AppIconPlate(size: 34) {
+                Image(nsImage: NSWorkspace.shared.icon(forFile: url.path))
+                    .resizable()
+                    .scaledToFit()
+                    .padding(3)
+            }
+        } else {
+            ModuleGlyph(systemImage: group.icon, tint: group.tint, size: 34)
+        }
     }
 
     private var footer: some View {
         HStack {
-            Text(selectedCount == 0 ? "Nothing Selected"
-                 : "\(selectedCount) Items · \(Fmt.size(selectedSize)) Selected")
-                .font(.callout).foregroundStyle(.secondary)
+            if selectedCount == 0 {
+                Text("Nothing Selected")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            } else {
+                HStack(spacing: 4) {
+                    AnimatedNumberText("\(selectedCount)", value: Double(selectedCount))
+                    Text(selectedCount == 1 ? "Item" : "Items")
+                    Text("·")
+                    AnimatedNumberText(Fmt.size(selectedSize), value: Double(selectedSize))
+                    Text("Selected")
+                }
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .accessibilityElement(children: .combine)
+            }
             Spacer()
             Button(action: onClean) {
                 HStack(spacing: 7) {
@@ -86,24 +134,17 @@ struct ScanResultsView: View {
                     else { Image(systemName: actionIcon) }
                     Text(actionTitle).font(.rounded(14, .semibold))
                 }
-                .padding(.horizontal, 18).padding(.vertical, 9)
-                .foregroundStyle(.white)
-                .background(selectedCount == 0 ? AnyShapeStyle(Color.gray.opacity(0.4))
-                                               : AnyShapeStyle(Theme.brandGradient),
-                            in: Capsule())
-                .shadow(color: selectedCount == 0 ? .clear : Theme.accent.opacity(0.30),
-                        radius: 8, y: 3)
+                .frame(minWidth: 126)
             }
-            .buttonStyle(.plain)
-            .pointingHandCursor()
+            .buttonStyle(BrandProminentButtonStyle())
             .disabled(selectedCount == 0 || isBusy)
         }
         .padding(16)
-        .background(.ultraThinMaterial)
+        .adaptiveMaterialBackground(.ultraThin, in: Rectangle())
     }
 
     // MARK: helpers
-    private func toggle(_ id: UUID) {
+    private func toggle(_ id: String) {
         if selection.contains(id) { selection.remove(id) } else { selection.insert(id) }
     }
     private func allSelected(_ group: ScanGroup) -> Bool {
@@ -111,8 +152,12 @@ struct ScanResultsView: View {
     }
     private func toggleGroup(_ group: ScanGroup) {
         let ids = group.items.map(\.id)
-        if allSelected(group) { ids.forEach { selection.remove($0) } }
-        else { ids.forEach { selection.insert($0) } }
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            if allSelected(group) { ids.forEach { selection.remove($0) } }
+            else { ids.forEach { selection.insert($0) } }
+        }
     }
 }
 
@@ -142,11 +187,14 @@ struct ScanDiagnosticsBanner: View {
             }
         }
         .padding(10)
-        .background((diagnostics.cancelled ? Color.secondary : Theme.warn).opacity(0.10),
-                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .background(Theme.decorativeFill(diagnostics.cancelled ? Color.secondary : Theme.warn),
+                    in: RoundedRectangle(cornerRadius: Theme.Radius.badge, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder((diagnostics.cancelled ? Color.secondary : Theme.warn).opacity(0.18), lineWidth: 1)
+            RoundedRectangle(cornerRadius: Theme.Radius.badge, style: .continuous)
+                .strokeBorder(Theme.decorativeFill(
+                    diagnostics.cancelled ? Color.secondary : Theme.warn,
+                    strength: .strong
+                ), lineWidth: 1)
         )
     }
 

@@ -19,6 +19,10 @@ struct IdleActivitySimulationSnapshot: Equatable {
     var errorMessage: String?
 }
 
+/// Simulates activity (mouse nudges / arrow-key pairs) once the user has been
+/// idle for a configurable delay. Idleness comes from polling the system's
+/// HIDIdleTime counter — deliberately not a CGEvent tap, so Geraldine never
+/// sits in the delivery path of real keyboard or mouse input.
 final class IdleActivitySimulationService {
     var onSnapshotChange: ((IdleActivitySimulationSnapshot) -> Void)?
 
@@ -40,24 +44,11 @@ final class IdleActivitySimulationService {
     ]
     private static let pulseIntervalJitter = 0.6...1.8
     private static let mouseNudgeDistanceRange = 4.0...14.0
-    private static let inputEventTypes: [CGEventType] = [
-        .keyDown,
-        .flagsChanged,
-        .leftMouseDown,
-        .leftMouseUp,
-        .rightMouseDown,
-        .rightMouseUp,
-        .otherMouseDown,
-        .otherMouseUp,
-        .mouseMoved,
-        .leftMouseDragged,
-        .rightMouseDragged,
-        .otherMouseDragged,
-        .scrollWheel
-    ]
-    private static let inputEventMask = inputEventTypes.reduce(CGEventMask(0)) { mask, type in
-        mask | CGEventMask(1 << type.rawValue)
-    }
+    // Our own pulses reset HIDIdleTime. Date is kept for the UI, while uptime
+    // gives the detector the same monotonic clock semantics as HIDIdleTime.
+    // The small tolerance covers event-delivery skew without swallowing real
+    // input that arrives shortly after Geraldine's synthetic pulse.
+    private static let realInputTolerance: TimeInterval = 0.05
 
     private var idleDelay: TimeInterval
     private let pulseInterval: TimeInterval
@@ -65,14 +56,10 @@ final class IdleActivitySimulationService {
     private var isPulsing = false
     private var phase: IdleActivitySimulationPhase = .off
     private var lastPulse: Date?
+    private var lastPulseUptime: TimeInterval?
     private var lastUserInput = Date()
     private var errorMessage: String?
     private var timer: Timer?
-    private var ignoreInputUntil: Date?
-
-    private lazy var tap = EventTapService(mask: Self.inputEventMask) { [weak self] type, event in
-        self?.handle(type: type, event: event) ?? false
-    }
 
     init(idleDelay: TimeInterval = 120, pulseInterval: TimeInterval = 30) {
         self.idleDelay = idleDelay
@@ -91,14 +78,14 @@ final class IdleActivitySimulationService {
             return
         }
 
-        guard tap.start() else {
-            stopRuntime(phase: .failed, errorMessage: "Could not monitor input.")
+        guard let currentIdle = Self.currentHIDIdleDuration() else {
+            stopRuntime(phase: .failed, errorMessage: "Could Not Read System Idle Time")
             return
         }
 
-        let currentIdle = Self.currentHIDIdleDuration() ?? 0
         lastUserInput = Date().addingTimeInterval(-currentIdle)
         lastPulse = nil
+        lastPulseUptime = nil
         isPulsing = false
 
         if currentIdle >= idleDelay {
@@ -114,43 +101,13 @@ final class IdleActivitySimulationService {
         stopRuntime(phase: .off)
     }
 
-    func refreshAccess() {
-        guard isEnabled else {
-            stopRuntime(phase: .off)
-            return
-        }
-        start()
-    }
-
     private func stopRuntime(phase: IdleActivitySimulationPhase, errorMessage: String? = nil) {
         timer?.invalidate()
         timer = nil
         isPulsing = false
+        lastPulseUptime = nil
         self.errorMessage = errorMessage
-        tap.stop()
         setPhase(phase)
-    }
-
-    private func handle(type: CGEventType, event: CGEvent) -> Bool {
-        guard isEnabled,
-              Self.inputEventTypes.contains(type),
-              !isIgnoringSyntheticEcho() else {
-            return false
-        }
-
-        DispatchQueue.main.async { [weak self] in
-            self?.recordUserInput()
-        }
-        return false
-    }
-
-    private func recordUserInput() {
-        guard isEnabled else { return }
-        lastUserInput = Date()
-        isPulsing = false
-        errorMessage = nil
-        setPhase(.waiting)
-        schedule(after: idleDelay)
     }
 
     private func schedule(after interval: TimeInterval) {
@@ -170,18 +127,35 @@ final class IdleActivitySimulationService {
             return
         }
 
+        guard let idle = Self.currentHIDIdleDuration() else {
+            stopRuntime(phase: .failed, errorMessage: "Could Not Read System Idle Time")
+            return
+        }
+
         if isPulsing {
+            // The idle clock restarts at every event, including our own pulses.
+            // An idle time noticeably younger than our last pulse therefore
+            // means real input arrived since then: the user is back.
+            let nowUptime = ProcessInfo.processInfo.systemUptime
+            let sinceLastPulse = lastPulseUptime.map { nowUptime - $0 } ?? .greatestFiniteMagnitude
+            if idle + Self.realInputTolerance < sinceLastPulse {
+                isPulsing = false
+                lastUserInput = Date().addingTimeInterval(-idle)
+                setPhase(.waiting)
+                schedule(after: max(1, idleDelay - idle))
+                return
+            }
             pulse()
             schedule(after: nextPulseInterval())
             return
         }
 
-        let elapsed = Date().timeIntervalSince(lastUserInput)
-        if elapsed >= idleDelay {
+        lastUserInput = Date().addingTimeInterval(-idle)
+        if idle >= idleDelay {
             beginPulsing()
         } else {
             setPhase(.waiting)
-            schedule(after: idleDelay - elapsed)
+            schedule(after: idleDelay - idle)
         }
     }
 
@@ -194,17 +168,17 @@ final class IdleActivitySimulationService {
 
     private func pulse() {
         guard postPulse() else {
-            stopRuntime(phase: .failed, errorMessage: "Could not post input events.")
+            stopRuntime(phase: .failed, errorMessage: "Could Not Post Input Events")
             return
         }
 
         lastPulse = Date()
+        lastPulseUptime = ProcessInfo.processInfo.systemUptime
         setPhase(.pulsing)
     }
 
     private func postPulse() -> Bool {
         guard let source = CGEventSource(stateID: .hidSystemState) else { return false }
-        ignoreInputUntil = Date().addingTimeInterval(0.8)
 
         for action in randomPulseActions() {
             switch action {
@@ -279,15 +253,6 @@ final class IdleActivitySimulationService {
         down.post(tap: .cghidEventTap)
         up.post(tap: .cghidEventTap)
         return true
-    }
-
-    private func isIgnoringSyntheticEcho() -> Bool {
-        guard let ignoreInputUntil else { return false }
-        if Date() < ignoreInputUntil {
-            return true
-        }
-        self.ignoreInputUntil = nil
-        return false
     }
 
     private func setPhase(_ phase: IdleActivitySimulationPhase) {

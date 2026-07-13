@@ -3,7 +3,7 @@ import Darwin
 import IOKit
 import IOKit.ps
 
-struct NetworkSample: Codable, Equatable, Identifiable {
+struct NetworkSample: Codable, Equatable, Identifiable, TimelineSample {
     var timestamp: TimeInterval
     var down: Double
     var up: Double
@@ -25,8 +25,9 @@ struct NetworkSample: Codable, Equatable, Identifiable {
 /// Samples live system vitals on a timer. Drives both the menu bar and the dashboard.
 @MainActor
 final class SystemMonitor: ObservableObject {
-    static let networkHistoryWindow: TimeInterval = 5 * 60
-    static let networkSampleGapThreshold: TimeInterval = 4
+    nonisolated static let liveHistoryWindow: TimeInterval = 5 * 60
+    nonisolated static let longHistoryWindow: TimeInterval = 24 * 60 * 60
+    nonisolated static let chartSampleGapThreshold: TimeInterval = 4
 
     @Published var cpuUsage: Double = 0          // 0…1
     @Published var memoryUsed: Double = 0        // bytes
@@ -46,18 +47,16 @@ final class SystemMonitor: ObservableObject {
     @Published var netDown: Double = 0           // bytes/sec
     @Published var netUp: Double = 0             // bytes/sec
 
-    // Rolling histories for sparkline graphs. CPU/memory/battery/disk are normalized
-    // (0…1); thermal is raw Celsius; network is bytes/sec. Battery/storage retain a
-    // day of samples so their expanded widgets can show longer-term movement.
-    @Published var cpuHistory: [Double] = []
-    @Published var memHistory: [Double] = []
-    @Published var batteryHistory: [Double] = []
-    @Published var diskHistory: [Double] = []
+    // Every live history keeps its measurement timestamp. Charts use those timestamps
+    // for x-positioning, so a few seconds of activity stays at the right edge of a
+    // fixed window instead of being stretched across the entire chart.
+    @Published var cpuHistory: [MetricSample] = []
+    @Published var memHistory: [MetricSample] = []
+    @Published var batteryHistory: [MetricSample] = []
+    @Published var diskHistory: [MetricSample] = []
     @Published var networkHistory: [NetworkSample] = []
-    @Published var thermalHistory: [Double] = []
+    @Published var thermalHistory: [MetricSample] = []
     @Published var thermal: Thermal.Reading = .empty
-    private let chartHistoryLimit = 300
-    private let dayChartHistoryLimit = 24 * 60 * 60
     private let networkHistoryKey = "geraldine.networkHistory.v1"
     private let defaults: UserDefaults
 
@@ -88,6 +87,7 @@ final class SystemMonitor: ObservableObject {
     var diskFraction: Double { diskTotal > 0 ? diskUsed / diskTotal : 0 }
 
     func refresh() {
+        let timestamp = Date().timeIntervalSinceReferenceDate
         cpuUsage = sampleCPU()
         let mem = Self.sampleMemory()
         memoryUsed = mem.used
@@ -105,14 +105,15 @@ final class SystemMonitor: ObservableObject {
             netDown = networkSample.down; netUp = networkSample.up
         }
 
-        func trim(_ series: inout [Double], _ value: Double, limit: Int = chartHistoryLimit) {
-            series.append(value)
-            if series.count > limit { series.removeFirst(series.count - limit) }
-        }
-        trim(&cpuHistory, cpuUsage)
-        trim(&memHistory, memoryFraction)
-        trim(&batteryHistory, batteryLevel ?? batteryHistory.last ?? 1, limit: dayChartHistoryLimit)
-        trim(&diskHistory, diskFraction, limit: dayChartHistoryLimit)
+        let batteryValue = batteryLevel ?? batteryHistory.last?.value ?? 1
+        Self.appendMetricSample(&cpuHistory, value: cpuUsage, timestamp: timestamp,
+                                retaining: Self.liveHistoryWindow)
+        Self.appendMetricSample(&memHistory, value: memoryFraction, timestamp: timestamp,
+                                retaining: Self.liveHistoryWindow)
+        Self.appendMetricSample(&batteryHistory, value: batteryValue, timestamp: timestamp,
+                                retaining: Self.longHistoryWindow)
+        Self.appendMetricSample(&diskHistory, value: diskFraction, timestamp: timestamp,
+                                retaining: Self.longHistoryWindow)
         if let networkSample {
             appendNetworkSample(networkSample)
         } else {
@@ -139,11 +140,19 @@ final class SystemMonitor: ObservableObject {
         thermalInFlight = false
         thermal = reading
         if reading.available {
-            thermalHistory.append(reading.cpu)
-            if thermalHistory.count > chartHistoryLimit { thermalHistory.removeFirst(thermalHistory.count - chartHistoryLimit) }
+            Self.appendMetricSample(&thermalHistory, value: reading.cpu,
+                                    timestamp: Date().timeIntervalSinceReferenceDate,
+                                    retaining: Self.liveHistoryWindow)
         } else {
             thermalHistory.removeAll()
         }
+    }
+
+    private static func appendMetricSample(_ history: inout [MetricSample], value: Double,
+                                           timestamp: TimeInterval, retaining window: TimeInterval) {
+        history.append(MetricSample(timestamp: timestamp, value: value))
+        let cutoff = timestamp - window
+        history.removeAll { $0.timestamp < cutoff }
     }
 
     // MARK: - Uptime & load
@@ -341,7 +350,7 @@ final class SystemMonitor: ObservableObject {
 
     @discardableResult
     private func pruneNetworkHistory(now: Date) -> Bool {
-        let cutoff = now.timeIntervalSinceReferenceDate - Self.networkHistoryWindow
+        let cutoff = now.timeIntervalSinceReferenceDate - Self.liveHistoryWindow
         let originalCount = networkHistory.count
         networkHistory.removeAll { $0.timestamp < cutoff }
         return networkHistory.count != originalCount
@@ -363,7 +372,7 @@ final class SystemMonitor: ObservableObject {
             return []
         }
 
-        let cutoff = now.timeIntervalSinceReferenceDate - networkHistoryWindow
+        let cutoff = now.timeIntervalSinceReferenceDate - liveHistoryWindow
         return samples
             .filter { $0.timestamp >= cutoff && $0.timestamp <= now.timeIntervalSinceReferenceDate }
             .sorted { $0.timestamp < $1.timestamp }

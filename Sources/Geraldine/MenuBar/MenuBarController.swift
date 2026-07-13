@@ -15,6 +15,12 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     private let menuBarSparklineLimit = 60
     private let statusItemHorizontalPadding: CGFloat = 8
     private let statusAnimationDuration: TimeInterval = 0.24
+    private let statusCrossfadeDuration: TimeInterval = 0.14
+
+    private enum StatusAnimationMode {
+        case digits
+        case crossfade
+    }
 
     // Digit-roll animation state. The roll is paced by a persistent, paused
     // CADisplayLink so frames land on real vblanks (no Timer-vs-vsync beat, no
@@ -30,6 +36,10 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     private var statusAnimGeometry: StatusGeometry?
     private var statusAnimOldNumber = ""
     private var statusAnimNewNumber = ""
+    private var statusAnimMode: StatusAnimationMode?
+    private var statusAnimDuration: TimeInterval = 0.24
+    private var statusAnimFromImage: NSImage?
+    private var statusAnimToImage: NSImage?
 
     private lazy var popover: NSPopover = {
         let popover = NSPopover()
@@ -62,12 +72,20 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
                 Task { @MainActor in self?.syncVisibility() }
             }
             .store(in: &cancellables)
+
+        NSWorkspace.shared.notificationCenter
+            .publisher(for: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification)
+            .sink { [weak self] _ in
+                Task { @MainActor in self?.renderStatusItem() }
+            }
+            .store(in: &cancellables)
     }
 
     private func syncVisibility() {
         if state.appShape.showsMenuBar {
             ensureStatusItem()
         } else {
+            state.setMenuBarPopoverVisible(false)
             popover.close()
             if let statusItem {
                 NSStatusBar.system.removeStatusItem(statusItem)
@@ -111,18 +129,26 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
 
     @objc private func togglePopover(_ sender: NSStatusBarButton) {
         if popover.isShown {
+            state.setMenuBarPopoverVisible(false)
             popover.performClose(sender)
         } else {
             // Refresh the on-demand panels right before the popover appears.
             state.network.refreshWiFi()
             state.devices.refresh()
+            state.setMenuBarPopoverVisible(true)
             popover.show(relativeTo: popoverAnchorRect(for: sender), of: sender, preferredEdge: .minY)
             sender.highlight(true)
             popover.contentViewController?.view.window?.makeKey()
+            if !popover.isShown { state.setMenuBarPopoverVisible(false) }
         }
     }
 
+    func popoverDidShow(_ notification: Notification) {
+        state.setMenuBarPopoverVisible(true)
+    }
+
     func popoverDidClose(_ notification: Notification) {
+        state.setMenuBarPopoverVisible(false)
         statusItem?.button?.highlight(false)
     }
 
@@ -152,18 +178,63 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         let nextPlan = plan()
         let nextImage = drawStatus(nextPlan)
         applyAccessibility(for: nextPlan, to: button)
-        guard let currentStatusPlan,
-              shouldAnimateStatus(from: currentStatusPlan, to: nextPlan) else {
-            // A fresh non-animated value cleanly cancels any in-flight roll.
+
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             statusDisplayLink?.isPaused = true
             clearStatusAnimation()
             applyStatusImage(nextImage, to: button)
             self.currentStatusPlan = nextPlan
             return
         }
-        animateStatusItem(button: button, from: currentStatusPlan, to: nextPlan) {
+
+        guard let currentStatusPlan else {
+            applyStatusImage(nextImage, to: button)
             self.currentStatusPlan = nextPlan
+            return
         }
+
+        // A new sample can arrive before a digit roll finishes. Retarget from the
+        // image currently on screen so the number never snaps back to the last
+        // completed plan. The short dissolve is interruption-safe and keeps the
+        // status item's final compact footprint fixed throughout.
+        if statusAnimMode != nil {
+            animateStatusCrossfade(button: button,
+                                   from: button.image ?? drawStatus(currentStatusPlan),
+                                   to: nextImage,
+                                   targetPlan: nextPlan)
+            self.currentStatusPlan = nextPlan
+            return
+        }
+
+        if currentStatusPlan.kind == nextPlan.kind,
+           measurementTokenChanged(from: currentStatusPlan, to: nextPlan) {
+            animateStatusCrossfade(button: button,
+                                   from: button.image ?? drawStatus(currentStatusPlan),
+                                   to: nextImage,
+                                   targetPlan: nextPlan)
+            self.currentStatusPlan = nextPlan
+            return
+        }
+
+        if shouldAnimateStatus(from: currentStatusPlan, to: nextPlan) {
+            animateStatusItem(button: button, from: currentStatusPlan, to: nextPlan) {}
+            self.currentStatusPlan = nextPlan
+            return
+        }
+
+        if currentStatusPlan.kind != nextPlan.kind {
+            animateStatusCrossfade(button: button,
+                                   from: button.image ?? drawStatus(currentStatusPlan),
+                                   to: nextImage,
+                                   targetPlan: nextPlan)
+            self.currentStatusPlan = nextPlan
+            return
+        }
+
+        statusDisplayLink?.isPaused = true
+        clearStatusAnimation()
+        applyStatusImage(nextImage, to: button)
+        self.currentStatusPlan = nextPlan
     }
 
     private func plan() -> StatusPlan {
@@ -175,7 +246,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
                                   label: "", widthSample: "", color: .secondaryLabelColor,
                                   animationValue: nil, domain: 0...1)
             }
-            return StatusPlan(kind: .temperature, series: m.thermalHistory, glyph: nil,
+            return StatusPlan(kind: .temperature, series: m.thermalHistory.map(\.value), glyph: nil,
                               label: "\(Int(m.thermal.cpu.rounded()))°", widthSample: "888°",
                               color: NSColor(Thermal.color(m.thermal.cpu)),
                               animationValue: m.thermal.cpu,
@@ -183,14 +254,14 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
                               domain: Thermal.chartDomain,
                               valueColor: { NSColor(Thermal.color($0)) })
         case .cpu:
-            return StatusPlan(kind: .cpu, series: m.cpuHistory, glyph: nil,
+            return StatusPlan(kind: .cpu, series: m.cpuHistory.map(\.value), glyph: nil,
                               label: Fmt.percent(m.cpuUsage), widthSample: "100%",
                               color: NSColor(MetricChartStyle.readoutColor(for: .cpu)),
                               animationValue: m.cpuUsage * 100,
                               gradient: MetricChartStyle.gradient(for: .cpu)?.map { NSColor($0) },
                               domain: MetricChartStyle.normalizedDomain)
         case .memory:
-            return StatusPlan(kind: .memory, series: m.memHistory, glyph: nil,
+            return StatusPlan(kind: .memory, series: m.memHistory.map(\.value), glyph: nil,
                               label: Fmt.percent(m.memoryFraction), widthSample: "100%",
                               color: NSColor(MetricChartStyle.readoutColor(for: .memory)),
                               animationValue: m.memoryFraction * 100,
@@ -281,6 +352,13 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
                           width: max(statusItem?.length ?? 24, 24),
                           height: NSStatusBar.system.thickness)
         }
+
+        // Anchor to the rendered status image instead of the button's full bounds.
+        // On recent macOS releases AppKit can report an oversized status-button frame,
+        // which makes a popover appear far from the actual menu-bar item.
+        if let imageRect = button.cell?.imageRect(forBounds: bounds), imageRect.width > 1 {
+            return NSRect(x: imageRect.midX - 0.5, y: bounds.minY, width: 1, height: bounds.height)
+        }
         return bounds
     }
 
@@ -307,6 +385,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     }
 
     private func shouldAnimateStatus(from old: StatusPlan, to new: StatusPlan) -> Bool {
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return false }
         let oldNumber = splitLabel(old.label).number
         let newNumber = splitLabel(new.label).number
         return old.kind == new.kind &&
@@ -315,6 +394,12 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         hasAnimatedDigitChange(from: oldNumber, to: newNumber) &&
         old.animationValue != nil &&
         new.animationValue != nil
+    }
+
+    private func measurementTokenChanged(from old: StatusPlan, to new: StatusPlan) -> Bool {
+        let oldParts = splitLabel(old.label)
+        let newParts = splitLabel(new.label)
+        return oldParts.prefix != newParts.prefix || oldParts.suffix != newParts.suffix
     }
 
     private func animationDirection(from old: StatusPlan, to new: StatusPlan) -> CGFloat {
@@ -333,6 +418,10 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         statusAnimOldNumber = splitLabel(oldPlan.label).number
         statusAnimNewNumber = splitLabel(newPlan.label).number
         statusAnimBase = drawStatusBaseImage(newPlan, geometry: geometry)
+        statusAnimMode = .digits
+        statusAnimDuration = statusAnimationDuration
+        statusAnimFromImage = nil
+        statusAnimToImage = nil
         statusAnimFrom = oldPlan
         statusAnimTo = newPlan
         statusAnimCompletion = completion
@@ -340,6 +429,31 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         if statusItem?.length != ceil(geometry.size.width + statusItemHorizontalPadding) {
             statusItem?.length = max(24, ceil(geometry.size.width + statusItemHorizontalPadding))
         }
+
+        ensureStatusDisplayLink(for: button)
+        statusDisplayLink?.isPaused = false
+    }
+
+    private func animateStatusCrossfade(button: NSStatusBarButton, from oldImage: NSImage,
+                                        to newImage: NSImage, targetPlan: StatusPlan) {
+        let oldPlan = statusAnimTo ?? currentStatusPlan ?? targetPlan
+        statusAnimMode = .crossfade
+        statusAnimDuration = statusCrossfadeDuration
+        statusAnimFromImage = oldImage.copy() as? NSImage ?? oldImage
+        statusAnimToImage = newImage
+        statusAnimFrom = oldPlan
+        statusAnimTo = targetPlan
+        statusAnimBase = nil
+        statusAnimGeometry = nil
+        statusAnimOldNumber = ""
+        statusAnimNewNumber = ""
+        statusAnimCompletion = nil
+        statusAnimStart = CACurrentMediaTime()
+
+        // Adopt the target width immediately; only pixels dissolve. The status item
+        // never interpolates its width or perturbs neighboring menu-bar items.
+        let targetWidth = max(24, ceil(newImage.size.width + statusItemHorizontalPadding))
+        if statusItem?.length != targetWidth { statusItem?.length = targetWidth }
 
         ensureStatusDisplayLink(for: button)
         statusDisplayLink?.isPaused = false
@@ -358,20 +472,38 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
 
     @MainActor @objc private func stepStatusAnimation(_ link: CADisplayLink) {
         guard let button = statusItem?.button,
-              let oldPlan = statusAnimFrom, let newPlan = statusAnimTo,
-              let geometry = statusAnimGeometry, let base = statusAnimBase else {
+              let mode = statusAnimMode,
+              let newPlan = statusAnimTo else {
             link.isPaused = true
             return
         }
-        let progress = min(1, (CACurrentMediaTime() - statusAnimStart) / statusAnimationDuration)
-        applyStatusImage(composeAnimatedStatus(base: base, from: oldPlan, to: newPlan,
-                                               geometry: geometry, progress: progress),
-                         to: button)
+        let progress = min(1, (CACurrentMediaTime() - statusAnimStart) / max(statusAnimDuration, 0.001))
+        let renderedImage: NSImage
+        switch mode {
+        case .digits:
+            guard let oldPlan = statusAnimFrom,
+                  let geometry = statusAnimGeometry,
+                  let base = statusAnimBase else {
+                link.isPaused = true
+                return
+            }
+            renderedImage = composeAnimatedStatus(base: base, from: oldPlan, to: newPlan,
+                                                   geometry: geometry, progress: progress)
+        case .crossfade:
+            guard let oldImage = statusAnimFromImage,
+                  let newImage = statusAnimToImage else {
+                link.isPaused = true
+                return
+            }
+            renderedImage = composeStatusCrossfade(from: oldImage, to: newImage, progress: progress)
+        }
+        applyStatusImage(renderedImage, to: button)
         if progress >= 1 {
             link.isPaused = true
             let completion = statusAnimCompletion
+            let finalImage = statusAnimToImage ?? drawStatus(newPlan)
             clearStatusAnimation()
-            applyStatusImage(drawStatus(newPlan), to: button)
+            applyStatusImage(finalImage, to: button)
             completion?()
         }
     }
@@ -382,6 +514,31 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         statusAnimBase = nil
         statusAnimGeometry = nil
         statusAnimCompletion = nil
+        statusAnimMode = nil
+        statusAnimFromImage = nil
+        statusAnimToImage = nil
+    }
+
+    private func composeStatusCrossfade(from oldImage: NSImage, to newImage: NSImage,
+                                        progress: Double) -> NSImage {
+        let eased = smoothStep(CGFloat(progress))
+        let size = newImage.size
+        let image = NSImage(size: size)
+        image.lockFocus()
+        NSGraphicsContext.current?.imageInterpolation = .high
+
+        let oldRect = NSRect(
+            x: (size.width - oldImage.size.width) / 2,
+            y: (size.height - oldImage.size.height) / 2,
+            width: oldImage.size.width,
+            height: oldImage.size.height
+        )
+        oldImage.draw(in: oldRect, from: .zero, operation: .sourceOver, fraction: 1 - eased)
+        newImage.draw(in: NSRect(origin: .zero, size: size),
+                      from: .zero, operation: .sourceOver, fraction: eased)
+        image.unlockFocus()
+        image.isTemplate = false
+        return image
     }
 
     /// Renders the static layers (sparkline / glyph / prefix / suffix) once per roll.
@@ -705,7 +862,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         guard samples.count >= 2, let ctx = NSGraphicsContext.current?.cgContext else { return }
 
         let now = Date().timeIntervalSinceReferenceDate
-        let window = SystemMonitor.networkHistoryWindow
+        let window = SystemMonitor.liveHistoryWindow
         let start = now - window
         let visible = samples.filter { $0.timestamp >= start && $0.timestamp <= now }
         guard visible.count >= 2 else { return }
@@ -736,7 +893,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         }
 
         for sample in visible {
-            if let previous, sample.timestamp - previous.timestamp > SystemMonitor.networkSampleGapThreshold {
+            if let previous, sample.timestamp - previous.timestamp > SystemMonitor.chartSampleGapThreshold {
                 appendCurrentSegment()
                 current.removeAll(keepingCapacity: true)
             }

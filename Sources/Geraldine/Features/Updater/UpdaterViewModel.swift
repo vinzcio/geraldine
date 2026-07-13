@@ -2,11 +2,13 @@ import SwiftUI
 import AppKit
 
 struct OutdatedApp: Identifiable, Hashable {
-    let id = UUID()
     let token: String
     let name: String
     let current: String
     let latest: String
+    let applicationURL: URL?
+
+    var id: String { token }
 }
 
 enum BrewCheckState: Equatable {
@@ -15,6 +17,15 @@ enum BrewCheckState: Equatable {
     case failed(message: String, output: String, checkedAt: Date)
     case noUpdates(checkedAt: Date)
     case updatesAvailable(checkedAt: Date)
+}
+
+enum UpdaterDisplayPhase: Hashable {
+    case unchecked
+    case checking
+    case unavailable
+    case failed
+    case noUpdates
+    case updatesAvailable
 }
 
 struct BrewCommandFeedback: Equatable {
@@ -31,10 +42,22 @@ final class UpdaterViewModel: ObservableObject {
     @Published var outdated: [OutdatedApp] = []
     @Published var upgrading: Set<String> = []
     @Published var upgradeFeedback: [String: BrewCommandFeedback] = [:]
+    @Published var completed: [OutdatedApp] = []
     @Published var checked = false
     @Published var checkState: BrewCheckState = .unchecked
 
     var hasBrew: Bool { brewPath != nil }
+    var displayPhase: UpdaterDisplayPhase {
+        if loading { return .checking }
+        switch checkState {
+        case .unchecked: return .unchecked
+        case .unavailable: return .unavailable
+        case .failed: return .failed
+        case .noUpdates: return .noUpdates
+        case .updatesAvailable: return .updatesAvailable
+        }
+    }
+
     var checkedAt: Date? {
         switch checkState {
         case .unchecked: return nil
@@ -47,6 +70,7 @@ final class UpdaterViewModel: ObservableObject {
         loading = true
         checkState = .unchecked
         upgradeFeedback = [:]
+        completed = []
         Task {
             let report = await Task.detached(priority: .userInitiated) { Self.checkForUpdates() }.value
             self.brewPath = report.brewPath
@@ -76,6 +100,8 @@ final class UpdaterViewModel: ObservableObject {
             self.upgrading.remove(app.token)
             self.upgradeFeedback[app.token] = feedback
             if feedback.ok {
+                self.completed.removeAll { $0.token == app.token }
+                self.completed.append(app)
                 self.outdated.removeAll { $0.token == app.token }
                 if self.outdated.isEmpty {
                     self.checkState = .noUpdates(checkedAt: feedback.checkedAt)
@@ -124,8 +150,14 @@ final class UpdaterViewModel: ObservableObject {
             guard let token = entry["name"] as? String else { return nil }
             let current = (entry["installed_versions"] as? [String])?.last ?? "-"
             let latest = (entry["current_version"] as? String) ?? "-"
-            let display = token.replacingOccurrences(of: "-", with: " ").capitalized
-            return OutdatedApp(token: token, name: display, current: current, latest: latest)
+            let fallbackName = token.replacingOccurrences(of: "-", with: " ").capitalized
+            let applicationURL = installedApplicationURL(token: token, fallbackName: fallbackName)
+            let displayName = applicationURL.flatMap(applicationDisplayName) ?? fallbackName
+            return OutdatedApp(token: token,
+                               name: displayName,
+                               current: current,
+                               latest: latest,
+                               applicationURL: applicationURL)
         }
         .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
 
@@ -135,6 +167,26 @@ final class UpdaterViewModel: ObservableObject {
             state: apps.isEmpty ? .noUpdates(checkedAt: result.finishedAt)
                                 : .updatesAvailable(checkedAt: result.finishedAt)
         )
+    }
+
+    private nonisolated static func installedApplicationURL(token: String, fallbackName: String) -> URL? {
+        let homeApplications = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Applications")
+        let roots = [URL(fileURLWithPath: "/Applications", isDirectory: true), homeApplications]
+        let names = [fallbackName, token, token.replacingOccurrences(of: "-", with: " ")]
+
+        for root in roots {
+            for name in names {
+                let candidate = root.appendingPathComponent(name).appendingPathExtension("app")
+                if FileManager.default.fileExists(atPath: candidate.path) { return candidate }
+            }
+        }
+        return nil
+    }
+
+    private nonisolated static func applicationDisplayName(_ url: URL) -> String? {
+        guard let bundle = Bundle(url: url) else { return nil }
+        return (bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String)
+            ?? (bundle.object(forInfoDictionaryKey: "CFBundleName") as? String)
     }
 }
 

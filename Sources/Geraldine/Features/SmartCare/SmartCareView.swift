@@ -57,11 +57,12 @@ struct Finding: Identifiable {
 
 @MainActor
 final class SmartCareViewModel: ObservableObject {
-    enum Phase { case idle, scanning, results }
+    enum Phase: Hashable { case idle, scanning, results }
     @Published var phase: Phase = .idle
     @Published var score = 100
     @Published var findings: [Finding] = []
     @Published var scanDate: Date?
+    private var scanID = UUID()
 
     var healthLabel: String {
         switch score { case 85...: return "Great"; case 60..<85: return "Fair"; default: return "Needs Attention" }
@@ -78,6 +79,8 @@ final class SmartCareViewModel: ObservableObject {
     }
 
     func scan() {
+        let id = UUID()
+        scanID = id
         phase = .scanning
         scanDate = nil
         let diskFraction = AppState.shared.monitor.diskFraction
@@ -86,6 +89,7 @@ final class SmartCareViewModel: ObservableObject {
         let diskFree = max(0, diskTotal - AppState.shared.monitor.diskUsed)
         Task {
             let extras = await Self.gather()
+            guard self.scanID == id else { return }
             var results: [Finding] = []
 
             if diskTotal <= 0 {
@@ -221,8 +225,15 @@ final class SmartCareViewModel: ObservableObject {
 
 struct SmartCareView: View {
     @EnvironmentObject var state: AppState
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.geraldineSurfaceActive) private var surfaceActive
     @StateObject private var vm = SmartCareViewModel()
     @State private var queuedFindingIDs = Set<UUID>()
+    @State private var displayedScore = 0
+    @State private var showResultContext = false
+    @State private var revealedFindingCount = 0
+    @State private var resultRevealCompleted = false
+    @State private var revealTask: Task<Void, Never>?
 
     private var queuedFindings: [Finding] {
         vm.findings.filter { queuedFindingIDs.contains($0.id) }
@@ -236,74 +247,149 @@ struct SmartCareView: View {
                 }
             }
 
-            switch vm.phase {
-            case .idle:
-                VStack(spacing: 18) {
-                    Spacer()
-                    IconBadge(icon: "checkmark.seal.fill", tint: Theme.accent, size: 120)
-                    Text("Smart Care").font(.rounded(24, .bold))
-                    Text("One tap checks live disk space, memory pressure, user caches, logs, Trash, and user launch agents. It suggests review routes; it does not clean anything without you opening the target module.")
-                        .font(.callout).foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center).frame(maxWidth: 500)
-                    PrimaryButton(title: "Run Smart Care", icon: "sparkles", action: rescan)
-                    Spacer()
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-            case .scanning:
-                ScanningState(tint: Theme.accent, icon: "checkmark.seal.fill", label: "Checking your Mac…")
-
-            case .results:
-                ScrollView {
-                    VStack(spacing: 22) {
-                        GaugeRing(value: Double(vm.score) / 100, lineWidth: 14, tint: vm.healthColor) {
-                            VStack(spacing: 0) {
-                                Text("\(vm.score)").font(.rounded(40, .bold))
-                                Text("/ 100").font(.caption).foregroundStyle(.secondary)
-                            }
-                        }
-                        .frame(width: 180, height: 180)
-                        .padding(.top, 8)
-
-                        Text("Mac Health: \(vm.healthLabel)")
-                            .font(.rounded(20, .semibold)).foregroundStyle(vm.healthColor)
-
-                        SmartCareScanSummary(freshness: vm.freshnessText,
-                                             actionableCount: vm.actionableFindings.count)
-
-                        if !queuedFindings.isEmpty {
-                            QueuedActionsCard(findings: queuedFindings,
-                                              openFirst: openFirstQueuedAction,
-                                              clear: { queuedFindingIDs.removeAll() })
-                        }
-
-                        VStack(spacing: 10) {
-                            ForEach(vm.findings) { finding in
-                                FindingRow(finding: finding,
-                                           isQueued: queuedFindingIDs.contains(finding.id),
-                                           toggleQueue: { toggleQueue(for: finding) },
-                                           action: { open(finding) })
-                            }
-                        }
+            WorkflowPhaseHost(phase: vm.phase == .idle) {
+                switch vm.phase {
+                case .idle:
+                    VStack(spacing: 18) {
+                        Spacer()
+                        WorkflowMark(state: .idle, tint: Theme.accent,
+                                     idleIcon: "checkmark.seal.fill", size: 120)
+                        Text("Smart Care").font(.rounded(24, .bold))
+                        Text("One tap checks live disk space, memory pressure, user caches, logs, Trash, and user launch agents. It suggests review routes; it does not clean anything without you opening the target module.")
+                            .font(.callout).foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center).frame(maxWidth: 500)
+                        PrimaryButton(title: "Run Smart Care", icon: "sparkles", action: rescan)
+                        Spacer()
                     }
-                    .padding(26)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                case .scanning, .results:
+                    activeCareBody
                 }
             }
         }
         .onAppear { if vm.phase == .idle { rescan() } }
+        .onChange(of: vm.phase) { _, phase in
+            if phase == .results {
+                beginResultReveal()
+            } else if phase == .scanning {
+                resultRevealCompleted = false
+            }
+        }
+        .onChange(of: reduceMotion) { _, _ in
+            if vm.phase == .results, !resultRevealCompleted { finalizeResultReveal() }
+        }
+        .onChange(of: surfaceActive) { _, _ in
+            if vm.phase == .results, !resultRevealCompleted { finalizeResultReveal() }
+        }
+        .onDisappear {
+            revealTask?.cancel()
+            revealTask = nil
+        }
+    }
+
+    private var activeCareBody: some View {
+        let scanning = vm.phase == .scanning
+        return VStack(spacing: Theme.Spacing.md) {
+            Color.clear
+                .frame(height: scanning ? Theme.Spacing.xl : 0)
+                .accessibilityHidden(true)
+
+            SmartCareScoreHero(phase: scanning ? .scanning : .results,
+                               displayedScore: scanning ? 0 : displayedScore,
+                               score: vm.score,
+                               tint: scanning ? Theme.accent : vm.healthColor)
+                .padding(.top, scanning ? 0 : Theme.Spacing.xs)
+
+            if scanning {
+                Text("Checking Your Mac")
+                    .font(.rounded(17, .semibold))
+                Text("Reading live vitals and the standard care locations. No cleanup action runs during this check.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 440)
+                Spacer(minLength: Theme.Spacing.xl)
+            } else {
+                resultsContent
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .animation(GeraldineMotion.animation(.standard,
+                                             reduceMotion: reduceMotion || !surfaceActive),
+                   value: scanning)
+    }
+
+    private var resultsContent: some View {
+        ScrollView {
+            VStack(spacing: Theme.Spacing.lg) {
+                if showResultContext {
+                    Text("Mac Health: \(vm.healthLabel)")
+                        .font(.rounded(20, .semibold))
+                        .foregroundStyle(vm.healthColor)
+                        .transition(.opacity)
+
+                    SmartCareScanSummary(freshness: vm.freshnessText,
+                                         actionableCount: vm.actionableFindings.count)
+                        .transition(.opacity)
+                }
+
+                VStack(spacing: 0) {
+                    if !queuedFindings.isEmpty {
+                        QueuedActionsCard(findings: queuedFindings,
+                                          openFirst: openFirstQueuedAction,
+                                          clear: clearQueue)
+                            .transition(GeraldineMotion.stateTransition(reduceMotion: reduceMotion))
+                    }
+                }
+                .clipped()
+                .animation(GeraldineMotion.animation(.standard, reduceMotion: reduceMotion),
+                           value: queuedFindingIDs.count)
+
+                VStack(spacing: Theme.Spacing.xs) {
+                    ForEach(Array(vm.findings.enumerated()), id: \.element.id) { index, finding in
+                        FindingRow(finding: finding,
+                                   isQueued: queuedFindingIDs.contains(finding.id),
+                                   toggleQueue: { toggleQueue(for: finding) },
+                                   action: { open(finding) })
+                            .opacity(rowIsRevealed(index) ? 1 : 0)
+                            .offset(y: reduceMotion || rowIsRevealed(index) ? 0 : 8)
+                            .accessibilityHidden(!rowIsRevealed(index))
+                            .animation(GeraldineMotion.animation(.standard, reduceMotion: reduceMotion),
+                                       value: revealedFindingCount)
+                    }
+                }
+            }
+            .padding(.horizontal, Theme.Spacing.xl)
+            .padding(.bottom, Theme.Spacing.xl)
+        }
     }
 
     private func rescan() {
+        revealTask?.cancel()
+        revealTask = nil
         queuedFindingIDs.removeAll()
+        displayedScore = 0
+        showResultContext = false
+        revealedFindingCount = 0
+        resultRevealCompleted = false
         vm.scan()
     }
 
     private func toggleQueue(for finding: Finding) {
         guard finding.isActionable else { return }
-        if queuedFindingIDs.contains(finding.id) {
-            queuedFindingIDs.remove(finding.id)
-        } else {
-            queuedFindingIDs.insert(finding.id)
+        withAnimation(GeraldineMotion.animation(.standard, reduceMotion: reduceMotion)) {
+            if queuedFindingIDs.contains(finding.id) {
+                queuedFindingIDs.remove(finding.id)
+            } else {
+                queuedFindingIDs.insert(finding.id)
+            }
+        }
+    }
+
+    private func clearQueue() {
+        withAnimation(GeraldineMotion.animation(.standard, reduceMotion: reduceMotion)) {
+            queuedFindingIDs.removeAll()
         }
     }
 
@@ -316,6 +402,153 @@ struct SmartCareView: View {
         guard let first = queuedFindings.first else { return }
         open(first)
     }
+
+    private func rowIsRevealed(_ index: Int) -> Bool {
+        let staggeredCount = min(vm.findings.count, 4)
+        return index >= staggeredCount || index < revealedFindingCount
+    }
+
+    private func beginResultReveal() {
+        revealTask?.cancel()
+        revealTask = nil
+        resultRevealCompleted = false
+        displayedScore = reduceMotion ? vm.score : 0
+        showResultContext = reduceMotion
+        revealedFindingCount = reduceMotion ? vm.findings.count : 0
+        guard !reduceMotion, surfaceActive else {
+            finalizeResultReveal()
+            return
+        }
+
+        let targetScore = vm.score
+        let staggeredCount = min(vm.findings.count, 4)
+        revealTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(70))
+            guard !Task.isCancelled else { return }
+            withAnimation(GeraldineMotion.animation(.emphasis, reduceMotion: false)) {
+                displayedScore = targetScore
+            }
+
+            try? await Task.sleep(for: .milliseconds(190))
+            guard !Task.isCancelled else { return }
+            withAnimation(GeraldineMotion.animation(.standard, reduceMotion: false)) {
+                showResultContext = true
+            }
+
+            if staggeredCount > 0 {
+                for count in 1...staggeredCount {
+                    try? await Task.sleep(for: .milliseconds(65))
+                    guard !Task.isCancelled else { return }
+                    revealedFindingCount = count
+                }
+            }
+            resultRevealCompleted = true
+            revealTask = nil
+        }
+    }
+
+    private func finalizeResultReveal() {
+        revealTask?.cancel()
+        revealTask = nil
+        withTransaction(Transaction(animation: nil)) {
+            displayedScore = vm.score
+            showResultContext = true
+            revealedFindingCount = vm.findings.count
+            resultRevealCompleted = true
+        }
+    }
+}
+
+private struct SmartCareScoreHero: View {
+    enum Phase: Hashable { case scanning, results }
+
+    let phase: Phase
+    let displayedScore: Int
+    let score: Int
+    let tint: Color
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.geraldineSurfaceActive) private var surfaceActive
+    @State private var scanRotation = -90.0
+    @State private var sealBreathing = false
+
+    private var isScanning: Bool { phase == .scanning }
+    private var ringProgress: Double {
+        if isScanning || displayedScore == 0 { return 0.28 }
+        return max(0.001, min(1, Double(displayedScore) / 100))
+    }
+
+    private var ringStyle: AnyShapeStyle {
+        if isScanning {
+            return AnyShapeStyle(
+                AngularGradient(colors: [Theme.accent.opacity(0), Theme.accent], center: .center)
+            )
+        }
+        return AnyShapeStyle(tint.gradient)
+    }
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .stroke(Color.primary.opacity(0.08), lineWidth: 14)
+
+            Circle()
+                .trim(from: 0, to: ringProgress)
+                .stroke(ringStyle,
+                        style: StrokeStyle(lineWidth: 14, lineCap: .round))
+                .rotationEffect(.degrees(isScanning ? scanRotation : -90))
+                .shadow(color: tint.opacity(isScanning ? 0.24 : 0.18), radius: 8)
+                .animation(
+                    isScanning && surfaceActive && !reduceMotion
+                        ? GeraldineMotion.spinner(reduceMotion: false)
+                        : GeraldineMotion.animation(.standard,
+                                                    reduceMotion: reduceMotion || !surfaceActive),
+                    value: scanRotation
+                )
+                .animation(GeraldineMotion.animation(.emphasis,
+                                                      reduceMotion: reduceMotion || !surfaceActive),
+                           value: ringProgress)
+
+            if isScanning {
+                Image(systemName: "checkmark.seal.fill")
+                    .font(.system(size: 47, weight: .semibold))
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(Theme.accent.gradient)
+                    .scaleEffect(reduceMotion || !surfaceActive ? 1 : (sealBreathing ? 1.04 : 0.96))
+                    .animation(sealBreathing ? GeraldineMotion.breathing(reduceMotion: false) : nil,
+                               value: sealBreathing)
+                    .transition(.opacity.combined(with: .scale(scale: 0.92)))
+            } else {
+                VStack(spacing: 0) {
+                    AnimatedNumberText("\(displayedScore)", value: Double(displayedScore))
+                        .font(.rounded(40, .bold))
+                    Text("/ 100").font(.caption).foregroundStyle(.secondary)
+                }
+                .transition(.opacity.combined(with: .scale(scale: 0.96)))
+            }
+        }
+        .frame(width: 180, height: 180)
+        .animation(GeraldineMotion.animation(.standard,
+                                             reduceMotion: reduceMotion || !surfaceActive),
+                   value: phase)
+        .onAppear { updateActivity() }
+        .onDisappear {
+            scanRotation = -90
+            sealBreathing = false
+        }
+        .onChange(of: phase) { _, _ in updateActivity() }
+        .onChange(of: reduceMotion) { _, _ in updateActivity() }
+        .onChange(of: surfaceActive) { _, _ in updateActivity() }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(phase == .scanning ? "Smart Care scan in progress" : "Mac health score")
+        .accessibilityValue(phase == .results ? "\(score) out of 100" : "Checking")
+    }
+
+    private func updateActivity() {
+        let shouldAnimate = isScanning && surfaceActive && !reduceMotion
+        scanRotation = shouldAnimate ? 270 : -90
+        sealBreathing = shouldAnimate
+    }
 }
 
 private struct SmartCareScanSummary: View {
@@ -327,7 +560,11 @@ private struct SmartCareScanSummary: View {
             HStack(spacing: 10) {
                 Label(freshness, systemImage: "clock")
                 Spacer()
-                Label("\(actionableCount) Next Step\(actionableCount == 1 ? "" : "s")", systemImage: "list.bullet.clipboard")
+                HStack(spacing: 4) {
+                    Image(systemName: "list.bullet.clipboard")
+                    AnimatedNumberText("\(actionableCount)", value: Double(actionableCount))
+                    Text("Next Step\(actionableCount == 1 ? "" : "s")")
+                }
             }
             .font(.caption.weight(.semibold))
             .foregroundStyle(.secondary)
@@ -356,25 +593,25 @@ private struct QueuedActionsCard: View {
                 Label("Queued Next Steps", systemImage: "checklist")
                     .font(.rounded(14, .semibold))
                 Spacer()
-                Button("Clear", action: clear).font(.caption)
+                Button("Clear", action: clear)
+                    .font(.caption)
+                    .buttonStyle(.quiet(Theme.accent))
             }
 
             ForEach(findings) { finding in
-                HStack(spacing: 8) {
-                    Image(systemName: finding.actionIcon).foregroundStyle(finding.severity.color)
-                    Text(finding.actionTitle ?? "Open").font(.caption.weight(.medium))
-                    Text(finding.title).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                    Spacer()
-                }
+                CareLedgerRow(icon: finding.actionIcon,
+                              tint: finding.severity.color,
+                              title: finding.actionTitle ?? "Open",
+                              detail: finding.title,
+                              status: .selected)
             }
 
             Button(action: openFirst) {
                 Label("Open First Queued Step", systemImage: "arrow.forward.circle.fill")
             }
-            .buttonStyle(.borderedProminent)
-            .tint(Theme.accent)
+            .buttonStyle(BrandProminentButtonStyle())
         }
-        .card(padding: 14)
+        .card(padding: 14, tier: .tinted(Theme.accent))
     }
 }
 
@@ -405,15 +642,21 @@ private struct FindingRow: View {
                 if finding.isActionable {
                     HStack(spacing: 8) {
                         Button(action: toggleQueue) {
-                            Label(isQueued ? "Queued" : "Queue", systemImage: isQueued ? "checkmark.circle.fill" : "plus.circle")
+                            HStack(spacing: 6) {
+                                ContextualSymbol(inactive: "plus.circle",
+                                                 active: "checkmark.circle.fill",
+                                                 isActive: isQueued,
+                                                 tint: finding.severity.color,
+                                                 size: 14)
+                                Text(isQueued ? "Queued" : "Queue")
+                            }
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(.soft(finding.severity.color))
 
                         Button(action: action) {
                             Label(finding.actionTitle ?? "Open", systemImage: finding.actionIcon)
                         }
-                        .buttonStyle(.borderedProminent)
-                        .tint(finding.severity.color)
+                        .buttonStyle(BrandProminentButtonStyle())
                     }
                     .font(.caption.weight(.semibold))
                 }
@@ -421,7 +664,7 @@ private struct FindingRow: View {
 
             Spacer(minLength: 8)
         }
-        .card(padding: 14)
+        .interactiveCard(padding: 14, tier: .tinted(finding.severity.color))
     }
 }
 

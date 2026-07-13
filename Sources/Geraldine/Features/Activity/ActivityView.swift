@@ -5,14 +5,17 @@ final class ActivityViewModel: ObservableObject {
     @Published var consumers: [ProcUsage] = []
     @Published var sortByMemory = false
     private var timer: Timer?
+    private var sampleTask: Task<Void, Never>?
+    private var lifecycleID = UUID()
 
     var sorted: [ProcUsage] {
         sortByMemory ? consumers.sorted { $0.mem > $1.mem } : consumers.sorted { $0.cpu > $1.cpu }
     }
 
     func start() {
-        sample()
         timer?.invalidate()
+        stopSampling()
+        sample()
         let t = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.sample() }
         }
@@ -20,61 +23,75 @@ final class ActivityViewModel: ObservableObject {
         timer = t
     }
 
-    func stop() { timer?.invalidate(); timer = nil }
+    func stop() {
+        timer?.invalidate()
+        timer = nil
+        stopSampling()
+    }
 
     private func sample() {
-        Task {
+        guard sampleTask == nil else { return }
+        let lifecycleID = self.lifecycleID
+        sampleTask = Task { [weak self] in
             let procs = await Task.detached { ProcessSampler.sample(limit: 8) }.value
+            guard let self,
+                  !Task.isCancelled,
+                  self.lifecycleID == lifecycleID else { return }
             self.consumers = procs
+            self.sampleTask = nil
         }
+    }
+
+    private func stopSampling() {
+        lifecycleID = UUID()
+        sampleTask?.cancel()
+        sampleTask = nil
     }
 }
 
 struct ActivityView: View {
     @EnvironmentObject var monitor: SystemMonitor
+    @Environment(\.geraldineSurfaceActive) private var surfaceActive
     @StateObject private var vm = ActivityViewModel()
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 16) {
-                ModuleHeader(module: .activity)
-                    .padding(.horizontal, -26)   // header has its own padding
+        ModulePage(module: .activity, headerStyle: .data, widthRole: .fluid) {
+            graphCard("CPU", systemImage: "cpu",
+                      value: Fmt.percent(monitor.cpuUsage),
+                      valueAnimationValue: monitor.cpuUsage * 100,
+                      history: monitor.cpuHistory,
+                      tint: Theme.status(for: monitor.cpuUsage),
+                      footnote: String(format: "Load Average %.2f", monitor.loadAverage),
+                      footnoteAnimationValue: monitor.loadAverage)
 
-                graphCard("CPU", systemImage: "cpu",
-                          value: Fmt.percent(monitor.cpuUsage),
-                          valueAnimationValue: monitor.cpuUsage * 100,
-                          history: monitor.cpuHistory,
-                          tint: Theme.status(for: monitor.cpuUsage),
-                          footnote: String(format: "Load Average %.2f", monitor.loadAverage),
-                          footnoteAnimationValue: monitor.loadAverage)
+            graphCard("Memory", systemImage: "memorychip",
+                      value: Fmt.percent(monitor.memoryFraction),
+                      valueAnimationValue: monitor.memoryFraction * 100,
+                      history: monitor.memHistory,
+                      tint: Theme.status(for: monitor.memoryFraction),
+                      footnote: "\(Fmt.size(monitor.memoryUsed)) of \(Fmt.size(monitor.memoryTotal)) used",
+                      footnoteAnimationValue: monitor.memoryUsed)
 
-                graphCard("Memory", systemImage: "memorychip",
-                          value: Fmt.percent(monitor.memoryFraction),
-                          valueAnimationValue: monitor.memoryFraction * 100,
-                          history: monitor.memHistory,
-                          tint: Theme.status(for: monitor.memoryFraction),
-                          footnote: "\(Fmt.size(monitor.memoryUsed)) of \(Fmt.size(monitor.memoryTotal)) used",
-                          footnoteAnimationValue: monitor.memoryUsed)
+            temperatureCard
 
-                temperatureCard
-
-                HStack(spacing: 16) {
-                    miniCard("Uptime", SystemMonitor.uptimeString(monitor.uptime), "clock.arrow.circlepath",
-                             animationValue: Double(monitor.uptime))
-                    miniCard("Load", String(format: "%.2f", monitor.loadAverage), "speedometer",
-                             animationValue: monitor.loadAverage)
-                }
-
-                topConsumers
+            HStack(spacing: Theme.Spacing.md) {
+                miniCard("Uptime", SystemMonitor.uptimeString(monitor.uptime), "clock.arrow.circlepath",
+                         animationValue: Double(monitor.uptime))
+                miniCard("Load", String(format: "%.2f", monitor.loadAverage), "speedometer",
+                         animationValue: monitor.loadAverage)
             }
-            .padding(26)
+
+            topConsumers
         }
-        .onAppear { vm.start() }
+        .onAppear { if surfaceActive { vm.start() } }
         .onDisappear { vm.stop() }
+        .onChange(of: surfaceActive) { _, isActive in
+            isActive ? vm.start() : vm.stop()
+        }
     }
 
     private func graphCard(_ title: String, systemImage: String, value: String, valueAnimationValue: Double,
-                           history: [Double], tint: Color, footnote: String, footnoteAnimationValue: Double) -> some View {
+                           history: [MetricSample], tint: Color, footnote: String, footnoteAnimationValue: Double) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Label(title, systemImage: systemImage).font(.rounded(14, .semibold))
@@ -82,12 +99,21 @@ struct ActivityView: View {
                 AnimatedNumberText(value, value: valueAnimationValue)
                     .font(.rounded(22, .bold)).monospacedDigit().foregroundStyle(tint)
             }
-            SparkGraph(values: history, tint: tint).frame(height: 88)
+            TimelineSparkGraph(samples: history,
+                               window: SystemMonitor.liveHistoryWindow,
+                               now: Date(),
+                               tint: tint,
+                               domain: MetricChartStyle.normalizedDomain,
+                               gapThreshold: SystemMonitor.chartSampleGapThreshold,
+                               maximumPointCount: 300,
+                               inspectionValueFormatter: { Fmt.percent($0) },
+                               inspectionAccessibilityLabel: "\(title) usage history")
+                .frame(height: 88)
             AnimatedNumberText(footnote, value: footnoteAnimationValue)
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
-        .card()
+        .card(tier: .raised, cornerRadius: Theme.Radius.raised)
     }
 
     @ViewBuilder private var temperatureCard: some View {
@@ -139,7 +165,7 @@ struct ActivityView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
-        .card()
+        .card(tier: .raised, cornerRadius: Theme.Radius.raised)
     }
 
     private func tempChip(_ label: String, _ temp: Double) -> some View {
@@ -163,7 +189,7 @@ struct ActivityView: View {
             }
             Spacer()
         }
-        .card()
+        .card(tier: .base)
     }
 
     private var topConsumers: some View {
@@ -178,22 +204,24 @@ struct ActivityView: View {
             }
             VStack(spacing: 0) {
                 ForEach(Array(vm.sorted.enumerated()), id: \.element.id) { idx, p in
-                    HStack(spacing: 10) {
-                        Text(p.name).lineLimit(1)
-                        Spacer()
+                    CareLedgerRow(
+                        icon: "app.fill",
+                        tint: Module.activity.tint,
+                        title: p.name,
+                        detail: vm.sortByMemory ? "Memory share" : "CPU share"
+                    ) {
                         AnimatedNumberText(String(format: "%.1f%%", vm.sortByMemory ? p.mem : p.cpu),
                                            value: vm.sortByMemory ? p.mem : p.cpu)
                             .font(.callout.monospacedDigit()).foregroundStyle(.secondary)
                             .frame(width: 56, alignment: .trailing)
                     }
-                    .padding(.vertical, 7)
                     if idx < vm.sorted.count - 1 { Divider() }
                 }
                 if vm.sorted.isEmpty {
                     Text("Sampling…").font(.callout).foregroundStyle(.secondary).padding(.vertical, 8)
                 }
             }
-            .card()
+            .card(tier: .base)
         }
     }
 }

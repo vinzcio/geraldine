@@ -1,104 +1,203 @@
+import AppKit
 import SwiftUI
 
 struct UpdaterView: View {
     @StateObject private var vm = UpdaterViewModel()
+    @State private var copiedInstallCommand = false
 
     var body: some View {
-        VStack(spacing: 0) {
-            ModuleHeader(module: .updater) {
-                if vm.hasBrew {
-                    Button { vm.load() } label: { Label("Check Again", systemImage: "arrow.clockwise") }
-                }
+        ModulePage(
+            module: .updater,
+            headerStyle: .utility,
+            widthRole: .readable,
+            trailing: { checkControl }
+        ) {
+            WorkflowPhaseHost(phase: vm.displayPhase) {
+                phaseContent
             }
-
-            if vm.loading {
-                ScanningState(tint: Module.updater.tint, icon: "shippingbox",
-                              label: "Checking for updates…")
-            } else {
-                content
-            }
+            .frame(maxWidth: .infinity, minHeight: 360, alignment: .top)
         }
         .onAppear { if !vm.checked { vm.load() } }
     }
 
-    @ViewBuilder private var content: some View {
-        switch vm.checkState {
+    private var checkControl: some View {
+        StatefulActionButton(
+            state: vm.loading ? .working : .idle,
+            idleTitle: vm.checked ? "Check Again" : "Check",
+            workingTitle: "Checking",
+            idleIcon: "arrow.clockwise",
+            tint: Module.updater.tint,
+            action: vm.load
+        )
+    }
+
+    @ViewBuilder private var phaseContent: some View {
+        switch vm.displayPhase {
+        case .checking:
+            checkingState
         case .unchecked:
-            EmptyState(icon: "shippingbox",
-                       title: "Check For Updates",
-                       message: "Geraldine checks Homebrew-managed apps and reports the exact brew result.",
-                       tint: Module.updater.tint)
-        case .unavailable(let checkedAt):
-            noBrew(checkedAt: checkedAt)
-        case .failed(let message, let output, let checkedAt):
-            BrewFailureState(title: "Homebrew Check Failed",
-                             message: message,
-                             output: output,
-                             checkedAt: checkedAt,
-                             retry: vm.load)
-        case .noUpdates(let checkedAt):
-            VStack(spacing: 12) {
-                EmptyState(icon: "checkmark.seal.fill", title: "Everything's Up To Date",
-                           message: "None of your Homebrew-managed apps have updates right now.",
-                           tint: Theme.good)
-                    .frame(maxHeight: 280)
-                Text("Checked \(checkedAt.formatted(date: .omitted, time: .shortened))")
-                    .font(.caption).foregroundStyle(.secondary)
-                Button { vm.load() } label: { Label("Check Again", systemImage: "arrow.clockwise") }
-                    .buttonStyle(.soft(Module.updater.tint))
+            uncheckedState
+        case .unavailable:
+            noBrew(checkedAt: vm.checkedAt ?? Date())
+        case .failed:
+            if case .failed(let message, let output, let checkedAt) = vm.checkState {
+                BrewFailureState(
+                    title: "Homebrew Check Failed",
+                    message: message,
+                    output: output,
+                    checkedAt: checkedAt,
+                    retry: vm.load
+                )
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        case .updatesAvailable(let checkedAt):
-            if vm.outdated.isEmpty {
-                EmptyState(icon: "checkmark.seal.fill",
-                           title: "Everything's Up To Date",
-                           message: "All updates from the last check have been applied.",
-                           tint: Theme.good)
-            } else {
-                ScrollView {
-                    VStack(spacing: 12) {
-                        HStack {
-                            Text("Checked \(checkedAt.formatted(date: .omitted, time: .shortened))")
-                                .font(.caption).foregroundStyle(.secondary)
-                            Spacer()
-                        }
-                        ForEach(vm.outdated) { app in
-                            UpdateRow(app: app,
-                                      busy: vm.upgrading.contains(app.token),
-                                      feedback: vm.upgradeFeedback[app.token]) {
-                                vm.upgrade(app)
-                            }
-                        }
+        case .noUpdates:
+            noUpdatesState
+        case .updatesAvailable:
+            updatesState
+        }
+    }
+
+    private var checkingState: some View {
+        VStack(spacing: Theme.Spacing.md) {
+            WorkflowMark(state: .working, tint: Module.updater.tint, idleIcon: "shippingbox", size: 82)
+            Text("Checking Homebrew Apps")
+                .font(.geraldineSection)
+            Text("Geraldine is comparing installed versions with the current cask catalog.")
+                .font(.geraldineBody)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 430)
+        }
+        .frame(maxWidth: .infinity, minHeight: 320)
+        .card(tier: .tinted(Module.updater.tint))
+    }
+
+    private var uncheckedState: some View {
+        VStack(spacing: Theme.Spacing.md) {
+            WorkflowMark(state: .idle, tint: Module.updater.tint, idleIcon: "shippingbox", size: 82)
+            Text("Check For Updates").font(.geraldineSection)
+            Text("Geraldine checks Homebrew-managed apps and reports the exact brew result.")
+                .font(.geraldineBody)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            PrimaryButton(title: "Check Now", icon: "arrow.clockwise", action: vm.load)
+        }
+        .frame(maxWidth: .infinity, minHeight: 320)
+        .card()
+    }
+
+    private var noUpdatesState: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.lg) {
+            HStack(spacing: Theme.Spacing.md) {
+                WorkflowMark(state: .success, tint: Module.updater.tint, idleIcon: "shippingbox", size: 76)
+                VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
+                    Text("Everything's Up To Date").font(.geraldineSection)
+                    Text(vm.completed.isEmpty
+                         ? "None of your Homebrew-managed apps have updates right now."
+                         : completedSummary)
+                        .font(.geraldineBody)
+                        .foregroundStyle(.secondary)
+                    if let checkedAt = vm.checkedAt {
+                        Text("Checked \(checkedAt.formatted(date: .omitted, time: .shortened))")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.tertiary)
                     }
-                    .padding(20)
+                }
+                Spacer()
+            }
+            .outcomeWash(.success)
+            .card(tier: .tinted(Theme.good))
+
+            if !vm.completed.isEmpty {
+                SectionHeader("Completed This Check", subtitle: "Installed versions now match Homebrew.")
+                ForEach(vm.completed) { app in
+                    UpdateRow(app: app,
+                              busy: false,
+                              feedback: vm.upgradeFeedback[app.token],
+                              completed: true,
+                              upgrade: {})
                 }
             }
         }
     }
 
-    private func noBrew(checkedAt: Date) -> some View {
-        VStack(spacing: 16) {
-            Spacer()
-            IconBadge(icon: "shippingbox", tint: Module.updater.tint, size: 92)
-            Text("Connect Homebrew").font(.rounded(20, .semibold))
-            Text("Geraldine could not find the brew command. Install Homebrew once and update detection turns on automatically.")
-                .font(.callout).foregroundStyle(.secondary)
-                .multilineTextAlignment(.center).frame(maxWidth: 440)
-            Text("Checked \(checkedAt.formatted(date: .omitted, time: .shortened))")
-                .font(.caption).foregroundStyle(.secondary)
-            HStack(spacing: 10) {
-                Button { vm.copyInstallCommand() } label: {
-                    Label("Copy Install Command", systemImage: "doc.on.doc")
+    private var completedSummary: String {
+        let count = vm.completed.count
+        return "Updated \(count) app\(count == 1 ? "" : "s") successfully."
+    }
+
+    private var updatesState: some View {
+        LazyVStack(alignment: .leading, spacing: Theme.Spacing.md) {
+            if let checkedAt = vm.checkedAt {
+                HStack {
+                    Label("\(vm.outdated.count) Update\(vm.outdated.count == 1 ? "" : "s") Ready",
+                          systemImage: "arrow.down.app.fill")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(Module.updater.tint)
+                    Spacer()
+                    Text("Checked \(checkedAt.formatted(date: .omitted, time: .shortened))")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
                 }
+            }
+
+            if !vm.completed.isEmpty {
+                SectionHeader("Completed This Check")
+                ForEach(vm.completed) { app in
+                    UpdateRow(app: app,
+                              busy: false,
+                              feedback: vm.upgradeFeedback[app.token],
+                              completed: true,
+                              upgrade: {})
+                }
+                Divider().opacity(0.45)
+            }
+
+            SectionHeader("Ready To Update", subtitle: "Each app updates independently through Homebrew.")
+            ForEach(vm.outdated) { app in
+                UpdateRow(
+                    app: app,
+                    busy: vm.upgrading.contains(app.token),
+                    feedback: vm.upgradeFeedback[app.token],
+                    completed: false
+                ) {
+                    vm.upgrade(app)
+                }
+            }
+        }
+        .geraldineAnimation(.standard,
+                            value: vm.completed.map(\.id) + vm.outdated.map(\.id))
+    }
+
+    private func noBrew(checkedAt: Date) -> some View {
+        VStack(spacing: Theme.Spacing.md) {
+            WorkflowMark(state: .warning, tint: Module.updater.tint, idleIcon: "shippingbox", size: 82)
+            Text("Connect Homebrew").font(.geraldineSection)
+            Text("Geraldine could not find the brew command. Install Homebrew once and update detection turns on automatically.")
+                .font(.geraldineBody)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 440)
+            Text("Checked \(checkedAt.formatted(date: .omitted, time: .shortened))")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.tertiary)
+            HStack(spacing: Theme.Spacing.sm) {
+                Button {
+                    vm.copyInstallCommand()
+                    copiedInstallCommand = true
+                } label: {
+                    Label(copiedInstallCommand ? "Copied" : "Copy Install Command",
+                          systemImage: copiedInstallCommand ? "checkmark" : "doc.on.doc")
+                }
+                .buttonStyle(.soft(Module.updater.tint))
+
                 Button { vm.load() } label: {
                     Label("Check Again", systemImage: "arrow.clockwise")
                 }
+                .buttonStyle(.soft(Module.updater.tint))
             }
-            .buttonStyle(.soft(Module.updater.tint))
-            .padding(.top, 2)
-            Spacer()
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxWidth: .infinity, minHeight: 320)
+        .card(tier: .tinted(Theme.warn))
     }
 }
 
@@ -106,31 +205,23 @@ private struct UpdateRow: View {
     let app: OutdatedApp
     let busy: Bool
     let feedback: BrewCommandFeedback?
+    let completed: Bool
     let upgrade: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 14) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Module.updater.tint.opacity(0.16)).frame(width: 40, height: 40)
-                    Image(systemName: "arrow.up.app.fill").foregroundStyle(Module.updater.tint)
-                }
-                VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
+            HStack(spacing: Theme.Spacing.md) {
+                UpdateAppIdentity(app: app)
+
+                VStack(alignment: .leading, spacing: 3) {
                     Text(app.name).font(.rounded(15, .semibold))
-                    HStack(spacing: 6) {
-                        Text(app.current).foregroundStyle(.secondary)
-                        Image(systemName: "arrow.right").font(.caption2).foregroundStyle(.tertiary)
-                        Text(app.latest).foregroundStyle(Theme.good)
-                    }
-                    .font(.caption.monospacedDigit())
+                    versionLine
                 }
-                Spacer()
-                if busy {
-                    ProgressView().controlSize(.small)
-                } else {
-                    Button("Update", action: upgrade).buttonStyle(.borderedProminent).tint(Module.updater.tint)
-                }
+
+                Spacer(minLength: Theme.Spacing.md)
+
+                actionControl
+                    .frame(width: 132, alignment: .trailing)
             }
 
             if let feedback, !feedback.ok {
@@ -139,7 +230,84 @@ private struct UpdateRow: View {
                                 checkedAt: feedback.checkedAt)
             }
         }
-        .card(padding: 14)
+        .interactiveCard(padding: Theme.Spacing.md,
+                         tier: resolvedCardTier)
+        .geraldineAnimation(.standard, value: feedback?.checkedAt)
+    }
+
+    @ViewBuilder private var versionLine: some View {
+        if completed {
+            HStack(spacing: 6) {
+                ContextualSymbol(inactive: "arrow.right", active: "checkmark",
+                                 isActive: true, tint: Theme.good, size: 11)
+                Text(app.latest)
+                    .font(.caption.monospacedDigit().weight(.semibold))
+                    .foregroundStyle(Theme.good)
+                Text("installed")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("· was \(app.current)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.tertiary)
+            }
+        } else {
+            HStack(spacing: 6) {
+                Text(app.current).foregroundStyle(.secondary)
+                Image(systemName: "arrow.right").font(.caption2).foregroundStyle(.tertiary)
+                Text(app.latest).foregroundStyle(Theme.good)
+            }
+            .font(.caption.monospacedDigit())
+        }
+    }
+
+    @ViewBuilder private var actionControl: some View {
+        if completed {
+            Label("Done", systemImage: "checkmark.circle.fill")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(Theme.good)
+                .frame(minWidth: 96, minHeight: Theme.Layout.minimumHitArea)
+        } else {
+            StatefulActionButton(
+                state: actionState,
+                idleTitle: "Update",
+                workingTitle: "Updating",
+                failureTitle: "Retry",
+                idleIcon: "arrow.down.app.fill",
+                tint: Module.updater.tint,
+                action: upgrade
+            )
+        }
+    }
+
+    private var actionState: StatefulActionState {
+        if busy { return .working }
+        if feedback?.ok == false { return .failure }
+        return .idle
+    }
+
+    private var resolvedCardTier: CardTier {
+        if completed { return .tinted(Theme.good) }
+        if feedback?.ok == false { return .tinted(Theme.bad) }
+        if busy { return .tinted(Module.updater.tint) }
+        return .raised
+    }
+}
+
+private struct UpdateAppIdentity: View {
+    let app: OutdatedApp
+
+    var body: some View {
+        if let url = app.applicationURL {
+            AppIconPlate(size: 42) {
+                Image(nsImage: NSWorkspace.shared.icon(forFile: url.path))
+                    .resizable()
+                    .scaledToFit()
+                    .padding(4)
+            }
+            .accessibilityHidden(true)
+        } else {
+            ModuleGlyph(systemImage: "arrow.up.app.fill", tint: Module.updater.tint, size: 42)
+        }
     }
 }
 
@@ -151,23 +319,28 @@ private struct BrewFailureState: View {
     var retry: () -> Void
 
     var body: some View {
-        VStack(spacing: 14) {
-            Spacer()
-            EmptyState(icon: "exclamationmark.triangle.fill",
-                       title: title,
-                       message: message,
-                       tint: Theme.warn)
-                .frame(maxHeight: 240)
+        VStack(spacing: Theme.Spacing.md) {
+            WorkflowMark(state: .failure, tint: Module.updater.tint,
+                         idleIcon: "shippingbox", size: 82)
+            Text(title).font(.geraldineSection)
+            Text(message)
+                .font(.geraldineBody)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
             BrewOutputBlock(message: "Checked \(checkedAt.formatted(date: .omitted, time: .shortened))",
                             output: output,
                             checkedAt: checkedAt)
-                .frame(maxWidth: 520)
-            Button(action: retry) { Label("Check Again", systemImage: "arrow.clockwise") }
-                .buttonStyle(.soft(Theme.warn))
-            Spacer()
+                .frame(maxWidth: 560)
+            StatefulActionButton(state: .failure,
+                                 idleTitle: "Check Again",
+                                 failureTitle: "Check Again",
+                                 idleIcon: "arrow.clockwise",
+                                 tint: Theme.warn,
+                                 action: retry)
         }
-        .padding(20)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxWidth: .infinity, minHeight: 320)
+        .outcomeWash(.failure)
+        .card(tier: .tinted(Theme.bad))
     }
 }
 
@@ -191,8 +364,8 @@ private struct BrewOutputBlock: View {
                 .textSelection(.enabled)
                 .lineLimit(6)
         }
-        .padding(10)
-        .background(Theme.warn.opacity(0.10),
-                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .padding(Theme.Spacing.sm)
+        .background(Theme.bad.opacity(0.08),
+                    in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
     }
 }

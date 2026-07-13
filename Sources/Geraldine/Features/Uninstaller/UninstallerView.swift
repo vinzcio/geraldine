@@ -6,6 +6,14 @@ struct UninstallerView: View {
 
     private let columns = [GridItem(.adaptive(minimum: 250), spacing: 12)]
 
+    private enum ContentPhase: Hashable { case loading, empty, loaded }
+
+    private var contentPhase: ContentPhase {
+        if vm.loading { return .loading }
+        if vm.apps.isEmpty { return .empty }
+        return .loaded
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             ModuleHeader(module: .uninstaller) {
@@ -14,12 +22,12 @@ struct UninstallerView: View {
                 }
             }
 
-            if vm.loading {
-                ScanningState(tint: Module.uninstaller.tint, icon: "app.badge",
-                              label: "Finding installed apps…")
-            } else {
-                searchBar
-                if vm.apps.isEmpty {
+            WorkflowPhaseHost(phase: contentPhase) {
+                switch contentPhase {
+                case .loading:
+                    ScanningState(tint: Module.uninstaller.tint, icon: "app.badge",
+                                  label: "Finding Installed Apps")
+                case .empty:
                     ScanEmptyState(icon: "app.badge",
                                    title: "No Apps Found",
                                    message: vm.diagnostics.hasVisibleIssues
@@ -29,26 +37,32 @@ struct UninstallerView: View {
                                    diagnostics: vm.diagnostics,
                                    actionTitle: "Check Again",
                                    action: vm.load)
-                } else if vm.filtered.isEmpty {
-                    EmptyState(icon: "magnifyingglass",
-                               title: "No Apps Match",
-                               message: "Try a different search term.",
-                               tint: Module.uninstaller.tint)
-                } else {
-                    ScrollView {
-                        if vm.diagnostics.hasVisibleIssues {
-                            ScanDiagnosticsBanner(diagnostics: vm.diagnostics)
-                                .padding(.horizontal, 20)
-                                .padding(.top, 8)
-                        }
-                        LazyVGrid(columns: columns, spacing: 12) {
-                            ForEach(vm.filtered) { app in
-                                AppCard(app: app) {
-                                    if !app.isProtected { selectedApp = app }
+                case .loaded:
+                    VStack(spacing: 0) {
+                        searchBar
+                        if vm.filtered.isEmpty {
+                            EmptyState(icon: "magnifyingglass",
+                                       title: "No Apps Match",
+                                       message: "Try a different search term.",
+                                       tint: Module.uninstaller.tint)
+                        } else {
+                            ScrollView {
+                                if vm.diagnostics.hasVisibleIssues {
+                                    ScanDiagnosticsBanner(diagnostics: vm.diagnostics)
+                                        .padding(.horizontal, 20)
+                                        .padding(.top, 8)
                                 }
+                                LazyVGrid(columns: columns, spacing: 12) {
+                                    ForEach(vm.filtered) { app in
+                                        AppCard(app: app,
+                                                isSelected: selectedApp?.id == app.id) {
+                                            if !app.isProtected { selectedApp = app }
+                                        }
+                                    }
+                                }
+                                .padding(20)
                             }
                         }
-                        .padding(20)
                     }
                 }
             }
@@ -68,38 +82,46 @@ struct UninstallerView: View {
             TextField("Search Apps", text: $vm.query).textFieldStyle(.plain)
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
-        .background(.ultraThinMaterial, in: Capsule())
+        .adaptiveMaterialBackground(.ultraThin, in: Capsule())
         .padding(.horizontal, 20).padding(.bottom, 4)
     }
 }
 
 private struct AppCard: View {
     var app: AppEntry
+    var isSelected: Bool
     var onUninstall: () -> Void
 
     var body: some View {
-        HStack(spacing: 12) {
-            Image(nsImage: NSWorkspace.shared.icon(forFile: app.url.path))
-                .resizable().frame(width: 38, height: 38)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(app.name).font(.rounded(14, .semibold)).lineLimit(1)
-                Text("\(app.version.isEmpty ? "" : "v\(app.version) · ")\(Fmt.size(app.size))")
-                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                if let reason = app.protectedReason {
-                    Text(reason).font(.caption2.weight(.medium)).foregroundStyle(.secondary)
+        Button(action: onUninstall) {
+            HStack(spacing: 12) {
+                AppIconPlate(size: 42) {
+                    Image(nsImage: NSWorkspace.shared.icon(forFile: app.url.path))
+                        .resizable()
+                        .scaledToFit()
+                        .padding(3)
                 }
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(app.name).font(.rounded(14, .semibold)).lineLimit(1)
+                    Text("\(app.version.isEmpty ? "" : "v\(app.version) · ")\(Fmt.size(app.size))")
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    if let reason = app.protectedReason {
+                        Text(reason).font(.caption2.weight(.medium)).foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                ContextualSymbol(inactive: "trash",
+                                 active: "lock.fill",
+                                 isActive: app.isProtected,
+                                 tint: app.isProtected ? .secondary : Theme.bad,
+                                 size: 15)
+                    .minimumHitArea()
             }
-            Spacer()
-            Button(action: onUninstall) {
-                Image(systemName: app.isProtected ? "lock.fill" : "trash")
-                    .foregroundStyle(app.isProtected ? Color.secondary : Theme.bad)
-            }
-            .buttonStyle(.plain)
-            .disabled(app.isProtected)
-            .help(app.protectedReason ?? "Uninstall \(app.name)")
-            .pointingHandCursor()
+            .selectionPlate(isSelected: isSelected, tint: Module.uninstaller.tint)
         }
-        .card(padding: 12)
+        .buttonStyle(.actionableCard(padding: 12))
+        .disabled(app.isProtected)
+        .help(app.protectedReason ?? "Uninstall \(app.name)")
     }
 }
 
@@ -108,6 +130,18 @@ private struct LeftoversSheet: View {
     var onClose: (_ didUninstall: Bool) -> Void
     @StateObject private var model: LeftoversModel
     @State private var showUninstallConfirmation = false
+    @State private var cancellationMessage: String?
+    @State private var cancellationClearTask: Task<Void, Never>?
+
+    private enum VisualPhase: Hashable { case scanning, review, done }
+
+    private var visualPhase: VisualPhase {
+        switch model.phase {
+        case .scanning: .scanning
+        case .results, .uninstalling: .review
+        case .done: .done
+        }
+    }
 
     init(app: AppEntry, onClose: @escaping (Bool) -> Void) {
         self.app = app
@@ -118,57 +152,153 @@ private struct LeftoversSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
-                Image(nsImage: NSWorkspace.shared.icon(forFile: app.url.path))
-                    .resizable().frame(width: 40, height: 40)
+                AppIconPlate(size: 44) {
+                    Image(nsImage: NSWorkspace.shared.icon(forFile: app.url.path))
+                        .resizable()
+                        .scaledToFit()
+                        .padding(3)
+                }
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Uninstall \(app.name)").font(.rounded(17, .bold))
                     Text("Review what will move to the Trash.").font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button { onClose(false) } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
-                    .buttonStyle(.plain)
+                Button { onClose(false) } label: {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.quiet(Module.uninstaller.tint))
+                .accessibilityLabel("Close uninstall review")
             }
             .padding(16)
 
+            UninstallStepIndicator(phase: model.phase)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 12)
+
             Divider()
 
-            switch model.phase {
-            case .scanning:
-                ScanningState(tint: Module.uninstaller.tint, icon: "doc.on.doc",
-                              label: "Finding leftover files…")
-                    .frame(height: 280)
-            case .results, .uninstalling:
-                if model.groups.isEmpty {
-                    ScanEmptyState(icon: "lock.fill",
-                                   title: "Protected App",
-                                   message: model.diagnostics.failure ?? "Geraldine will not uninstall this app.",
-                                   tint: Module.uninstaller.tint,
-                                   diagnostics: model.diagnostics,
-                                   actionTitle: "Close",
-                                   action: { onClose(false) })
+            WorkflowPhaseHost(phase: visualPhase) {
+                switch model.phase {
+                case .scanning:
+                    ScanningState(tint: Module.uninstaller.tint, icon: "doc.on.doc",
+                                  label: "Finding Leftover Files")
                         .frame(height: 320)
-                } else {
-                    ScanResultsView(groups: model.groups, selection: $model.selection,
-                                    diagnostics: model.diagnostics,
-                                    actionTitle: "Uninstall", actionIcon: "trash",
-                                    isBusy: model.phase == .uninstalling) {
-                        showUninstallConfirmation = true
+                case .results, .uninstalling:
+                    if model.groups.isEmpty {
+                        ScanEmptyState(icon: "lock.fill",
+                                       title: "Protected App",
+                                       message: model.diagnostics.failure ?? "Geraldine will not uninstall this app.",
+                                       tint: Module.uninstaller.tint,
+                                       diagnostics: model.diagnostics,
+                                       actionTitle: "Close",
+                                       action: { onClose(false) })
+                            .frame(height: 320)
+                    } else {
+                        VStack(spacing: 0) {
+                            if let cancellationMessage {
+                                CancellationReturnNotice(message: cancellationMessage)
+                                    .padding(.horizontal, 16)
+                                    .padding(.bottom, 8)
+                            }
+                            ScanResultsView(groups: model.groups, selection: $model.selection,
+                                            diagnostics: model.diagnostics,
+                                            actionTitle: "Uninstall", actionIcon: "trash",
+                                            isBusy: model.phase == .uninstalling) {
+                                clearCancellation()
+                                showUninstallConfirmation = true
+                            }
+                        }
+                        .frame(height: 380)
+                        .geraldineAnimation(.standard, value: cancellationMessage)
                     }
-                    .frame(height: 380)
+                case .done:
+                    CleanDoneState(result: model.result,
+                                   actionTitle: "Done",
+                                   actionIcon: "checkmark",
+                                   again: { onClose(true) })
+                        .frame(height: 300)
                 }
-            case .done:
-                CleanDoneState(result: model.result, again: { onClose(true) })
-                .frame(height: 280)
             }
         }
         .frame(width: 520)
         .onAppear { model.scan() }
+        .onDisappear { cancellationClearTask?.cancel() }
         .confirmationDialog("Uninstall \(app.name)?",
                             isPresented: $showUninstallConfirmation) {
-            Button("Move App and Leftovers to Trash", role: .destructive) { model.uninstall() }
-            Button("Cancel", role: .cancel) {}
+            Button("Move App and Leftovers to Trash", role: .destructive) { beginUninstall() }
+            Button("Cancel", role: .cancel) {
+                noteCancellation("Uninstall cancelled · \(app.name) and its leftovers were not changed.")
+            }
         } message: {
             Text("Geraldine will move the selected app bundle and selected leftover files to the Trash. Quit \(app.name) first, and restore from Trash if this was a mistake.")
         }
+    }
+
+    private func beginUninstall() {
+        clearCancellation()
+        model.uninstall()
+    }
+
+    private func clearCancellation() {
+        cancellationClearTask?.cancel()
+        cancellationClearTask = nil
+        cancellationMessage = nil
+    }
+
+    private func noteCancellation(_ message: String) {
+        cancellationClearTask?.cancel()
+        cancellationMessage = message
+        cancellationClearTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_800_000_000)
+            guard !Task.isCancelled, cancellationMessage == message else { return }
+            cancellationMessage = nil
+            cancellationClearTask = nil
+        }
+    }
+}
+
+private struct UninstallStepIndicator: View {
+    let phase: LeftoversModel.Phase
+
+    private var step: Int {
+        switch phase {
+        case .scanning: 1
+        case .results, .uninstalling: 2
+        case .done: 3
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            stepView(1, title: "App")
+            connector(after: 1)
+            stepView(2, title: "Leftovers")
+            connector(after: 2)
+            stepView(3, title: "Complete")
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Uninstall step \(step) of 3")
+        .accessibilityValue(step == 1 ? "Inspecting app" : step == 2 ? "Reviewing leftovers" : "Complete")
+    }
+
+    private func stepView(_ index: Int, title: String) -> some View {
+        HStack(spacing: 5) {
+            ContextualSymbol(inactive: "\(index).circle",
+                             active: "checkmark.circle.fill",
+                             isActive: step > index || (step == 3 && index == 3),
+                             tint: step >= index ? Module.uninstaller.tint : .secondary,
+                             size: 14)
+            Text(title)
+                .font(.caption2.weight(step == index ? .semibold : .regular))
+                .foregroundStyle(step >= index ? Color.primary : .secondary)
+        }
+    }
+
+    private func connector(after index: Int) -> some View {
+        Capsule()
+            .fill(step > index ? Module.uninstaller.tint.opacity(0.55) : Theme.separator)
+            .frame(maxWidth: .infinity)
+            .frame(height: 2)
+            .geraldineAnimation(.standard, value: step)
     }
 }

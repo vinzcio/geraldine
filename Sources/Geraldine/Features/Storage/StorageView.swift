@@ -2,7 +2,6 @@ import SwiftUI
 import AppKit
 
 struct StorageCategory: Identifiable {
-    let id = UUID()
     var label: String
     var detail: String
     var value: Double
@@ -10,6 +9,8 @@ struct StorageCategory: Identifiable {
     var confidence: Confidence
     var route: Route
     var isAvailable: Bool = false
+
+    var id: String { label }
 
     enum Confidence: Equatable {
         case measured, derived, available
@@ -40,10 +41,18 @@ struct StorageCategory: Identifiable {
 
 @MainActor
 final class StorageViewModel: ObservableObject {
-    enum Status {
+    enum Status: Hashable {
         case idle
         case ready
         case failed(String)
+    }
+
+    enum MeasurementStage: String, Hashable {
+        case capacity = "Reading APFS Capacity"
+        case applications = "Measuring Applications"
+        case personalFiles = "Measuring Personal Folders"
+        case library = "Measuring The User Library"
+        case finalizing = "Separating Measured And Derived Space"
     }
 
     @Published var loading = false
@@ -52,6 +61,9 @@ final class StorageViewModel: ObservableObject {
     @Published var totalText = ""
     @Published var scannedAt: Date?
     @Published var status: Status = .idle
+    @Published private(set) var measurementStage: MeasurementStage = .capacity
+
+    private var loadID = UUID()
 
     var segments: [DonutSegment] {
         categories
@@ -76,10 +88,22 @@ final class StorageViewModel: ObservableObject {
     }
 
     func load() {
+        let id = UUID()
+        loadID = id
         loading = true
         status = .idle
+        measurementStage = .capacity
+        let (progress, continuation) = AsyncStream<MeasurementStage>.makeStream()
+        Task { [weak self] in
+            for await stage in progress {
+                guard let self else { return }
+                self.publish(stage, loadID: id)
+            }
+        }
         Task {
-            let result = await Self.compute()
+            let result = await Self.compute { stage in continuation.yield(stage) }
+            continuation.finish()
+            guard self.loadID == id else { return }
             if let error = result.error {
                 self.status = .failed(error)
             } else {
@@ -93,6 +117,11 @@ final class StorageViewModel: ObservableObject {
         }
     }
 
+    private func publish(_ stage: MeasurementStage, loadID: UUID) {
+        guard self.loadID == loadID, loading else { return }
+        measurementStage = stage
+    }
+
     private struct Result {
         var categories: [StorageCategory] = []
         var freeText: String = "-"
@@ -100,8 +129,11 @@ final class StorageViewModel: ObservableObject {
         var error: String?
     }
 
-    private static func compute() async -> Result {
+    private static func compute(
+        progress: @escaping @Sendable (MeasurementStage) async -> Void
+    ) async -> Result {
         await Task.detached(priority: .userInitiated) { () -> Result in
+            await progress(.capacity)
             let home = FileManager.default.homeDirectoryForCurrentUser
             let root = URL(fileURLWithPath: "/")
             let values = try? root.resourceValues(forKeys: [
@@ -128,11 +160,14 @@ final class StorageViewModel: ObservableObject {
             let downloadsURL = home.appendingPathComponent("Downloads")
             let libraryURL = home.appendingPathComponent("Library")
 
+            await progress(.applications)
             let applications = Double(DiskScan.size(of: applicationsURL, includingPackageContents: true)
                 + DiskScan.size(of: systemApplicationsURL, includingPackageContents: true))
+            await progress(.personalFiles)
             let documents = Double(DiskScan.size(of: documentsURL, includingPackageContents: true))
             let desktop = Double(DiskScan.size(of: desktopURL, includingPackageContents: true))
             let downloads = Double(DiskScan.size(of: downloadsURL, includingPackageContents: true))
+            await progress(.library)
             let library = Double(DiskScan.size(of: libraryURL, includingPackageContents: true))
 
             var categories: [StorageCategory] = [
@@ -151,23 +186,24 @@ final class StorageViewModel: ObservableObject {
                 StorageCategory(label: "Desktop",
                                 detail: "Measured files and folders on your Desktop.",
                                 value: desktop,
-                                color: Color(red: 0.30, green: 0.74, blue: 0.74),
+                                color: Theme.aqua,
                                 confidence: .measured,
                                 route: .reveal(desktopURL)),
                 StorageCategory(label: "Downloads",
                                 detail: "Measured your Downloads folder.",
                                 value: downloads,
-                                color: Color(red: 0.95, green: 0.55, blue: 0.35),
+                                color: Theme.orange,
                                 confidence: .measured,
                                 route: .reveal(downloadsURL)),
                 StorageCategory(label: "User Library",
                                 detail: "Measured app support, containers, caches, and logs Geraldine can read.",
                                 value: library,
-                                color: Color(red: 0.40, green: 0.72, blue: 0.50),
+                                color: Theme.green,
                                 confidence: .measured,
                                 route: .reveal(libraryURL))
             ].filter { $0.value > 0 }
 
+            await progress(.finalizing)
             let measured = categories.reduce(0) { $0 + $1.value }
             let systemOther = max(0, used - measured)
             if systemOther > 0 {
@@ -175,7 +211,7 @@ final class StorageViewModel: ObservableObject {
                     label: "APFS, System, and Other",
                     detail: "Derived from used space minus measured folders. Includes macOS, snapshots, other users, protected files, and unmeasured locations.",
                     value: systemOther,
-                    color: Color(white: 0.55),
+                    color: Theme.slate,
                     confidence: .derived,
                     route: .module(.spaceLens)
                 ))
@@ -185,7 +221,7 @@ final class StorageViewModel: ObservableObject {
                 label: "Available",
                 detail: "Free space macOS reports as available for important usage.",
                 value: free,
-                color: Color(white: 0.82),
+                color: Theme.silver,
                 confidence: .available,
                 route: .none,
                 isAvailable: true
@@ -203,6 +239,18 @@ struct StorageView: View {
     @EnvironmentObject var state: AppState
     @StateObject private var vm = StorageViewModel()
 
+    private enum PresentationPhase: Hashable {
+        case measuring
+        case failed(String)
+        case results
+    }
+
+    private var presentationPhase: PresentationPhase {
+        if vm.loading, vm.categories.isEmpty { return .measuring }
+        if let error = vm.errorMessage { return .failed(error) }
+        return .results
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             ModuleHeader(module: .storage) {
@@ -210,52 +258,59 @@ struct StorageView: View {
                     .disabled(vm.loading)
             }
 
-            if vm.loading && vm.categories.isEmpty {
-                ScanningState(tint: Module.storage.tint, icon: Module.storage.systemImage,
-                              label: "Measuring your disk…")
-            } else if let error = vm.errorMessage {
-                StorageErrorState(message: error, retry: vm.load)
-            } else {
-                ScrollView {
-                    VStack(spacing: 18) {
-                        HStack(spacing: 32) {
-                            DonutChart(segments: vm.segments, centerTitle: vm.freeText,
-                                       centerSubtitle: vm.totalText, lineWidth: 30)
-                                .frame(width: 220, height: 220)
-                                .opacity(vm.loading ? 0.5 : 1)
+            WorkflowPhaseHost(phase: presentationPhase) {
+                switch presentationPhase {
+                case .measuring:
+                    ScanningState(tint: Module.storage.tint, icon: Module.storage.systemImage,
+                                  label: "Measuring Your Disk",
+                                  progressText: vm.measurementStage.rawValue)
+                case .failed(let error):
+                    StorageErrorState(message: error, retry: vm.load)
+                case .results:
+                    ScrollView {
+                        VStack(spacing: 18) {
+                            HStack(spacing: 32) {
+                                DonutChart(segments: vm.segments, centerTitle: vm.freeText,
+                                           centerSubtitle: vm.totalText, lineWidth: 30)
+                                    .frame(width: 220, height: 220)
+                                    .opacity(vm.loading ? 0.58 : 1)
+                                    .geraldineEntrance()
 
-                            VStack(alignment: .leading, spacing: 12) {
-                                StorageFreshnessCard(freshness: vm.freshnessText,
-                                                     measured: vm.measuredText,
-                                                     isRefreshing: vm.loading)
+                                VStack(alignment: .leading, spacing: 12) {
+                                    StorageFreshnessCard(freshness: vm.freshnessText,
+                                                         measured: vm.measuredText,
+                                                         stage: vm.measurementStage,
+                                                         isRefreshing: vm.loading)
 
-                                ForEach(vm.categories) { category in
-                                    StorageCategoryRow(category: category) { route in
-                                        open(route)
+                                    ForEach(Array(vm.categories.enumerated()), id: \.element.id) { index, category in
+                                        StorageCategoryRow(category: category) { route in
+                                            open(route)
+                                        }
+                                        .geraldineEntrance(delay: min(Double(index) * 0.055, 0.28), distance: 6)
                                     }
                                 }
+                                .frame(maxWidth: 360)
                             }
-                            .frame(maxWidth: 360)
-                        }
-                        .card(padding: 24)
+                            .card(padding: 24, tier: .tinted(Module.storage.tint))
 
-                        HStack(spacing: 12) {
-                            StorageRouteButton(icon: "sparkles",
-                                               title: "Free Up Space With Cleanup",
-                                               detail: "Review caches, logs, Trash, and old installers before removing anything.",
-                                               tint: Module.cleanup.tint) {
-                                state.open(.cleanup)
-                            }
+                            HStack(spacing: 12) {
+                                StorageRouteButton(icon: "sparkles",
+                                                   title: "Free Up Space With Cleanup",
+                                                   detail: "Review caches, logs, Trash, and old installers before removing anything.",
+                                                   tint: Module.cleanup.tint) {
+                                    state.open(.cleanup)
+                                }
 
-                            StorageRouteButton(icon: Module.spaceLens.systemImage,
-                                               title: "Drill Into Folders With Space Lens",
-                                               detail: "Use a folder map for the parts APFS reports as System or Other.",
-                                               tint: Module.spaceLens.tint) {
-                                state.open(.spaceLens)
+                                StorageRouteButton(icon: Module.spaceLens.systemImage,
+                                                   title: "Drill Into Folders With Space Lens",
+                                                   detail: "Use a folder map for the parts APFS reports as System or Other.",
+                                                   tint: Module.spaceLens.tint) {
+                                    state.open(.spaceLens)
+                                }
                             }
                         }
+                        .padding(26)
                     }
-                    .padding(26)
                 }
             }
         }
@@ -277,11 +332,13 @@ struct StorageView: View {
 private struct StorageFreshnessCard: View {
     var freshness: String
     var measured: String
+    var stage: StorageViewModel.MeasurementStage
     var isRefreshing: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-            Label(isRefreshing ? "Refreshing…" : freshness, systemImage: isRefreshing ? "arrow.triangle.2.circlepath" : "clock")
+            Label(isRefreshing ? stage.rawValue : freshness,
+                  systemImage: isRefreshing ? "arrow.triangle.2.circlepath" : "clock")
             Label(measured, systemImage: "folder.badge.gearshape")
             Text("Measured folders are scanned directly. APFS/System/Other is the remaining used space and can include snapshots, protected folders, other users, and system data.")
                 .font(.caption2)
@@ -315,7 +372,7 @@ private struct StorageCategoryRow: View {
             Spacer(minLength: 8)
 
             VStack(alignment: .trailing, spacing: 6) {
-                Text(Fmt.size(category.value))
+                AnimatedNumberText(Fmt.size(category.value), value: category.value)
                     .font(.callout.monospacedDigit())
                     .foregroundStyle(.secondary)
 
@@ -324,7 +381,7 @@ private struct StorageCategoryRow: View {
                         Label(action.title, systemImage: action.icon)
                     }
                     .font(.caption.weight(.semibold))
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.soft(category.color))
                 }
             }
         }
@@ -378,10 +435,8 @@ private struct StorageRouteButton: View {
                 Spacer(minLength: 8)
                 Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
             }
-            .card(padding: 14)
         }
-        .buttonStyle(.plain)
-        .pointingHandCursor()
+        .buttonStyle(.actionableCard(padding: 14, tier: .tinted(tint)))
     }
 }
 
@@ -392,7 +447,8 @@ private struct StorageErrorState: View {
     var body: some View {
         VStack(spacing: 16) {
             Spacer()
-            IconBadge(icon: "externaldrive.badge.xmark", tint: Module.storage.tint, size: 86)
+            WorkflowMark(state: .failure, tint: Module.storage.tint,
+                         idleIcon: "externaldrive.badge.xmark", size: 86)
             Text("Storage Could Not Be Measured").font(.rounded(20, .semibold))
             Text(message)
                 .font(.callout)
@@ -405,4 +461,3 @@ private struct StorageErrorState: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
-

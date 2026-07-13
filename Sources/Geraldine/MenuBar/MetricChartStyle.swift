@@ -4,8 +4,8 @@ enum MetricChartStyle {
     static let usageGradient: [Color] = [Theme.bad, Theme.warn, Theme.good]
     static let batteryGradient: [Color] = [Theme.good, Theme.warn, Theme.bad]
     static let normalizedDomain: ClosedRange<Double> = 0...1
-    static let expandedWindowSeconds = 24 * 60 * 60
-    static let smallWindowSeconds = 6 * 60 * 60
+    static let expandedWindow: TimeInterval = 24 * 60 * 60
+    static let smallWindow: TimeInterval = 6 * 60 * 60
     static let expandedMaxPoints = 720
     static let smallMaxPoints = 240
 
@@ -27,7 +27,7 @@ enum MetricChartStyle {
         case .memory:
             return Theme.accent2
         case .storage:
-            return Color(red: 0.20, green: 0.70, blue: 0.62)
+            return Theme.mint
         case .battery:
             return Theme.good
         case .network:
@@ -37,19 +37,10 @@ enum MetricChartStyle {
         }
     }
 
-    static func chartValues(_ values: [Double], seconds: Int, maxPoints: Int) -> [Double] {
-        guard values.count > seconds else {
-            return downsample(values, maxPoints: maxPoints)
-        }
-        return downsample(Array(values.suffix(seconds)), maxPoints: maxPoints)
-    }
-
-    private static func downsample(_ values: [Double], maxPoints: Int) -> [Double] {
-        guard maxPoints > 1, values.count > maxPoints else { return values }
-        let step = Double(values.count - 1) / Double(maxPoints - 1)
-        return (0..<maxPoints).map { index in
-            let sourceIndex = min(values.count - 1, Int((Double(index) * step).rounded()))
-            return values[sourceIndex]
-        }
+    /// A rendered point may stand in for several raw samples on long windows. Allow
+    /// that expected spacing while still breaking genuinely missing periods.
+    static func gapThreshold(window: TimeInterval, maximumPointCount: Int) -> TimeInterval {
+        let renderedSpacing = window / Double(max(maximumPointCount - 1, 1))
+        return max(SystemMonitor.chartSampleGapThreshold, renderedSpacing * 2.5)
     }
 }

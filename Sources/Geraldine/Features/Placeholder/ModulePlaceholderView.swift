@@ -17,50 +17,42 @@ struct ModulePlaceholderView: View {
 }
 
 /// Shared header used at the top of every module screen.
-struct ModuleHeader: View {
-    var module: Module
-    var title: String?
-    var subtitle: String?
-    var systemImage: String?
-    var trailing: AnyView? = nil
+struct ModuleHeader<Trailing: View>: View {
+    let module: Module
+    let title: String?
+    let subtitle: String?
+    let systemImage: String?
+    @ViewBuilder let trailing: Trailing
 
+    init(module: Module, @ViewBuilder trailing: () -> Trailing) {
+        self.module = module
+        self.title = nil
+        self.subtitle = nil
+        self.systemImage = nil
+        self.trailing = trailing()
+    }
+
+    var body: some View {
+        PageHeader(
+            module: module,
+            title: title,
+            subtitle: subtitle,
+            systemImage: systemImage
+        ) {
+            trailing
+        }
+        .padding(.horizontal, Theme.Layout.pagePadding)
+        .padding(.top, Theme.Spacing.xl)
+        .padding(.bottom, Theme.Spacing.md)
+    }
+}
+
+extension ModuleHeader where Trailing == EmptyView {
     init(module: Module, title: String? = nil, subtitle: String? = nil, systemImage: String? = nil) {
         self.module = module
         self.title = title
         self.subtitle = subtitle
         self.systemImage = systemImage
-        self.trailing = nil
-    }
-
-    init(module: Module, @ViewBuilder trailing: () -> some View) {
-        self.module = module
-        self.title = nil
-        self.subtitle = nil
-        self.systemImage = nil
-        self.trailing = AnyView(trailing())
-    }
-
-    var body: some View {
-        HStack(spacing: 14) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(LinearGradient(colors: [module.tint.opacity(0.26), module.tint.opacity(0.10)],
-                                         startPoint: .topLeading, endPoint: .bottomTrailing))
-                    .frame(width: 46, height: 46)
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .strokeBorder(module.tint.opacity(0.18), lineWidth: 1)
-                    .frame(width: 46, height: 46)
-                Image(systemName: systemImage ?? module.systemImage)
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(module.tint.gradient)
-            }
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title ?? module.title).font(.rounded(22, .bold))
-                Text(subtitle ?? module.subtitle).font(.callout).foregroundStyle(.secondary)
-            }
-            Spacer()
-            if let trailing { trailing }
-        }
-        .padding(.horizontal, 26).padding(.top, 22).padding(.bottom, 14)
+        self.trailing = EmptyView()
     }
 }

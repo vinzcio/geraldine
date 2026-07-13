@@ -67,6 +67,7 @@ rsync -a --delete \
   --exclude '.build' --exclude '.git' --exclude '.DS_Store' \
   "$SRC_DIR/Sources" "$STAGE/"
 rsync -a "$SRC_DIR/Package.swift" "$STAGE/"
+[ -d "$SRC_DIR/Tests" ] && rsync -a --delete "$SRC_DIR/Tests" "$STAGE/" || true
 [ -d "$SRC_DIR/Resources" ] && rsync -a --delete "$SRC_DIR/Resources" "$STAGE/" || true
 
 echo "▸ Compiling ($CONFIG)…"

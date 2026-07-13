@@ -11,6 +11,106 @@ extension EnvironmentValues {
     }
 }
 
+@MainActor
+private final class WidgetDragCoordinator: ObservableObject {
+    @Published var dragged: WidgetKind?
+    @Published var target: WidgetKind?
+
+    func begin(_ kind: WidgetKind) {
+        dragged = kind
+    }
+
+    func setTarget(_ kind: WidgetKind, active: Bool) {
+        if active {
+            target = kind
+        } else if target == kind {
+            target = nil
+        }
+    }
+
+    func end() {
+        dragged = nil
+        target = nil
+    }
+}
+
+private struct WidgetFullWidthKey: LayoutValueKey {
+    static let defaultValue = false
+}
+
+/// Stable-ID packing without synthetic row identities. Each widget remains the
+/// same subview while neighboring tiles reflow between half and full-width rows.
+private struct WidgetPackingLayout: Layout {
+    var spacing: CGFloat = 8
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? 292
+        let rows = measuredRows(width: width, subviews: subviews)
+        let height = rows.reduce(0) { $0 + $1.height } + spacing * CGFloat(max(0, rows.count - 1))
+        return CGSize(width: width, height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize,
+                       subviews: Subviews, cache: inout ()) {
+        let rows = measuredRows(width: bounds.width, subviews: subviews)
+        var y = bounds.minY
+        for row in rows {
+            for cell in row.cells {
+                let x = bounds.minX + (cell.column == 0 ? 0 : cell.width + spacing)
+                cell.subview.place(
+                    at: CGPoint(x: x, y: y),
+                    anchor: .topLeading,
+                    proposal: ProposedViewSize(width: cell.width, height: row.height)
+                )
+            }
+            y += row.height + spacing
+        }
+    }
+
+    private struct Cell {
+        let subview: LayoutSubview
+        let width: CGFloat
+        let column: Int
+    }
+
+    private struct Row {
+        let cells: [Cell]
+        let height: CGFloat
+    }
+
+    private func measuredRows(width: CGFloat, subviews: Subviews) -> [Row] {
+        let halfWidth = max(0, (width - spacing) / 2)
+        var rows: [Row] = []
+        var index = subviews.startIndex
+
+        while index < subviews.endIndex {
+            let first = subviews[index]
+            if first[WidgetFullWidthKey.self] {
+                let height = first.sizeThatFits(ProposedViewSize(width: width, height: nil)).height
+                let cell = Cell(subview: first, width: width, column: 0)
+                rows.append(Row(cells: [cell], height: height))
+                index = subviews.index(after: index)
+                continue
+            }
+
+            let firstHeight = first.sizeThatFits(ProposedViewSize(width: halfWidth, height: nil)).height
+            let firstCell = Cell(subview: first, width: halfWidth, column: 0)
+            let next = subviews.index(after: index)
+            if next < subviews.endIndex, !subviews[next][WidgetFullWidthKey.self] {
+                let second = subviews[next]
+                let secondHeight = second.sizeThatFits(ProposedViewSize(width: halfWidth, height: nil)).height
+                let secondCell = Cell(subview: second, width: halfWidth, column: 1)
+                rows.append(Row(cells: [firstCell, secondCell], height: max(firstHeight, secondHeight)))
+                index = subviews.index(after: next)
+            } else {
+                rows.append(Row(cells: [firstCell], height: firstHeight))
+                index = next
+            }
+        }
+        return rows
+    }
+}
+
 // MARK: - Grid
 
 /// Lays out the metric widgets like iOS Home Screen widgets: two small tiles per row,
@@ -19,7 +119,9 @@ struct WidgetGrid: View {
     @EnvironmentObject var layout: WidgetLayoutStore
     @EnvironmentObject private var monitor: SystemMonitor
     @EnvironmentObject private var calendar: CalendarSettingsStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var customizing = false
+    @StateObject private var dragCoordinator = WidgetDragCoordinator()
 
     var body: some View {
         VStack(spacing: 8) {
@@ -27,10 +129,12 @@ struct WidgetGrid: View {
             if customizing { customizationPanel }
             widgetRows
         }
-        // Key on the packed result, not raw items, so showing/hiding the calendar or
-        // world clocks (a settings toggle, not an items change) reflows just as smoothly.
-        .animation(.snappy(duration: 0.28), value: packed)
+        .animation(GeraldineMotion.animation(.gentleSpring, reduceMotion: reduceMotion), value: visibleItems)
         .environment(\.widgetCustomizationActive, customizing)
+        .environmentObject(dragCoordinator)
+        .onChange(of: customizing) { _, isCustomizing in
+            if !isCustomizing { dragCoordinator.end() }
+        }
     }
 
     @ViewBuilder private func widget(for item: WidgetItem) -> some View {
@@ -42,30 +146,33 @@ struct WidgetGrid: View {
     }
 
     @ViewBuilder private var widgetRows: some View {
-        if packed.isEmpty {
+        if visibleItems.isEmpty {
             HStack(spacing: 7) {
                 Image(systemName: "square.grid.2x2")
                 Text("No Widgets Selected")
                 Spacer()
-                Button("Reset") { withAnimation(.snappy(duration: 0.28)) { layout.reset() } }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(Theme.accent)
+                Button("Reset") {
+                    withAnimation(GeraldineMotion.animation(.gentleSpring, reduceMotion: reduceMotion)) {
+                        layout.reset()
+                    }
+                }
+                .buttonStyle(.quiet(Theme.accent))
             }
             .font(.caption2.weight(.medium))
             .foregroundStyle(.secondary)
             .padding(10)
-            .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: Theme.Radius.badge, style: .continuous))
         } else {
-            ForEach(Array(packed.enumerated()), id: \.offset) { _, row in
-                HStack(spacing: 8) {
-                    ForEach(row, id: \.kind) { item in
-                        widget(for: item).frame(maxWidth: .infinity)
-                    }
-                    // Keep a lone small tile at half width instead of stretching.
-                    if row.count == 1, !isFullWidth(row[0]) {
-                        Color.clear.frame(maxWidth: .infinity)
+            VStack(spacing: Theme.Spacing.xs) {
+                WidgetPackingLayout(spacing: 8) {
+                    ForEach(visibleItems) { item in
+                        widget(for: item)
+                            .frame(maxWidth: .infinity)
+                            .layoutValue(key: WidgetFullWidthKey.self, value: isFullWidth(item))
+                            .widgetDragAppearance(item.kind)
                     }
                 }
+                if customizing { WidgetEndDropSlot() }
             }
         }
     }
@@ -73,34 +180,43 @@ struct WidgetGrid: View {
     private var customizationToolbar: some View {
         HStack(spacing: 6) {
             Button {
-                withAnimation(.snappy(duration: 0.22)) { customizing.toggle() }
+                withAnimation(GeraldineMotion.animation(.standard, reduceMotion: reduceMotion)) {
+                    customizing.toggle()
+                }
             } label: {
-                Label(customizing ? "Done" : "Customize",
-                      systemImage: customizing ? "checkmark" : "slider.horizontal.3")
+                HStack(spacing: 5) {
+                    ContextualSymbol(
+                        inactive: "slider.horizontal.3",
+                        active: "checkmark",
+                        isActive: customizing,
+                        tint: customizing ? Theme.accent : Color(nsColor: .secondaryLabelColor),
+                        size: 11
+                    )
+                    Text(customizing ? "Done" : "Customize")
+                }
                     .font(.caption2.weight(.semibold))
                     .padding(.horizontal, 9)
-                    .padding(.vertical, 5)
-                    .background(customizing ? Theme.accent.opacity(0.16) : Color.primary.opacity(0.06),
-                                in: Capsule())
+                    .frame(minHeight: Theme.Layout.minimumHitArea)
                     .foregroundStyle(customizing ? Theme.accent : .secondary)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.geraldineSelection(Theme.accent,
+                                              isSelected: customizing,
+                                              cornerRadius: Theme.Radius.pill,
+                                              showsSelectionRail: false))
             .help(customizing ? "Finish customizing widgets" : "Customize menu bar widgets")
 
             Spacer(minLength: 4)
 
             if customizing {
                 Button {
-                    withAnimation(.snappy(duration: 0.28)) { layout.reset() }
+                    withAnimation(GeraldineMotion.animation(.gentleSpring, reduceMotion: reduceMotion)) {
+                        layout.reset()
+                    }
                 } label: {
                     Label("Reset", systemImage: "arrow.counterclockwise")
                         .font(.caption2.weight(.semibold))
-                        .padding(.horizontal, 9)
-                        .padding(.vertical, 5)
-                        .background(Color.primary.opacity(0.06), in: Capsule())
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
+                .buttonStyle(.quiet(Theme.accent))
                 .help("Reset widget layout")
             }
         }
@@ -110,11 +226,18 @@ struct WidgetGrid: View {
         LazyVGrid(columns: [GridItem(.flexible(), spacing: 6), GridItem(.flexible(), spacing: 6)], spacing: 6) {
             ForEach(layout.items.filter(isCustomizable)) { item in
                 Button {
-                    withAnimation(.snappy(duration: 0.28)) { layout.setShown(item.kind, !item.isShown) }
+                    withAnimation(GeraldineMotion.animation(.gentleSpring, reduceMotion: reduceMotion)) {
+                        layout.setShown(item.kind, !item.isShown)
+                    }
                 } label: {
                     HStack(spacing: 5) {
-                        Image(systemName: item.isShown ? "checkmark.circle.fill" : "plus.circle")
-                            .foregroundStyle(item.isShown ? Theme.accent : .secondary)
+                        ContextualSymbol(
+                            inactive: "plus.circle",
+                            active: "checkmark.circle.fill",
+                            isActive: item.isShown,
+                            tint: item.isShown ? Theme.accent : Color(nsColor: .secondaryLabelColor),
+                            size: 12
+                        )
                         Text(item.kind.title(hasBattery: monitor.hasBattery))
                             .lineLimit(1)
                             .minimumScaleFactor(0.75)
@@ -122,17 +245,17 @@ struct WidgetGrid: View {
                     }
                     .font(.caption2.weight(.semibold))
                     .padding(.horizontal, 8)
-                    .padding(.vertical, 6)
-                    .background(item.isShown ? Theme.accent.opacity(0.10) : Color.primary.opacity(0.045),
-                                in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .frame(minHeight: Theme.Layout.minimumHitArea)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.geraldineSelection(Theme.accent,
+                                                  isSelected: item.isShown,
+                                                  cornerRadius: Theme.Radius.badge))
                 .help(item.isShown ? "Hide \(item.kind.title(hasBattery: monitor.hasBattery))"
                                     : "Show \(item.kind.title(hasBattery: monitor.hasBattery))")
             }
         }
         .padding(6)
-        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: Theme.Radius.badge, style: .continuous))
     }
 
     /// Whether the kind/setting is currently shown in the popover.
@@ -155,20 +278,8 @@ struct WidgetGrid: View {
     }
 
     /// Flow the ordered items into rows: a full-width item takes its own row; smalls pair up.
-    private var packed: [[WidgetItem]] {
-        var rows: [[WidgetItem]] = []
-        var i = 0
-        let items = layout.items.filter(isVisible)
-        while i < items.count {
-            if isFullWidth(items[i]) {
-                rows.append([items[i]]); i += 1
-            } else if i + 1 < items.count, !isFullWidth(items[i + 1]) {
-                rows.append([items[i], items[i + 1]]); i += 2
-            } else {
-                rows.append([items[i]]); i += 1
-            }
-        }
-        return rows
+    private var visibleItems: [WidgetItem] {
+        layout.items.filter(isVisible)
     }
 }
 
@@ -179,42 +290,69 @@ struct WidgetGrid: View {
 struct WidgetControls: View {
     @EnvironmentObject var layout: WidgetLayoutStore
     @EnvironmentObject private var monitor: SystemMonitor
+    @EnvironmentObject private var calendar: CalendarSettingsStore
+    @EnvironmentObject private var dragCoordinator: WidgetDragCoordinator
     @Environment(\.widgetCustomizationActive) private var customizationActive
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let kind: WidgetKind
     let size: WidgetSize
 
     var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "line.3.horizontal")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(customizationActive ? Theme.accent : .secondary)
-                .frame(width: 18, height: 18)
-                .background(customizationActive ? Theme.accent.opacity(0.12) : Color.clear, in: Circle())
-                .overlay(Circle().strokeBorder(customizationActive ? Theme.accent.opacity(0.28) : .clear, lineWidth: 1))
-                .contentShape(Rectangle())
-                .help("Drag to reorder")
-                .draggable(kind.id) { dragPreview }
-                .accessibilityLabel("Reorder \(kind.title(hasBattery: monitor.hasBattery))")
-                .accessibilityHint("Drag to reorder this widget.")
+        HStack(spacing: 0) {
+            if customizationActive {
+                Image(systemName: "line.3.horizontal")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Theme.accent)
+                    .frame(width: 22, height: 22)
+                    .background(Theme.accent.opacity(0.12), in: Circle())
+                    .overlay(Circle().strokeBorder(Theme.accent.opacity(0.30), lineWidth: 1))
+                    .frame(width: Theme.Layout.minimumHitArea, height: Theme.Layout.minimumHitArea)
+                    .contentShape(Rectangle())
+                    .help("Drag to reorder")
+                    .draggable(kind.id) {
+                        dragPreview
+                            .onAppear { dragCoordinator.begin(kind) }
+                            .onDisappear { dragCoordinator.end() }
+                    }
+                    .accessibilityElement()
+                    .accessibilityAddTraits(.isButton)
+                    .accessibilityLabel("Reorder \(kind.title(hasBattery: monitor.hasBattery))")
+                    .accessibilityHint("Drag, or use Move Earlier and Move Later actions.")
+                    .accessibilityAction(named: Text("Move Earlier")) {
+                        withAnimation(GeraldineMotion.animation(.gentleSpring, reduceMotion: reduceMotion)) {
+                            moveEarlier()
+                        }
+                    }
+                    .accessibilityAction(named: Text("Move Later")) {
+                        withAnimation(GeraldineMotion.animation(.gentleSpring, reduceMotion: reduceMotion)) {
+                            moveLater()
+                        }
+                    }
+                    .transition(.opacity.combined(with: .scale(scale: GeraldineMotion.iconSwapScale)))
+            }
 
             if kind.canResize {
                 Button {
-                    withAnimation(.snappy(duration: 0.28)) { layout.toggleSize(kind) }
+                    withAnimation(GeraldineMotion.animation(.gentleSpring, reduceMotion: reduceMotion)) {
+                        layout.toggleSize(kind)
+                    }
                 } label: {
-                    Image(systemName: size == .small ? "arrow.up.left.and.arrow.down.right" : "arrow.down.right.and.arrow.up.left")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(customizationActive ? Theme.accent : .secondary)
-                        .frame(width: 18, height: 18)
-                        .background(customizationActive ? Theme.accent.opacity(0.12) : Color.primary.opacity(0.07), in: Circle())
-                        .overlay(Circle().strokeBorder(customizationActive ? Theme.accent.opacity(0.28) : .clear, lineWidth: 1))
+                    ContextualSymbol(
+                        inactive: "arrow.up.left.and.arrow.down.right",
+                        active: "arrow.down.right.and.arrow.up.left",
+                        isActive: size == .large,
+                        tint: customizationActive ? Theme.accent : Color(nsColor: .secondaryLabelColor),
+                        size: 10
+                    )
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.quiet(customizationActive ? Theme.accent : Color.secondary))
                 .help(size == .small ? "Expand widget" : "Shrink widget")
                 .accessibilityLabel(size == .small
                                     ? "Expand \(kind.title(hasBattery: monitor.hasBattery))"
                                     : "Shrink \(kind.title(hasBattery: monitor.hasBattery))")
             }
         }
+        .animation(GeraldineMotion.animation(.standard, reduceMotion: reduceMotion), value: customizationActive)
     }
 
     @ViewBuilder private var dragPreview: some View {
@@ -227,27 +365,147 @@ struct WidgetControls: View {
             Text(kind.title(hasBattery: monitor.hasBattery))
         }
         .font(.caption).padding(6)
-        .background(.ultraThinMaterial, in: Capsule())
+        .adaptiveMaterialBackground(.ultraThin, in: Capsule())
+    }
+
+    private var visibleOrder: [WidgetKind] {
+        layout.items.compactMap { item in
+            guard item.isShown else { return nil }
+            switch item.kind {
+            case .metric(let metric):
+                return metric.isAvailable(hasBattery: monitor.hasBattery) ? item.kind : nil
+            case .keepAwake:
+                return item.kind
+            case .calendar:
+                return calendar.appearsInPopover ? item.kind : nil
+            }
+        }
+    }
+
+    private func moveEarlier() {
+        guard let index = visibleOrder.firstIndex(of: kind), index > 0 else { return }
+        layout.move(kind, before: visibleOrder[index - 1])
+    }
+
+    private func moveLater() {
+        guard let index = visibleOrder.firstIndex(of: kind), index + 1 < visibleOrder.count else { return }
+        layout.move(visibleOrder[index + 1], before: kind)
     }
 }
 
 /// Accept a dropped widget id and reorder it before `target`.
 private struct WidgetDropTarget: ViewModifier {
     @EnvironmentObject var layout: WidgetLayoutStore
+    @EnvironmentObject private var dragCoordinator: WidgetDragCoordinator
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.widgetCustomizationActive) private var customizationActive
     let target: WidgetKind
 
-    func body(content: Content) -> some View {
-        content.dropDestination(for: String.self) { dropped, _ in
-            guard let raw = dropped.first, let dragged = WidgetKind(id: raw), dragged != target else { return false }
-            withAnimation(.snappy(duration: 0.28)) { layout.move(dragged, before: target) }
-            return true
+    @ViewBuilder func body(content: Content) -> some View {
+        if customizationActive {
+            content
+            .dropDestination(for: String.self) { dropped, _ in
+                guard let raw = dropped.first,
+                      let dragged = WidgetKind(id: raw),
+                      dragged != target else {
+                    dragCoordinator.end()
+                    return false
+                }
+                withAnimation(GeraldineMotion.animation(.gentleSpring, reduceMotion: reduceMotion)) {
+                    layout.move(dragged, before: target)
+                }
+                dragCoordinator.end()
+                return true
+            } isTargeted: { isTargeted in
+                dragCoordinator.setTarget(target, active: isTargeted)
+            }
+        } else {
+            content
         }
+    }
+}
+
+private struct WidgetEndDropSlot: View {
+    @EnvironmentObject private var layout: WidgetLayoutStore
+    @EnvironmentObject private var dragCoordinator: WidgetDragCoordinator
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isTargeted = false
+
+    var body: some View {
+        HStack(spacing: Theme.Spacing.xs) {
+            Capsule()
+                .fill(isTargeted ? Theme.accent : Theme.separator)
+                .frame(height: isTargeted ? 4 : 2)
+                .shadow(color: isTargeted ? Theme.accent.opacity(0.48) : .clear,
+                        radius: isTargeted ? 7 : 0)
+            if dragCoordinator.dragged != nil {
+                Text("Drop At End")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(isTargeted ? Theme.accent : .secondary)
+                    .fixedSize()
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: Theme.Layout.minimumHitArea)
+        .contentShape(Rectangle())
+        .dropDestination(for: String.self) { dropped, _ in
+            guard let raw = dropped.first, let kind = WidgetKind(id: raw) else {
+                dragCoordinator.end()
+                return false
+            }
+            withAnimation(GeraldineMotion.animation(.gentleSpring, reduceMotion: reduceMotion)) {
+                layout.moveToEnd(kind)
+            }
+            dragCoordinator.end()
+            return true
+        } isTargeted: { targeted in
+            isTargeted = targeted
+        }
+        .accessibilityHidden(dragCoordinator.dragged == nil)
+    }
+}
+
+private struct WidgetDragAppearance: ViewModifier {
+    @EnvironmentObject private var dragCoordinator: WidgetDragCoordinator
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let kind: WidgetKind
+
+    func body(content: Content) -> some View {
+        let isDragged = dragCoordinator.dragged == kind
+        let isTarget = dragCoordinator.target == kind && !isDragged
+        content
+            .scaleEffect(isDragged && !reduceMotion ? 1.018 : 1)
+            .offset(y: isDragged && !reduceMotion ? -3 : 0)
+            .opacity(isDragged ? 0.88 : 1)
+            .padding(.leading, isTarget && !reduceMotion ? 8 : 0)
+            .overlay {
+                RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
+                    .strokeBorder(isTarget ? Theme.accent.opacity(0.28) : .clear, lineWidth: 1)
+            }
+            .overlay(alignment: .leading) {
+                Capsule()
+                    .fill(isTarget ? Theme.accent : .clear)
+                    .frame(width: 4)
+                    .padding(.vertical, Theme.Spacing.xs)
+                    .offset(x: isTarget ? -2 : 0)
+                    .shadow(color: isTarget ? Theme.accent.opacity(0.55) : .clear,
+                            radius: isTarget ? 7 : 0)
+            }
+            .zIndex(isDragged ? 2 : (isTarget ? 1 : 0))
+            .animation(GeraldineMotion.animation(.gentleSpring, reduceMotion: reduceMotion),
+                       value: dragCoordinator.dragged)
+            .animation(GeraldineMotion.animation(.quick, reduceMotion: reduceMotion),
+                       value: dragCoordinator.target)
     }
 }
 
 extension View {
     func widgetDropTarget(_ target: WidgetKind) -> some View {
         modifier(WidgetDropTarget(target: target))
+    }
+
+    fileprivate func widgetDragAppearance(_ kind: WidgetKind) -> some View {
+        modifier(WidgetDragAppearance(kind: kind))
     }
 }
 
@@ -261,6 +519,7 @@ struct MetricWidget: View {
     @EnvironmentObject var monitor: SystemMonitor
     @EnvironmentObject var network: NetworkMonitor
     @Environment(\.widgetCustomizationActive) private var customizationActive
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var freeing = false
 
     private var isSmall: Bool { size == .small }
@@ -274,10 +533,10 @@ struct MetricWidget: View {
             if kind == .network { networkBody } else { standardBody }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .frame(height: isSmall ? 100 : nil, alignment: .topLeading)
+        .frame(height: isSmall ? 120 : nil, alignment: .topLeading)
         .padding(10)
-        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous)
+        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
             .strokeBorder(customizationActive ? Theme.accent.opacity(0.24) : .clear, lineWidth: 1))
         .widgetDropTarget(.metric(kind))
     }
@@ -304,7 +563,7 @@ struct MetricWidget: View {
             }
             .foregroundStyle(Theme.accent)
         }
-        .buttonStyle(.plain).disabled(busy)
+        .buttonStyle(.quiet(Theme.accent)).disabled(busy)
     }
 
     @ViewBuilder private func caption(_ text: String, animationValue: Double? = nil) -> some View {
@@ -339,7 +598,8 @@ struct MetricWidget: View {
         animatedValueText(size: 16, weight: .semibold)
             .foregroundStyle(kind == .temperature ? tint : .primary)
         if kind == .battery || kind == .storage {
-            normalizedHistoryChart(values: smallChartValues)
+            normalizedHistoryChart(window: MetricChartStyle.smallWindow,
+                                   maximumPointCount: MetricChartStyle.smallMaxPoints)
                 .frame(height: 28)
         } else if kind != .temperature {
             StatBar(fraction: fraction, tint: tint, height: 5)
@@ -367,62 +627,74 @@ struct MetricWidget: View {
     @ViewBuilder private var chart: some View {
         switch kind {
         case .temperature:
-            ScaledSparkGraph(values: monitor.thermalHistory, tint: tint,
+            liveHistoryChart(samples: monitor.thermalHistory,
+                             tint: tint,
                              gradientColors: Thermal.scaleColors,
                              domain: Thermal.chartDomain,
                              valueColor: Thermal.color)
         case .cpu:
-            ScaledSparkGraph(values: monitor.cpuHistory,
+            liveHistoryChart(samples: monitor.cpuHistory,
                              tint: MetricChartStyle.readoutColor(for: .cpu),
                              gradientColors: MetricChartStyle.gradient(for: .cpu),
                              domain: MetricChartStyle.normalizedDomain)
         case .memory:
-            ScaledSparkGraph(values: monitor.memHistory,
+            liveHistoryChart(samples: monitor.memHistory,
                              tint: MetricChartStyle.readoutColor(for: .memory),
                              gradientColors: MetricChartStyle.gradient(for: .memory),
                              domain: MetricChartStyle.normalizedDomain)
         case .battery:
-            normalizedHistoryChart(values: expandedChartValues)
+            normalizedHistoryChart(window: MetricChartStyle.expandedWindow,
+                                   maximumPointCount: MetricChartStyle.expandedMaxPoints)
         case .storage:
-            normalizedHistoryChart(values: expandedChartValues)
+            normalizedHistoryChart(window: MetricChartStyle.expandedWindow,
+                                   maximumPointCount: MetricChartStyle.expandedMaxPoints)
         case .network:
             EmptyView()
         }
     }
 
-    private var smallChartValues: [Double] {
-        retainedChartValues(seconds: MetricChartStyle.smallWindowSeconds,
-                            maxPoints: MetricChartStyle.smallMaxPoints)
-    }
-
-    private var expandedChartValues: [Double] {
-        retainedChartValues(seconds: MetricChartStyle.expandedWindowSeconds,
-                            maxPoints: MetricChartStyle.expandedMaxPoints)
-    }
-
-    private func retainedChartValues(seconds: Int, maxPoints: Int) -> [Double] {
+    private var slowMetricHistory: [MetricSample] {
         switch kind {
         case .battery:
-            return MetricChartStyle.chartValues(monitor.batteryHistory, seconds: seconds, maxPoints: maxPoints)
+            return monitor.batteryHistory
         case .storage:
-            return MetricChartStyle.chartValues(monitor.diskHistory, seconds: seconds, maxPoints: maxPoints)
+            return monitor.diskHistory
         default:
             return []
         }
     }
 
-    private func normalizedHistoryChart(values: [Double]) -> some View {
-        ScaledSparkGraph(values: values,
-                         tint: MetricChartStyle.readoutColor(for: kind),
-                         gradientColors: MetricChartStyle.gradient(for: kind),
-                         domain: MetricChartStyle.normalizedDomain)
+    private func liveHistoryChart(samples: [MetricSample], tint: Color,
+                                  gradientColors: [Color]?, domain: ClosedRange<Double>,
+                                  valueColor: ((Double) -> Color)? = nil) -> some View {
+        TimelineSparkGraph(samples: samples,
+                           window: SystemMonitor.liveHistoryWindow,
+                           now: Date(),
+                           tint: tint,
+                           gradientColors: gradientColors,
+                           domain: domain,
+                           valueColor: valueColor,
+                           gapThreshold: SystemMonitor.chartSampleGapThreshold,
+                           maximumPointCount: 300)
+    }
+
+    private func normalizedHistoryChart(window: TimeInterval, maximumPointCount: Int) -> some View {
+        TimelineSparkGraph(samples: slowMetricHistory,
+                           window: window,
+                           now: Date(),
+                           tint: MetricChartStyle.readoutColor(for: kind),
+                           gradientColors: MetricChartStyle.gradient(for: kind),
+                           domain: MetricChartStyle.normalizedDomain,
+                           gapThreshold: MetricChartStyle.gapThreshold(window: window,
+                                                                       maximumPointCount: maximumPointCount),
+                           maximumPointCount: maximumPointCount)
     }
 
     @ViewBuilder private var largeFooter: some View {
         switch kind {
         case .temperature:
-            let low = monitor.thermalHistory.min()
-            let high = monitor.thermalHistory.max()
+            let low = monitor.thermalHistory.map(\.value).min()
+            let high = monitor.thermalHistory.map(\.value).max()
             HStack {
                 caption("Low \(tempString(low))", animationValue: low)
                 Spacer()
@@ -519,8 +791,7 @@ struct MetricWidget: View {
                     .font(.rounded(size, .semibold))
                     .foregroundStyle(Theme.accent2)
             }
-            .buttonStyle(.plain)
-            .pointingHandCursor()
+            .buttonStyle(.quiet(Theme.accent2))
             .help(network.nameAccess == .denied
                   ? "Open Location Services to show the Wi-Fi network name"
                   : "Allow Location so macOS reveals the Wi-Fi network name")
@@ -577,37 +848,67 @@ struct MetricWidget: View {
     }
 
     @ViewBuilder private var speedControl: some View {
-        Group {
-            switch network.speedTest {
-            case .idle:
-                Button { network.runSpeedTest() } label: {
-                    Label("Test Speed", systemImage: "gauge.with.dots.needle.67percent")
-                        .font(.caption2.weight(.semibold)).foregroundStyle(Theme.accent)
-                }.buttonStyle(.plain)
-            case .running(let phase):
-                HStack(spacing: 5) {
-                    ProgressView().controlSize(.mini)
-                    Text(phase == .download ? "Testing ↓…" : "Testing ↑…")
-                        .font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
-                }
-            case .done(let down, let up):
-                Button { network.runSpeedTest() } label: {
-                    HStack(spacing: 6) {
-                        AnimatedNumberText("↓ \(speedString(down))", value: down).foregroundStyle(Theme.accent2)
-                        AnimatedNumberText("↑ \(speedString(up))", value: up).foregroundStyle(Theme.accent)
-                        Text("Mbps").foregroundStyle(.secondary)
+        WorkflowPhaseHost(phase: speedPhaseKey) {
+            Group {
+                if !network.online {
+                    Label("Offline", systemImage: "wifi.slash")
+                        .foregroundStyle(Theme.warn)
+                } else {
+                    switch network.speedTest {
+                    case .idle:
+                        Button { network.runSpeedTest() } label: {
+                            Label("Test Speed", systemImage: "gauge.with.dots.needle.67percent")
+                        }
+                        .buttonStyle(.quiet(Theme.accent))
+                    case .running(let phase):
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.mini)
+                            ContextualSymbol(
+                                inactive: "arrow.down",
+                                active: "arrow.up",
+                                isActive: phase == .upload,
+                                tint: phase == .upload ? Theme.accent : Theme.accent2,
+                                size: 10
+                            )
+                            Text(phase == .download ? "Testing Download" : "Testing Upload")
+                                .foregroundStyle(.secondary)
+                        }
+                    case .done(let down, let up):
+                        Button { network.runSpeedTest() } label: {
+                            HStack(spacing: 5) {
+                                AnimatedNumberText("↓\(speedString(down))", value: down)
+                                    .foregroundStyle(Theme.accent2)
+                                AnimatedNumberText("↑\(speedString(up))", value: up)
+                                    .foregroundStyle(Theme.accent)
+                                Text("Mbps").foregroundStyle(.secondary)
+                            }
+                        }
+                        .buttonStyle(.quiet(Theme.accent))
+                        .help("Run the speed test again")
+                    case .failed:
+                        Button { network.runSpeedTest() } label: {
+                            Label("Retry Test", systemImage: "exclamationmark.arrow.circlepath")
+                        }
+                        .buttonStyle(.quiet(Theme.accent))
                     }
-                    .font(.system(size: 11, weight: .semibold).monospacedDigit())
-                }.buttonStyle(.plain).help("Tap to test again")
-            case .failed:
-                Button { network.runSpeedTest() } label: {
-                    Label("Retry", systemImage: "exclamationmark.arrow.circlepath")
-                        .font(.caption2.weight(.semibold)).foregroundStyle(Theme.accent)
-                }.buttonStyle(.plain)
+                }
             }
+            .font(.system(size: 10.5, weight: .semibold).monospacedDigit())
+            .lineLimit(1)
+            .frame(width: 162, height: Theme.Layout.minimumHitArea, alignment: .trailing)
         }
-        .lineLimit(1)
-        .fixedSize(horizontal: true, vertical: false)
+        .animation(GeraldineMotion.animation(.standard, reduceMotion: reduceMotion), value: speedPhaseKey)
+    }
+
+    private var speedPhaseKey: String {
+        guard network.online else { return "offline" }
+        switch network.speedTest {
+        case .idle: return "idle"
+        case .running(.download): return "download"
+        case .running(.upload): return "upload"
+        case .done: return "done"
+        case .failed: return "failed"
+        }
     }
 
     // MARK: Per-metric data

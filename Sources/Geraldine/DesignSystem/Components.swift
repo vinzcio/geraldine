@@ -7,14 +7,22 @@ import AppKit
 /// affordance that SwiftUI's plain buttons don't provide on their own. Pops on exit and
 /// on disappear so the cursor can never get stuck if the view is removed mid-hover.
 private struct PointingHandCursor: ViewModifier {
+    @Environment(\.isEnabled) private var isEnabled
     @State private var hovering = false
 
     func body(content: Content) -> some View {
         content
             .onHover { inside in
+                guard isEnabled else {
+                    if hovering { NSCursor.pop(); hovering = false }
+                    return
+                }
                 guard inside != hovering else { return }
                 hovering = inside
                 if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+            }
+            .onChange(of: isEnabled) { _, enabled in
+                if !enabled, hovering { NSCursor.pop(); hovering = false }
             }
             .onDisappear {
                 if hovering { NSCursor.pop(); hovering = false }
@@ -29,37 +37,254 @@ extension View {
 
 // MARK: - Card
 
-struct CardBackground: ViewModifier {
-    var padding: CGFloat = 18
+enum CardTier {
+    case base
+    case raised
+    case floating
+    case tinted(Color)
+}
+
+enum AdaptiveMaterialTier {
+    case ultraThin
+    case thin
+    case regular
+}
+
+private struct AdaptiveMaterialBackground<ShapeType: Shape>: ViewModifier {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
+
+    let tier: AdaptiveMaterialTier
+    let shape: ShapeType
+
     func body(content: Content) -> some View {
+        content.background {
+            shape.fill(backgroundStyle)
+        }
+    }
+
+    private var backgroundStyle: AnyShapeStyle {
+        if reduceTransparency || colorSchemeContrast == .increased {
+            switch tier {
+            case .ultraThin: return AnyShapeStyle(Theme.surfaceBase)
+            case .thin: return AnyShapeStyle(Theme.surfaceRaised)
+            case .regular: return AnyShapeStyle(Theme.surfaceFloating)
+            }
+        }
+        switch tier {
+        case .ultraThin: return AnyShapeStyle(.ultraThinMaterial)
+        case .thin: return AnyShapeStyle(.thinMaterial)
+        case .regular: return AnyShapeStyle(.regularMaterial)
+        }
+    }
+}
+
+struct CardBackground: ViewModifier {
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @State private var isHovered = false
+
+    var padding: CGFloat = 18
+    var tier: CardTier = .raised
+    var interactive = false
+    var cornerRadius: CGFloat = Theme.Radius.card
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         content
             .padding(padding)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: Theme.corner, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: Theme.corner, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
+            .background {
+                shape
+                    .fill(backgroundStyle)
+                    .overlay { shape.fill(tintOverlay) }
+            }
+            .overlay {
+                shape.strokeBorder(outlineColor,
+                                   lineWidth: hoverActive ? 1.2 : 1)
+            }
+            .shadow(
+                color: .black.opacity(shadowOpacity),
+                radius: shadowRadius,
+                y: shadowY
             )
-            .shadow(color: .black.opacity(0.10), radius: 9, y: 3)
+            .offset(y: hoverActive && !reduceMotion ? -1 : 0)
+            .animation(GeraldineMotion.animation(.quick, reduceMotion: reduceMotion), value: isHovered)
+            .onHover { inside in
+                guard interactive else { return }
+                isHovered = isEnabled && inside
+            }
+            .onChange(of: isEnabled) { _, enabled in
+                if !enabled { isHovered = false }
+            }
+    }
+
+    private var hoverActive: Bool { interactive && isEnabled && isHovered }
+
+    private var backgroundStyle: AnyShapeStyle {
+        if reduceTransparency || colorSchemeContrast == .increased {
+            switch tier {
+            case .base: return AnyShapeStyle(Theme.surfaceBase)
+            case .raised, .tinted(_): return AnyShapeStyle(Theme.surfaceRaised)
+            case .floating: return AnyShapeStyle(Theme.surfaceFloating)
+            }
+        }
+
+        switch tier {
+        case .base:
+            return AnyShapeStyle(.ultraThinMaterial)
+        case .raised, .tinted(_):
+            return AnyShapeStyle(.thinMaterial)
+        case .floating:
+            return AnyShapeStyle(.regularMaterial)
+        }
+    }
+
+    private var tintOverlay: Color {
+        if case .tinted(let tint) = tier {
+            return Theme.decorativeFill(tint, strength: colorScheme == .dark ? .standard : .subtle)
+        }
+        return .clear
+    }
+
+    private var outlineColor: Color {
+        if colorSchemeContrast == .increased {
+            return colorScheme == .dark ? .white.opacity(0.34) : .black.opacity(0.24)
+        }
+        if colorScheme == .dark {
+            return .white.opacity(hoverActive ? 0.15 : 0.09)
+        }
+        return .black.opacity(hoverActive ? 0.10 : 0.06)
+    }
+
+    private var shadowOpacity: Double {
+        let boost = hoverActive ? 0.04 : 0
+        switch tier {
+        case .base:
+            return (colorScheme == .dark ? Theme.Shadow.darkBaseOpacity : Theme.Shadow.lightBaseOpacity) + boost
+        case .raised, .tinted(_):
+            return (colorScheme == .dark ? Theme.Shadow.darkRaisedOpacity : Theme.Shadow.lightRaisedOpacity) + boost
+        case .floating:
+            return (colorScheme == .dark ? Theme.Shadow.darkFloatingOpacity : Theme.Shadow.lightFloatingOpacity) + boost
+        }
+    }
+
+    private var shadowRadius: CGFloat {
+        switch tier {
+        case .base: Theme.Shadow.baseRadius
+        case .raised, .tinted(_): hoverActive ? 12 : Theme.Shadow.raisedRadius
+        case .floating: hoverActive ? 20 : Theme.Shadow.floatingRadius
+        }
+    }
+
+    private var shadowY: CGFloat {
+        switch tier {
+        case .base: Theme.Shadow.baseY
+        case .raised, .tinted(_): hoverActive ? 4 : Theme.Shadow.raisedY
+        case .floating: hoverActive ? 8 : Theme.Shadow.floatingY
+        }
+    }
+}
+
+/// Card chrome remains a passive layout surface. Only a real `Button` should
+/// own press, focus, disabled, and keyboard semantics; this style supplies
+/// those states without turning cards that contain controls into dead focus stops.
+struct ActionableCardButtonStyle: ButtonStyle {
+    var padding: CGFloat = 18
+    var tier: CardTier = .raised
+    var cornerRadius: CGFloat = Theme.Radius.card
+
+    func makeBody(configuration: Configuration) -> some View {
+        ActionableCardButtonBody(configuration: configuration,
+                                 padding: padding,
+                                 tier: tier,
+                                 cornerRadius: cornerRadius)
+    }
+}
+
+private struct ActionableCardButtonBody: View {
+    let configuration: ButtonStyleConfiguration
+    let padding: CGFloat
+    let tier: CardTier
+    let cornerRadius: CGFloat
+
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        configuration.label
+            .interactiveCard(padding: padding, tier: tier, cornerRadius: cornerRadius)
+            .overlay {
+                shape.strokeBorder(isFocused && isEnabled ? Theme.focusRing : .clear,
+                                   lineWidth: 2)
+            }
+            .scaleEffect(configuration.isPressed && isEnabled && !reduceMotion
+                         ? GeraldineMotion.pressScale : 1)
+            .opacity(isEnabled ? 1 : 0.50)
+            .contentShape(shape)
+            .focusable(isEnabled)
+            .focused($isFocused)
+            .onChange(of: isEnabled) { _, enabled in
+                if !enabled { isFocused = false }
+            }
+            .animation(GeraldineMotion.animation(.quick, reduceMotion: reduceMotion),
+                       value: configuration.isPressed)
+            .animation(GeraldineMotion.animation(.quick, reduceMotion: reduceMotion),
+                       value: isFocused)
+            .pointingHandCursor()
     }
 }
 
 extension View {
-    func card(padding: CGFloat = 18) -> some View { modifier(CardBackground(padding: padding)) }
+    func adaptiveMaterialBackground<S: Shape>(
+        _ tier: AdaptiveMaterialTier,
+        in shape: S
+    ) -> some View {
+        modifier(AdaptiveMaterialBackground(tier: tier, shape: shape))
+    }
+
+    func card(
+        padding: CGFloat = 18,
+        tier: CardTier = .raised,
+        cornerRadius: CGFloat = Theme.Radius.card
+    ) -> some View {
+        modifier(CardBackground(padding: padding, tier: tier, cornerRadius: cornerRadius))
+    }
+
+    func interactiveCard(
+        padding: CGFloat = 18,
+        tier: CardTier = .raised,
+        cornerRadius: CGFloat = Theme.Radius.card
+    ) -> some View {
+        modifier(CardBackground(
+            padding: padding,
+            tier: tier,
+            interactive: true,
+            cornerRadius: cornerRadius
+        ))
+    }
 }
 
 // MARK: - Animated numeric text
 
 struct AnimatedNumberText: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.geraldineSurfaceActive) private var surfaceActive
+
     var text: String
     var value: Double
-    var animation: Animation = .easeInOut(duration: 0.24)
+    var animation: Animation?
 
     @State private var previousText: String
     @State private var renderedText: String
     @State private var renderedValue: Double
     @State private var reservedRunWidths: [Int: Int]
 
-    init(_ text: String, value: Double, animation: Animation = .easeInOut(duration: 0.24)) {
+    init(_ text: String, value: Double, animation: Animation? = nil) {
         self.text = text
         self.value = value.isFinite ? value : 0
         self.animation = animation
@@ -75,8 +300,14 @@ struct AnimatedNumberText: View {
                                                        current: renderedText,
                                                        reservedRunWidths: reservedRunWidths)) { segment in
                 switch segment.kind {
-                case .literal(let text):
-                    Text(text)
+                case .literal(let previous, let current):
+                    ZStack(alignment: .leading) {
+                        Text(previous).hidden().accessibilityHidden(true)
+                        Text(current).hidden().accessibilityHidden(true)
+                        Text(current)
+                            .contentTransition(previous == current || reduceMotion || !surfaceActive
+                                               ? .identity : .opacity)
+                    }
                 case .number(let columns):
                     HStack(alignment: .firstTextBaseline, spacing: 0) {
                         ForEach(columns) { column in
@@ -86,6 +317,7 @@ struct AnimatedNumberText: View {
                 }
             }
         }
+            .monospacedDigit()
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(Text(renderedText))
             .onChange(of: animationKey) { _, _ in
@@ -93,9 +325,16 @@ struct AnimatedNumberText: View {
                                                                           previous: renderedText,
                                                                           current: text)
                 previousText = renderedText
-                withAnimation(animation) {
+                let update = {
                     renderedText = text
                     renderedValue = value.isFinite ? value : 0
+                }
+                if let animation = reduceMotion || !surfaceActive
+                    ? nil
+                    : (animation ?? GeraldineMotion.animation(.standard, reduceMotion: false)) {
+                    withAnimation(animation, update)
+                } else {
+                    update()
                 }
             }
     }
@@ -106,6 +345,9 @@ struct AnimatedNumberText: View {
 }
 
 private struct AnimatedNumberColumnView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.geraldineSurfaceActive) private var surfaceActive
+
     let column: AnimatedNumberLayout.Column
     let value: Double
 
@@ -116,16 +358,17 @@ private struct AnimatedNumberColumnView: View {
                 .accessibilityHidden(true)
             if let character = column.current {
                 Text(String(character))
-                    .contentTransition(column.animates ? .numericText(value: -value) : .identity)
+                    .contentTransition(column.animates && !reduceMotion && surfaceActive
+                                       ? .numericText(value: -value) : .identity)
             }
         }
     }
 }
 
-private enum AnimatedNumberLayout {
+enum AnimatedNumberLayout {
     struct Segment: Identifiable {
         enum Kind {
-            case literal(String)
+            case literal(previous: String, current: String)
             case number([Column])
         }
 
@@ -158,7 +401,7 @@ private enum AnimatedNumberLayout {
 
         guard previousRuns.count == currentRuns.count,
               zip(previousRuns, currentRuns).allSatisfy({ $0.isNumber == $1.isNumber }) else {
-            return [Segment(id: 0, kind: .literal(current))]
+            return [Segment(id: 0, kind: .literal(previous: previous, current: current))]
         }
 
         return currentRuns.indices.map { index in
@@ -170,7 +413,8 @@ private enum AnimatedNumberLayout {
                                                      current: currentRun.text,
                                                      reservedWidth: reservedRunWidths[index] ?? 0)))
             }
-            return Segment(id: index, kind: .literal(currentRun.text))
+            return Segment(id: index,
+                           kind: .literal(previous: previousRun.text, current: currentRun.text))
         }
     }
 
@@ -246,6 +490,9 @@ private enum AnimatedNumberLayout {
 // MARK: - Gauge ring
 
 struct GaugeRing: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.geraldineSurfaceActive) private var surfaceActive
+
     var value: Double            // 0…1
     var lineWidth: CGFloat = 10
     var tint: Color
@@ -265,7 +512,9 @@ struct GaugeRing: View {
                 .trim(from: 0, to: max(0.001, min(1, value)))
                 .stroke(tint.gradient, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
                 .rotationEffect(.degrees(-90))
-                .animation(.easeInOut(duration: 0.5), value: value)
+                .animation(GeraldineMotion.animation(.emphasis,
+                                                     reduceMotion: reduceMotion || !surfaceActive),
+                           value: value)
             center
         }
     }
@@ -317,6 +566,9 @@ struct StatTile: View {
 // MARK: - Linear stat bar
 
 struct StatBar: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.geraldineSurfaceActive) private var surfaceActive
+
     var fraction: Double
     var tint: Color
     var height: CGFloat = 8
@@ -327,7 +579,9 @@ struct StatBar: View {
                 Capsule().fill(Color.primary.opacity(0.08))
                 Capsule().fill(tint.gradient)
                     .frame(width: max(0, min(1, fraction)) * geo.size.width)
-                    .animation(.easeInOut(duration: 0.5), value: fraction)
+                    .animation(GeraldineMotion.animation(.emphasis,
+                                                         reduceMotion: reduceMotion || !surfaceActive),
+                               value: fraction)
             }
         }
         .frame(height: height)
@@ -366,6 +620,9 @@ struct IconBadge: View {
 /// breathing icon. Replaces the stock spinner on scanning states; only alive
 /// while a scan screen is on-screen.
 struct BrandSpinner: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.geraldineSurfaceActive) private var surfaceActive
+
     var tint: Color
     var icon: String = "sparkles"
     var size: CGFloat = 72
@@ -385,17 +642,27 @@ struct BrandSpinner: View {
                                         center: .center),
                         style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
                 .rotationEffect(.degrees(spinning ? 360 : 0))
-                .animation(.linear(duration: 1.1).repeatForever(autoreverses: false), value: spinning)
+                .animation(spinning ? GeraldineMotion.spinner(reduceMotion: reduceMotion) : nil,
+                           value: spinning)
             Image(systemName: icon)
                 .font(.system(size: size * 0.30, weight: .semibold))
                 .foregroundStyle(tint.gradient)
-                .scaleEffect(breathing ? 1.05 : 0.93)
-                .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: breathing)
+                .scaleEffect(reduceMotion ? 1 : (breathing ? 1.04 : 0.94))
+                .animation(breathing ? GeraldineMotion.breathing(reduceMotion: reduceMotion) : nil,
+                           value: breathing)
         }
         .frame(width: size, height: size)
-        .onAppear { spinning = true; breathing = true }
+        .onAppear { updateActivity() }
+        .onDisappear { spinning = false; breathing = false }
+        .onChange(of: reduceMotion) { _, _ in updateActivity() }
+        .onChange(of: surfaceActive) { _, _ in updateActivity() }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Working")
+    }
+
+    private func updateActivity() {
+        spinning = surfaceActive && !reduceMotion
+        breathing = surfaceActive && !reduceMotion
     }
 }
 
@@ -405,16 +672,51 @@ struct BrandSpinner: View {
 /// shadow, and a slight press. One look for every primary call to action.
 struct BrandProminentButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
+        ProminentButtonBody(configuration: configuration)
+    }
+}
+
+private struct ProminentButtonBody: View {
+    let configuration: ButtonStyleConfiguration
+
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHovered = false
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
         configuration.label
             .font(.rounded(14, .semibold))
-            .padding(.horizontal, 18).padding(.vertical, 10)
+            .padding(.horizontal, 18)
+            .frame(minHeight: Theme.Layout.minimumHitArea)
             .foregroundStyle(.white)
             .background(Theme.brandGradient, in: Capsule())
-            .shadow(color: Theme.accent.opacity(configuration.isPressed ? 0.16 : 0.32),
-                    radius: configuration.isPressed ? 4 : 9,
-                    y: configuration.isPressed ? 1 : 3)
-            .scaleEffect(configuration.isPressed ? 0.97 : 1)
-            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+            .overlay {
+                Capsule()
+                    .strokeBorder(
+                        isFocused && isEnabled
+                            ? Theme.focusRing
+                            : Color.white.opacity(isHovered ? 0.24 : 0.14),
+                        lineWidth: isFocused && isEnabled ? 2 : 1
+                    )
+            }
+            .shadow(
+                color: Theme.accent.opacity(configuration.isPressed ? 0.14 : (isHovered ? 0.38 : 0.28)),
+                radius: configuration.isPressed ? 3 : (isHovered ? 11 : 8),
+                y: configuration.isPressed ? 1 : (isHovered ? 4 : 3)
+            )
+            .scaleEffect(configuration.isPressed && !reduceMotion ? GeraldineMotion.pressScale : 1)
+            .offset(y: isHovered && !configuration.isPressed && !reduceMotion ? -1 : 0)
+            .opacity(isEnabled ? 1 : 0.46)
+            .contentShape(Capsule())
+            .focusable(isEnabled)
+            .focused($isFocused)
+            .onHover { isHovered = isEnabled && $0 }
+            .onChange(of: isEnabled) { _, enabled in
+                if !enabled { isHovered = false; isFocused = false }
+            }
+            .animation(GeraldineMotion.animation(.quick, reduceMotion: reduceMotion), value: configuration.isPressed)
+            .animation(GeraldineMotion.animation(.quick, reduceMotion: reduceMotion), value: isHovered)
             .pointingHandCursor()
     }
 }
@@ -423,24 +725,138 @@ struct BrandProminentButtonStyle: ButtonStyle {
 /// they match the brand language instead of the stock bordered push button.
 struct SoftCapsuleButtonStyle: ButtonStyle {
     var tint: Color = Theme.accent
+    var compact = false
 
     func makeBody(configuration: Configuration) -> some View {
+        SoftButtonBody(configuration: configuration, tint: tint, compact: compact)
+    }
+}
+
+private struct SoftButtonBody: View {
+    let configuration: ButtonStyleConfiguration
+    let tint: Color
+    var compact = false
+
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHovered = false
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
         configuration.label
-            .font(.rounded(13, .semibold))
-            .padding(.horizontal, 14).padding(.vertical, 7)
-            .foregroundStyle(tint)
-            .background(tint.opacity(configuration.isPressed ? 0.24 : 0.12), in: Capsule())
-            .overlay(Capsule().strokeBorder(tint.opacity(0.22), lineWidth: 1))
-            .scaleEffect(configuration.isPressed ? 0.97 : 1)
-            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+            .font(.rounded(compact ? 11 : 13, .semibold))
+            .padding(.horizontal, compact ? 10 : 14)
+            .frame(minHeight: Theme.Layout.minimumHitArea)
+            .foregroundStyle(isEnabled ? tint : Theme.disabledForeground(tint))
+            .background(
+                tint.opacity(configuration.isPressed ? 0.22 : (isHovered ? 0.16 : 0.10)),
+                in: Capsule()
+            )
+            .overlay {
+                Capsule()
+                    .strokeBorder(isFocused && isEnabled
+                                  ? Theme.focusRing
+                                  : tint.opacity(isHovered ? 0.30 : 0.20),
+                                  lineWidth: isFocused && isEnabled ? 2 : 1)
+            }
+            .scaleEffect(configuration.isPressed && !reduceMotion ? GeraldineMotion.pressScale : 1)
+            .offset(y: isHovered && !configuration.isPressed && !reduceMotion ? -1 : 0)
+            .opacity(isEnabled ? 1 : 0.82)
+            .contentShape(Capsule())
+            .focusable(isEnabled)
+            .focused($isFocused)
+            .onHover { isHovered = isEnabled && $0 }
+            .onChange(of: isEnabled) { _, enabled in
+                if !enabled { isHovered = false; isFocused = false }
+            }
+            .animation(GeraldineMotion.animation(.quick, reduceMotion: reduceMotion), value: configuration.isPressed)
+            .animation(GeraldineMotion.animation(.quick, reduceMotion: reduceMotion), value: isHovered)
             .pointingHandCursor()
+    }
+}
+
+struct QuietButtonStyle: ButtonStyle {
+    var tint: Color = Theme.accent
+
+    func makeBody(configuration: Configuration) -> some View {
+        QuietButtonBody(configuration: configuration, tint: tint)
+    }
+}
+
+private struct QuietButtonBody: View {
+    let configuration: ButtonStyleConfiguration
+    let tint: Color
+
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHovered = false
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        configuration.label
+            .font(.rounded(13, .medium))
+            .padding(.horizontal, 10)
+            .frame(minHeight: Theme.Layout.minimumHitArea)
+            .foregroundStyle(
+                isEnabled
+                    ? (isHovered || isFocused ? tint : Color.secondary)
+                    : Theme.disabledForeground(tint)
+            )
+            .background(
+                isEnabled && (isHovered || isFocused) ? tint.opacity(0.09) : Color.clear,
+                in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
+                    .strokeBorder(isFocused && isEnabled ? Theme.focusRing : Color.clear, lineWidth: 2)
+            }
+            .scaleEffect(configuration.isPressed && !reduceMotion ? GeraldineMotion.pressScale : 1)
+            .opacity(isEnabled ? 1 : 0.82)
+            .contentShape(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+            .focusable(isEnabled)
+            .focused($isFocused)
+            .onHover { isHovered = isEnabled && $0 }
+            .onChange(of: isEnabled) { _, enabled in
+                if !enabled { isHovered = false; isFocused = false }
+            }
+            .animation(GeraldineMotion.animation(.quick, reduceMotion: reduceMotion), value: configuration.isPressed)
+            .animation(GeraldineMotion.animation(.quick, reduceMotion: reduceMotion), value: isHovered)
+            .pointingHandCursor()
+    }
+}
+
+struct DestructiveButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        SoftButtonBody(configuration: configuration, tint: Theme.bad)
     }
 }
 
 extension ButtonStyle where Self == SoftCapsuleButtonStyle {
     /// `.buttonStyle(.soft(tint))` — the quiet brand capsule in a module's tint.
-    static func soft(_ tint: Color = Theme.accent) -> SoftCapsuleButtonStyle {
-        SoftCapsuleButtonStyle(tint: tint)
+    static func soft(_ tint: Color = Theme.accent, compact: Bool = false) -> SoftCapsuleButtonStyle {
+        SoftCapsuleButtonStyle(tint: tint, compact: compact)
+    }
+}
+
+extension ButtonStyle where Self == QuietButtonStyle {
+    static func quiet(_ tint: Color = Theme.accent) -> QuietButtonStyle {
+        QuietButtonStyle(tint: tint)
+    }
+}
+
+extension ButtonStyle where Self == DestructiveButtonStyle {
+    static var geraldineDestructive: DestructiveButtonStyle { DestructiveButtonStyle() }
+}
+
+extension ButtonStyle where Self == ActionableCardButtonStyle {
+    static func actionableCard(
+        padding: CGFloat = 18,
+        tier: CardTier = .raised,
+        cornerRadius: CGFloat = Theme.Radius.card
+    ) -> ActionableCardButtonStyle {
+        ActionableCardButtonStyle(padding: padding,
+                                  tier: tier,
+                                  cornerRadius: cornerRadius)
     }
 }
 
@@ -470,9 +886,14 @@ struct SectionHeader: View {
     init(_ title: String, subtitle: String? = nil) { self.title = title; self.subtitle = subtitle }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title).font(.rounded(15, .semibold))
-            if let subtitle { Text(subtitle).font(.caption).foregroundStyle(.secondary) }
+        VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
+            Text(title).font(.geraldineSection)
+            if let subtitle {
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -487,11 +908,15 @@ struct EmptyState: View {
     var tint: Color = Theme.accent
 
     var body: some View {
-        VStack(spacing: 14) {
+        VStack(spacing: Theme.Spacing.md) {
             IconBadge(icon: icon, tint: tint, size: 76)
-            Text(title).font(.rounded(18, .semibold))
-            Text(message).font(.callout).foregroundStyle(.secondary)
-                .multilineTextAlignment(.center).frame(maxWidth: 360)
+            Text(title).font(.geraldineTitle)
+            Text(message)
+                .font(.geraldineBody)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: 380)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }

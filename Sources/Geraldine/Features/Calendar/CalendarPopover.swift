@@ -13,7 +13,13 @@ private func clockAnchor() -> Date {
 /// clocks with a time-travel slider. Driven by `CalendarSettingsStore`.
 struct CalendarWidget: View {
     @EnvironmentObject private var calendar: CalendarSettingsStore
-    @State private var monthOffset = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var displayedMonthOffset = 0
+    @State private var outgoingMonthOffset: Int?
+    @State private var pagingDirection = 1
+    @State private var incomingMonthVisible = true
+    @State private var outgoingMonthVisible = false
+    @State private var monthTransitionTask: Task<Void, Never>?
 
     private var workingCalendar: Calendar {
         var c = Calendar.current
@@ -21,19 +27,19 @@ struct CalendarWidget: View {
         return c
     }
 
-    private var anchor: Date {
-        workingCalendar.date(byAdding: .month, value: monthOffset, to: Date()) ?? Date()
+    private func monthModel(for offset: Int) -> MonthModel {
+        let anchor = workingCalendar.date(byAdding: .month, value: offset, to: Date()) ?? Date()
+        return MonthModel.make(anchor: anchor, calendar: workingCalendar)
     }
 
     var body: some View {
-        let model = MonthModel.make(anchor: anchor, calendar: workingCalendar)
+        let model = monthModel(for: displayedMonthOffset)
         return VStack(alignment: .leading, spacing: 8) {
             header
             if calendar.showCalendar {
                 todayLine
                 navigation(monthStart: model.monthStart)
-                weekdayHeader
-                weeks(model)
+                monthGrid(model)
             }
             if calendar.hasVisibleClocks {
                 if calendar.showCalendar { Divider().padding(.top, 2) }
@@ -42,9 +48,17 @@ struct CalendarWidget: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(10)
-        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-        .animation(.snappy(duration: 0.22), value: monthOffset)
+        .background(Theme.surfaceMuted,
+                    in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
+                .strokeBorder(Theme.separator, lineWidth: 1)
+        }
         .widgetDropTarget(.calendar)
+        .onChange(of: reduceMotion) { _, isReduced in
+            if isReduced { finishMonthTransition() }
+        }
+        .onDisappear { finishMonthTransition() }
     }
 
     private var header: some View {
@@ -57,14 +71,14 @@ struct CalendarWidget: View {
     }
 
     private var todayLine: some View {
-        TimelineView(.periodic(from: clockAnchor(), by: calendar.tickInterval)) { context in
+        GeraldinePeriodicTimeline(from: clockAnchor(), by: calendar.tickInterval) { date in
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(calendar.dateString(for: context.date))
+                Text(calendar.dateString(for: date))
                     .font(.rounded(13, .semibold))
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
                 Spacer(minLength: 6)
-                Text(calendar.timeString(for: context.date))
+                Text(calendar.timeString(for: date))
                     .font(.rounded(13, .semibold))
                     .monospacedDigit()
                     .foregroundStyle(Theme.accent)
@@ -92,24 +106,70 @@ struct CalendarWidget: View {
         }
     }
 
+    private func monthGrid(_ model: MonthModel) -> some View {
+        ZStack {
+            monthGridContent(model)
+                .opacity(incomingMonthVisible ? 1 : 0)
+                .offset(x: reduceMotion || incomingMonthVisible
+                        ? 0 : CGFloat(pagingDirection) * 8)
+                .zIndex(0)
+
+            if let outgoingMonthOffset {
+                monthGridContent(monthModel(for: outgoingMonthOffset))
+                    .opacity(outgoingMonthVisible ? 1 : 0)
+                    .offset(x: reduceMotion || outgoingMonthVisible
+                            ? 0 : CGFloat(-pagingDirection) * 4)
+                    .accessibilityHidden(true)
+                    .zIndex(1)
+            }
+        }
+        .clipped()
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(monthTitle(model.monthStart)) calendar")
+    }
+
+    private func monthGridContent(_ model: MonthModel) -> some View {
+        VStack(spacing: 0) {
+            weekdayHeader
+            weeks(model)
+        }
+    }
+
     private func navigation(monthStart: Date) -> some View {
         HStack(spacing: 4) {
-            Text(monthTitle(monthStart))
-                .font(.rounded(15, .bold))
+            ZStack(alignment: .leading) {
+                Text(monthTitle(monthStart))
+                    .font(.rounded(15, .bold))
+                    .opacity(incomingMonthVisible ? 1 : 0)
+                    .offset(x: reduceMotion || incomingMonthVisible
+                            ? 0 : CGFloat(pagingDirection) * 8)
+
+                if let outgoingMonthOffset {
+                    Text(monthTitle(monthModel(for: outgoingMonthOffset).monthStart))
+                        .font(.rounded(15, .bold))
+                        .opacity(outgoingMonthVisible ? 1 : 0)
+                        .offset(x: reduceMotion || outgoingMonthVisible
+                                ? 0 : CGFloat(-pagingDirection) * 4)
+                        .accessibilityHidden(true)
+                }
+            }
+            .frame(minWidth: 116, alignment: .leading)
+            .clipped()
+            .accessibilityAddTraits(.isHeader)
             Spacer()
-            navButton("chevron.left", help: "Previous Month") { monthOffset -= 1 }
+            navButton("chevron.left", help: "Previous Month") { changeMonth(by: -1) }
             Button {
-                withAnimation(.snappy(duration: 0.22)) { monthOffset = 0 }
+                returnToToday()
             } label: {
                 Text("Today")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(monthOffset == 0 ? Color.secondary : Theme.accent)
+                    .foregroundStyle(displayedMonthOffset == 0 ? Color.secondary : Theme.accent)
             }
-            .buttonStyle(.plain)
-            .disabled(monthOffset == 0)
+            .buttonStyle(.quiet(Theme.accent))
+            .disabled(displayedMonthOffset == 0)
             .help("Jump to Today")
-            .pointingHandCursor()
-            navButton("chevron.right", help: "Next Month") { monthOffset += 1 }
+            .accessibilityHint("Shows the current month")
+            navButton("chevron.right", help: "Next Month") { changeMonth(by: 1) }
         }
     }
 
@@ -117,13 +177,65 @@ struct CalendarWidget: View {
         Button(action: action) {
             Image(systemName: icon)
                 .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 22, height: 22)
+                .foregroundStyle(Theme.accent)
+                .frame(width: 20, height: 20)
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.quiet(Theme.accent))
         .help(help)
-        .pointingHandCursor()
+        .accessibilityLabel(help)
+    }
+
+    private func changeMonth(by delta: Int) {
+        beginMonthTransition(to: displayedMonthOffset + delta,
+                             direction: delta < 0 ? -1 : 1)
+    }
+
+    private func returnToToday() {
+        guard displayedMonthOffset != 0 else { return }
+        beginMonthTransition(to: 0,
+                             direction: displayedMonthOffset > 0 ? -1 : 1)
+    }
+
+    private func beginMonthTransition(to value: Int, direction: Int) {
+        guard value != displayedMonthOffset else { return }
+        let interrupted = monthTransitionTask != nil
+        monthTransitionTask?.cancel()
+
+        withTransaction(Transaction(animation: nil)) {
+            outgoingMonthOffset = interrupted ? nil : displayedMonthOffset
+            outgoingMonthVisible = !interrupted
+            pagingDirection = direction < 0 ? -1 : 1
+            displayedMonthOffset = value
+            incomingMonthVisible = false
+        }
+
+        monthTransitionTask = Task { @MainActor in
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+
+            let incomingAnimation = reduceMotion
+                ? Animation.easeOut(duration: 0.10)
+                : (GeraldineMotion.animation(.standard, reduceMotion: false) ?? .default)
+            let outgoingAnimation = reduceMotion
+                ? Animation.easeOut(duration: 0.10)
+                : (GeraldineMotion.animation(.quick, reduceMotion: false) ?? .default)
+            withAnimation(incomingAnimation) { incomingMonthVisible = true }
+            withAnimation(outgoingAnimation) { outgoingMonthVisible = false }
+
+            try? await Task.sleep(for: .milliseconds(reduceMotion ? 120 : 240))
+            guard !Task.isCancelled else { return }
+            outgoingMonthOffset = nil
+            monthTransitionTask = nil
+        }
+    }
+
+    private func finishMonthTransition() {
+        monthTransitionTask?.cancel()
+        monthTransitionTask = nil
+        incomingMonthVisible = true
+        outgoingMonthVisible = false
+        outgoingMonthOffset = nil
     }
 
     private var weekdayHeader: some View {
@@ -184,9 +296,18 @@ private struct DayCell: View {
                         .fill(Theme.brandGradient)
                         .frame(width: 25, height: 25)
                         .shadow(color: Theme.accent.opacity(0.4), radius: 4, y: 1)
-                }
+                    }
             }
+            .accessibilityLabel(Self.accessibilityFormatter.string(from: date))
+            .accessibilityValue(isToday ? "Today" : (isWeekend ? "Weekend" : ""))
     }
+
+    private static let accessibilityFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = .current
+        formatter.setLocalizedDateFormatFromTemplate("EEEEMMMMd")
+        return formatter
+    }()
 
     private var foreground: Color {
         if isToday { return .white }
@@ -203,6 +324,7 @@ private struct DayCell: View {
 /// separate widget — it lives inside `CalendarWidget`.
 private struct WorldClocksSection: View {
     @EnvironmentObject private var calendar: CalendarSettingsStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// Hours added to "now" while scrubbing the slider. 0 == the current moment.
     @State private var travelHours: Double = 0
@@ -213,8 +335,8 @@ private struct WorldClocksSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             header
-            TimelineView(.periodic(from: clockAnchor(), by: calendar.tickInterval)) { context in
-                let shown = context.date.addingTimeInterval(travelHours * 3600)
+            GeraldinePeriodicTimeline(from: clockAnchor(), by: calendar.tickInterval) { date in
+                let shown = date.addingTimeInterval(travelHours * 3600)
                 VStack(spacing: 8) {
                     ForEach(calendar.clocks) { clock in
                         WorldClockRow(clock: clock, now: shown, highlighted: isTraveling)
@@ -235,27 +357,33 @@ private struct WorldClocksSection: View {
             Spacer(minLength: 4)
             if isTraveling {
                 Button {
-                    withAnimation(.snappy(duration: 0.2)) { travelHours = 0 }
+                    travelHours = 0
                 } label: {
                     Text("Now").font(.caption2.weight(.semibold)).foregroundStyle(Theme.accent)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.quiet(Theme.accent))
                 .help("Reset to the current time")
-                .pointingHandCursor()
+                .accessibilityHint("Returns all clocks to the current time")
+                .transition(GeraldineMotion.stateTransition(reduceMotion: reduceMotion))
             }
         }
+        .animation(GeraldineMotion.animation(.quick, reduceMotion: reduceMotion), value: isTraveling)
     }
 
     // The slider sits outside the TimelineView so periodic ticks never rebuild it
     // mid-drag; only the label, which shows a live time, ticks.
     private var timeTravel: some View {
         VStack(spacing: 3) {
-            TimelineView(.periodic(from: clockAnchor(), by: calendar.tickInterval)) { context in
-                let shown = context.date.addingTimeInterval(travelHours * 3600)
+            GeraldinePeriodicTimeline(from: clockAnchor(), by: calendar.tickInterval) { date in
+                let shown = date.addingTimeInterval(travelHours * 3600)
                 HStack(spacing: 5) {
-                    Image(systemName: "clock.arrow.2.circlepath")
-                        .font(.system(size: 10))
-                        .foregroundStyle(isTraveling ? Theme.accent : .secondary)
+                    ContextualSymbol(
+                        inactive: "clock.arrow.2.circlepath",
+                        active: "clock.fill",
+                        isActive: isTraveling,
+                        tint: isTraveling ? Theme.accent : Color.secondary,
+                        size: 10
+                    )
                     Text(label(localNow: shown))
                         .font(.caption2.weight(.medium))
                         .foregroundStyle(isTraveling ? Theme.accent : .secondary)
@@ -265,14 +393,20 @@ private struct WorldClocksSection: View {
                         Text(offsetText)
                             .font(.caption2.weight(.semibold).monospacedDigit())
                             .foregroundStyle(.secondary)
+                            .transition(GeraldineMotion.stateTransition(reduceMotion: reduceMotion))
                     }
                 }
+                .animation(GeraldineMotion.animation(.quick, reduceMotion: reduceMotion), value: isTraveling)
             }
             Slider(value: $travelHours, in: travelRange, step: 0.25)
                 .controlSize(.mini)
                 .tint(Theme.accent)
+                .accessibilityLabel("Time Travel")
+                .accessibilityValue(timeTravelAccessibilityValue)
         }
-        .padding(.top, 2)
+        .padding(Theme.Spacing.xs)
+        .background(Theme.accent.opacity(isTraveling ? 0.09 : 0.035),
+                    in: RoundedRectangle(cornerRadius: Theme.Radius.badge, style: .continuous))
     }
 
     /// "Your time · Wed 3:30 PM" while traveling, otherwise an invitation to scrub.
@@ -289,6 +423,12 @@ private struct WorldClocksSection: View {
         if hours > 0 && minutes > 0 { return "\(sign)\(hours)h \(minutes)m" }
         if hours > 0 { return "\(sign)\(hours)h" }
         return "\(sign)\(minutes)m"
+    }
+
+    private var timeTravelAccessibilityValue: String {
+        guard isTraveling else { return "Current time" }
+        let shown = Date().addingTimeInterval(travelHours * 3600)
+        return "\(offsetText), \(label(localNow: shown))"
     }
 
     private static let weekday: DateFormatter = {
@@ -310,10 +450,13 @@ private struct WorldClockRow: View {
         HStack(spacing: 9) {
             if calendar.showDayNightIcons, let tz = clock.timeZone {
                 let day = isDaytime(in: tz)
-                Image(systemName: day ? "sun.max.fill" : "moon.fill")
-                    .font(.system(size: 11))
-                    .foregroundStyle(day ? Theme.warn : Theme.accent)
-                    .frame(width: 14)
+                ContextualSymbol(
+                    inactive: "moon.fill",
+                    active: "sun.max.fill",
+                    isActive: day,
+                    tint: day ? Theme.warn : Theme.accent,
+                    size: 11
+                )
             }
             VStack(alignment: .leading, spacing: 0) {
                 Text(clock.name)
@@ -331,6 +474,13 @@ private struct WorldClockRow: View {
                 .monospacedDigit()
                 .foregroundStyle(highlighted ? Theme.accent : .primary)
         }
+        .padding(.horizontal, Theme.Spacing.xs)
+        .padding(.vertical, Theme.Spacing.xxs)
+        .background(highlighted ? Theme.accent.opacity(0.055) : Color.clear,
+                    in: RoundedRectangle(cornerRadius: Theme.Radius.badge, style: .continuous))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(clock.name)
+        .accessibilityValue("\(calendar.timeString(for: now, timeZone: clock.timeZone)), \(clock.timeZone.map(offsetAndDayLabel) ?? "Time zone unavailable")")
     }
 
     private func isDaytime(in tz: TimeZone) -> Bool {

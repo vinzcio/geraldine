@@ -3,36 +3,62 @@ import SwiftUI
 struct MaintenanceView: View {
     @StateObject private var vm = MaintenanceViewModel()
     @State private var pendingTask: MaintenanceTask?
+    @State private var acceptedTaskID: String?
+    @State private var recentlyCancelledTaskID: String?
 
     var body: some View {
-        VStack(spacing: 0) {
-            ModuleHeader(module: .maintenance)
-            ScrollView {
-                VStack(spacing: 12) {
-                    ForEach(vm.tasks) { task in
-                        TaskCard(task: task,
-                                 status: vm.status(task.id),
-                                 lastRun: vm.lastRun(task.id)) {
-                            pendingTask = task
-                        }
+        ModulePage(module: .maintenance, headerStyle: .utility, widthRole: .readable) {
+            LazyVStack(spacing: Theme.Spacing.md) {
+                ForEach(vm.tasks) { task in
+                    TaskCard(
+                        task: task,
+                        status: vm.status(task.id),
+                        lastRun: vm.lastRun(task.id),
+                        recentlyCancelled: recentlyCancelledTaskID == task.id
+                    ) {
+                        acceptedTaskID = nil
+                        pendingTask = task
                     }
                 }
-                .padding(20)
             }
         }
         .confirmationDialog(pendingTask.map { "Run \($0.title)?" } ?? "Run maintenance task?",
                             isPresented: Binding(
                                 get: { pendingTask != nil },
-                                set: { if !$0 { pendingTask = nil } }
+                                set: { presented in
+                                    guard !presented else { return }
+                                    if let task = pendingTask, acceptedTaskID != task.id {
+                                        markCancelled(task.id)
+                                    }
+                                    pendingTask = nil
+                                    acceptedTaskID = nil
+                                }
                             )) {
             Button(pendingTask?.needsAdmin == true ? "Run with Password" : "Run Task",
                    role: .destructive) {
-                if let task = pendingTask { vm.run(task) }
+                if let task = pendingTask {
+                    acceptedTaskID = task.id
+                    recentlyCancelledTaskID = nil
+                    vm.run(task)
+                }
                 pendingTask = nil
             }
-            Button("Cancel", role: .cancel) { pendingTask = nil }
+            Button("Cancel", role: .cancel) {
+                if let task = pendingTask { markCancelled(task.id) }
+                pendingTask = nil
+            }
         } message: {
             Text(pendingTask?.confirmationMessage ?? "")
+        }
+    }
+
+    private func markCancelled(_ id: String) {
+        recentlyCancelledTaskID = id
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_600_000_000)
+            if recentlyCancelledTaskID == id {
+                recentlyCancelledTaskID = nil
+            }
         }
     }
 }
@@ -41,23 +67,24 @@ private struct TaskCard: View {
     let task: MaintenanceTask
     let status: TaskStatus
     let lastRun: MaintenanceRun?
+    let recentlyCancelled: Bool
     let run: () -> Void
 
+    @State private var showsFailureOutput = false
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
             HStack(spacing: 14) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Module.maintenance.tint.opacity(0.16)).frame(width: 40, height: 40)
-                    Image(systemName: task.icon).foregroundStyle(Module.maintenance.tint)
-                }
+                ModuleGlyph(systemImage: task.icon, tint: Module.maintenance.tint, size: 40)
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
                         Text(task.title).font(.rounded(15, .semibold))
                         if task.needsAdmin {
-                            Text("Password").font(.caption2.weight(.medium))
-                                .padding(.horizontal, 6).padding(.vertical, 1)
-                                .background(Theme.warn.opacity(0.2), in: Capsule())
+                            Label("Password", systemImage: "lock.fill")
+                                .font(.caption2.weight(.semibold))
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 2)
+                                .background(Theme.warn.opacity(0.12), in: Capsule())
                                 .foregroundStyle(Theme.warn)
                         }
                     }
@@ -67,35 +94,109 @@ private struct TaskCard: View {
                 control
             }
 
-            if let lastRun {
-                HStack(spacing: 6) {
-                    Image(systemName: lastRun.ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                        .foregroundStyle(lastRun.ok ? Theme.good : Theme.warn)
-                    Text("Last Run \(lastRun.finishedAt.formatted(date: .omitted, time: .shortened))")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                if !lastRun.ok {
-                    Text(outputText(lastRun))
-                        .font(.caption2.monospaced())
-                        .foregroundStyle(.secondary)
-                        .lineLimit(4)
-                        .textSelection(.enabled)
-                        .padding(8)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.primary.opacity(0.05),
-                                    in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            Divider().opacity(0.45)
+
+            WorkflowPhaseHost(phase: phase) {
+                phaseSummary
+            }
+            .frame(height: 40, alignment: .leading)
+
+            if showsFailureOutput, let lastRun, !lastRun.ok {
+                Text(outputText(lastRun))
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(5)
+                    .textSelection(.enabled)
+                    .padding(Theme.Spacing.xs)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Theme.surfaceMuted,
+                                in: RoundedRectangle(cornerRadius: Theme.Radius.badge, style: .continuous))
+                    .transition(.opacity)
+            }
+        }
+        .interactiveCard(
+            padding: Theme.Spacing.md,
+            tier: cardTier
+        )
+        .onChange(of: status) { _, newStatus in
+            if newStatus != .failed { showsFailureOutput = false }
+        }
+        .geraldineAnimation(.standard, value: showsFailureOutput)
+    }
+
+    private var control: some View {
+        StatefulActionButton(
+            state: actionState,
+            idleTitle: "Run",
+            workingTitle: "Running",
+            successTitle: "Done",
+            failureTitle: "Retry",
+            idleIcon: task.needsAdmin ? "lock.fill" : "play.fill",
+            tint: Module.maintenance.tint,
+            action: run
+        )
+        .allowsHitTesting(status != .done)
+    }
+
+    @ViewBuilder private var phaseSummary: some View {
+        switch phase {
+        case .cancelled:
+            Label("Cancelled · Nothing changed", systemImage: "arrow.uturn.backward.circle")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        case .status(.idle):
+            Label(task.needsAdmin ? "Ready · macOS will ask for your password" : "Ready to run",
+                  systemImage: task.needsAdmin ? "lock.shield" : "checkmark.circle")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        case .status(.running):
+            HStack(spacing: Theme.Spacing.xs) {
+                ProgressView().controlSize(.small)
+                Text("Running \(task.title.lowercased())…")
+                    .font(.caption.weight(.medium))
+            }
+            .foregroundStyle(Module.maintenance.tint)
+        case .status(.done):
+            Label(lastRun.map { "Completed at \($0.finishedAt.formatted(date: .omitted, time: .shortened))" }
+                  ?? "Completed", systemImage: "checkmark.circle.fill")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(Theme.good)
+        case .status(.failed):
+            HStack(spacing: Theme.Spacing.xs) {
+                Label(lastRun.map { "Failed at \($0.finishedAt.formatted(date: .omitted, time: .shortened))" }
+                      ?? "Task failed", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(Theme.bad)
+                Spacer()
+                if lastRun != nil {
+                    Button(showsFailureOutput ? "Hide Details" : "Details") {
+                        showsFailureOutput.toggle()
+                    }
+                    .buttonStyle(.quiet(Theme.bad))
                 }
             }
         }
-        .card(padding: 14)
     }
 
-    @ViewBuilder private var control: some View {
+    private var phase: TaskCardPhase {
+        recentlyCancelled ? .cancelled : .status(status)
+    }
+
+    private var actionState: StatefulActionState {
         switch status {
-        case .idle:    Button("Run", action: run).buttonStyle(.borderedProminent).tint(Module.maintenance.tint)
-        case .running: ProgressView().controlSize(.small)
-        case .done:    Label("Done", systemImage: "checkmark.circle.fill").foregroundStyle(Theme.good).font(.callout)
-        case .failed:  Button("Retry", action: run).buttonStyle(.bordered).tint(Theme.bad)
+        case .idle: .idle
+        case .running: .working
+        case .done: .success
+        case .failed: .failure
+        }
+    }
+
+    private var cardTier: CardTier {
+        switch status {
+        case .running: return .tinted(Module.maintenance.tint)
+        case .done: return .tinted(Theme.good)
+        case .failed: return .tinted(Theme.bad)
+        case .idle: return .raised
         }
     }
 
@@ -104,4 +205,9 @@ private struct TaskCard: View {
         if !trimmed.isEmpty { return trimmed }
         return "Command failed without output: \(run.command)"
     }
+}
+
+private enum TaskCardPhase: Hashable {
+    case cancelled
+    case status(TaskStatus)
 }

@@ -26,24 +26,34 @@ struct MenuBarView: View {
         .scrollBounceBehavior(.basedOnSize)
         .frame(width: 320, height: min(contentHeight, maxHeight))
         .onPreferenceChange(MenuHeightKey.self) { contentHeight = $0 }
+        .geraldineSurfaceActive(state.menuBarPopoverVisible)
     }
 
     private var content: some View {
         VStack(alignment: .leading, spacing: 12) {
-            header
-            WidgetGrid()
-            DevicesCard()
-            recommendation
-
-            Divider()
-
-            menuRow("Run Smart Care", "checkmark.seal.fill") { state.open(.smartCare) }
-            HStack {
-                menuRow("Settings", "gearshape") { state.open(.settings) }
-                Spacer()
-                Button { NSApp.terminate(nil) } label: {
-                    Label("Quit", systemImage: "power").font(.callout)
-                }.buttonStyle(.plain).foregroundStyle(.secondary)
+            PopoverRevealGroup(index: 0, isVisible: state.menuBarPopoverVisible) {
+                header
+            }
+            PopoverRevealGroup(index: 1, isVisible: state.menuBarPopoverVisible) {
+                VStack(alignment: .leading, spacing: 12) {
+                    WidgetGrid()
+                    DevicesCard()
+                }
+            }
+            PopoverRevealGroup(index: 2, isVisible: state.menuBarPopoverVisible) {
+                VStack(alignment: .leading, spacing: 12) {
+                    recommendation
+                    Divider()
+                    menuRow("Run Smart Care", "checkmark.seal.fill") { state.open(.smartCare) }
+                    HStack {
+                        menuRow("Settings", "gearshape") { state.open(.settings) }
+                        Spacer()
+                        Button { NSApp.terminate(nil) } label: {
+                            Label("Quit", systemImage: "power").font(.callout)
+                        }
+                        .buttonStyle(.quiet(Theme.bad))
+                    }
+                }
             }
         }
         .padding(14)
@@ -52,11 +62,7 @@ struct MenuBarView: View {
 
     private var header: some View {
         HStack(spacing: 8) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Theme.brandGradient)
-                    .frame(width: 24, height: 24)
-                Image(systemName: "sparkles").font(.system(size: 12, weight: .bold)).foregroundStyle(.white)
-            }
+            GeraldineMark(size: 26)
             VStack(alignment: .leading, spacing: 0) {
                 Text("Geraldine").font(.rounded(14, .bold))
                 HStack(spacing: 4) {
@@ -71,12 +77,8 @@ struct MenuBarView: View {
             Spacer()
             Button { state.open(.dashboard) } label: {
                 Label("Open", systemImage: "macwindow")
-                    .font(.rounded(12, .semibold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 12).padding(.vertical, 6)
-                    .background(Theme.brandGradient, in: Capsule())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.soft(Theme.accent))
             .help("Open the full Geraldine app")
         }
     }
@@ -95,10 +97,10 @@ struct MenuBarView: View {
                 Spacer()
                 if rec.actionable { Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary) }
             }
-            .padding(10)
-            .background(rec.tint.opacity(0.10), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.actionableCard(padding: 10,
+                                     tier: .tinted(rec.tint),
+                                     cornerRadius: Theme.Radius.control))
     }
 
     private struct Rec { var title: String; var subtitle: String; var icon: String; var tint: Color; var actionable: Bool; var action: () -> Void }
@@ -130,8 +132,51 @@ struct MenuBarView: View {
         Button(action: action) {
             Label(title, systemImage: icon).font(.callout).frame(maxWidth: .infinity, alignment: .leading)
         }
-        .buttonStyle(.plain)
-        .pointingHandCursor()
+        .buttonStyle(.quiet(Theme.accent))
+    }
+}
+
+private struct PopoverRevealGroup<Content: View>: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let index: Int
+    let isVisible: Bool
+    @ViewBuilder let content: Content
+
+    init(index: Int, isVisible: Bool, @ViewBuilder content: () -> Content) {
+        self.index = index
+        self.isVisible = isVisible
+        self.content = content()
+    }
+
+    @State private var revealed = false
+
+    var body: some View {
+        content
+            .opacity(isVisible && revealed ? 1 : 0)
+            .offset(y: reduceMotion || revealed ? 0 : 7)
+            .blur(radius: reduceMotion || revealed ? 0 : 3)
+            .accessibilityHidden(!isVisible || !revealed)
+            .task(id: isVisible) {
+                guard isVisible else {
+                    revealed = false
+                    return
+                }
+                guard !reduceMotion,
+                      let animation = GeraldineMotion.animation(.standard, reduceMotion: false) else {
+                    revealed = true
+                    return
+                }
+                do {
+                    try await Task.sleep(for: .milliseconds(index * 55))
+                    try Task.checkCancellation()
+                } catch {
+                    return
+                }
+                withAnimation(animation) { revealed = true }
+            }
+            .onChange(of: reduceMotion) { _, newValue in
+                if newValue { revealed = true }
+            }
     }
 }
 

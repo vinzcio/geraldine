@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Combine
 
 /// How the app presents itself. Switchable at runtime from Settings.
 enum AppShape: String, CaseIterable, Identifiable {
@@ -50,9 +51,21 @@ final class AppState: ObservableObject {
     let calendar = CalendarSettingsStore()
     let hardware = HardwareInfo.current
 
-    @Published var selection: Module? = .dashboard
+    @Published private(set) var previousSelection: Module = .dashboard
+    @Published private(set) var navigationDirection = 1
+    @Published var selection: Module? = .dashboard {
+        didSet {
+            guard let newSelection = selection,
+                  newSelection != oldValue else { return }
+            let oldSelection = oldValue ?? previousSelection
+            previousSelection = oldSelection
+            navigationDirection = newSelection.navigationIndex >= oldSelection.navigationIndex ? 1 : -1
+        }
+    }
     @Published private(set) var hasFullDiskAccess = Permissions.hasFullDiskAccess()
     @Published private(set) var hasAccessibility = Permissions.hasAccessibilityAccess()
+    @Published private(set) var mainWindowVisible = true
+    @Published private(set) var menuBarPopoverVisible = false
 
     @Published var appShape: AppShape {
         didSet {
@@ -63,10 +76,13 @@ final class AppState: ObservableObject {
 
     /// The main window, captured once it exists (see WindowAccessor).
     weak var mainWindow: NSWindow?
+    private var windowVisibilityObservers: [NSObjectProtocol] = []
+    private var windowVisibilityCancellable: AnyCancellable?
 
     private init() {
         let raw = UserDefaults.standard.string(forKey: "appShape") ?? AppShape.menuBarAndWindow.rawValue
         appShape = AppShape(rawValue: raw) ?? .menuBarAndWindow
+        mainWindowVisible = appShape != .menuBarOnly
     }
 
     // MARK: - Presentation
@@ -78,18 +94,22 @@ final class AppState: ObservableObject {
     func bind(window: NSWindow) {
         guard mainWindow !== window else { return }
         let isInitialBind = mainWindow == nil
+        removeWindowVisibilityObservers()
         mainWindow = window
         window.isReleasedWhenClosed = false
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
+        observeVisibility(of: window)
         if isInitialBind { hideInitialWindowIfNeeded() }
         applyActivationPolicy()
+        refreshMainWindowVisibility()
     }
 
     func hideInitialWindowIfNeeded() {
         guard let window = mainWindow else { return }
         if appShape == .menuBarOnly {
             window.orderOut(nil)
+            refreshMainWindowVisibility()
         }
     }
 
@@ -97,6 +117,7 @@ final class AppState: ObservableObject {
         applyActivationPolicy()
         NSApp.activate(ignoringOtherApps: true)
         mainWindow?.makeKeyAndOrderFront(nil)
+        refreshMainWindowVisibility()
     }
 
     /// Navigate to a module and bring the window forward.
@@ -118,5 +139,49 @@ final class AppState: ObservableObject {
     func refreshPermissions() {
         refreshFullDiskAccess()
         refreshAccessibility()
+    }
+
+    func setMenuBarPopoverVisible(_ isVisible: Bool) {
+        menuBarPopoverVisible = isVisible
+    }
+
+    private func observeVisibility(of window: NSWindow) {
+        let center = NotificationCenter.default
+        let names: [Notification.Name] = [
+            NSWindow.didBecomeKeyNotification,
+            NSWindow.didResignKeyNotification,
+            NSWindow.didMiniaturizeNotification,
+            NSWindow.didDeminiaturizeNotification,
+            NSWindow.didChangeOcclusionStateNotification,
+            NSWindow.willCloseNotification
+        ]
+        windowVisibilityObservers = names.map { name in
+            center.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.refreshMainWindowVisibility() }
+            }
+        }
+        windowVisibilityCancellable = window.publisher(for: \.isVisible, options: [.initial, .new])
+            .sink { [weak self] _ in
+                Task { @MainActor in self?.refreshMainWindowVisibility() }
+            }
+    }
+
+    private func removeWindowVisibilityObservers() {
+        for observer in windowVisibilityObservers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        windowVisibilityObservers.removeAll()
+        windowVisibilityCancellable?.cancel()
+        windowVisibilityCancellable = nil
+    }
+
+    private func refreshMainWindowVisibility() {
+        guard let mainWindow else {
+            mainWindowVisible = false
+            return
+        }
+        mainWindowVisible = mainWindow.isVisible &&
+            !mainWindow.isMiniaturized &&
+            mainWindow.occlusionState.contains(.visible)
     }
 }

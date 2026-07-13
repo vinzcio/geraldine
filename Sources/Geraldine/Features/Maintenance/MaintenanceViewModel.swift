@@ -26,7 +26,7 @@ struct MaintenanceTask: Identifiable {
     }
 }
 
-enum TaskStatus: Equatable { case idle, running, done, failed }
+enum TaskStatus: Hashable { case idle, running, done, failed }
 
 struct MaintenanceRun: Equatable {
     let ok: Bool

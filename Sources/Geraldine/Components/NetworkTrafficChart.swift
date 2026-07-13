@@ -36,16 +36,18 @@ struct NetworkTrafficChart: View {
     let samples: [NetworkSample]
     let stats: NetworkThroughputStats
     var chartHeight: CGFloat = 60
+    var showsInspection = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             NetworkTimelineGraph(samples: samples,
-                                 window: SystemMonitor.networkHistoryWindow,
+                                 window: SystemMonitor.liveHistoryWindow,
                                  now: Date(),
                                  downTint: Theme.accent2,
                                  upTint: Theme.accent,
                                  downReference: stats.averageDown,
-                                 upReference: stats.averageUp)
+                                 upReference: stats.averageUp,
+                                 showsInspection: showsInspection)
                 .frame(height: chartHeight)
                 .accessibilityLabel("Network throughput history")
             NetworkThroughputStatsTable(stats: stats)

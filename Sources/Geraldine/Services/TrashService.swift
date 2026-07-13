@@ -2,9 +2,10 @@ import AppKit
 
 enum TrashService {
     struct Failure: Identifiable, Hashable {
-        let id = UUID()
         let url: URL
         let message: String
+
+        var id: URL { url }
     }
 
     struct Result {

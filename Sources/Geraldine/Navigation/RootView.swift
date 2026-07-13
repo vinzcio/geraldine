@@ -7,10 +7,19 @@ struct RootView: View {
     var body: some View {
         NavigationSplitView {
             Sidebar(selection: $state.selection)
-                .navigationSplitViewColumnWidth(min: 220, ideal: 240, max: 280)
+                .navigationSplitViewColumnWidth(
+                    min: Theme.Layout.sidebarMinWidth,
+                    ideal: Theme.Layout.sidebarIdealWidth,
+                    max: Theme.Layout.sidebarMaxWidth
+                )
         } detail: {
-            DetailHost(module: state.selection ?? .dashboard)
+            let module = state.selection ?? .dashboard
+            ZStack {
+                WindowBackground(module: module)
+                DetailHost(module: module, direction: state.navigationDirection)
+            }
         }
+        .geraldineSurfaceActive(state.mainWindowVisible)
         .background(WindowAccessor { window in state.bind(window: window) })
         .sheet(isPresented: Binding(get: { !didOnboard }, set: { if !$0 { didOnboard = true } })) {
             WelcomeView { didOnboard = true }
@@ -32,13 +41,16 @@ struct Sidebar: View {
             ForEach(Module.Group.allCases) { group in
                 Section(group.rawValue) {
                     ForEach(Module.modules(in: group)) { module in
-                        SidebarRow(module: module)
+                        SidebarRow(module: module, isSelected: selection == module)
                             .tag(module)
+                            .listRowBackground(Color.clear)
                     }
                 }
             }
         }
         .listStyle(.sidebar)
+        .scrollContentBackground(.hidden)
+        .background(Theme.sidebar)
         .safeAreaInset(edge: .bottom) { SidebarFooter() }
     }
 }
@@ -46,17 +58,12 @@ struct Sidebar: View {
 private struct BrandHeader: View {
     var body: some View {
         HStack(spacing: 10) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(Theme.brandGradient)
-                    .frame(width: 30, height: 30)
-                Image(systemName: "sparkles")
-                    .font(.system(size: 15, weight: .bold))
-                    .foregroundStyle(.white)
-            }
+            GeraldineMark(size: 32)
             VStack(alignment: .leading, spacing: 0) {
-                Text("Geraldine").font(.rounded(16, .bold))
-                Text("Mac Care").font(.caption2).foregroundStyle(.secondary)
+                Text("Geraldine").font(.geraldineSection)
+                Text("Mac care, quietly alive")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
             Spacer()
         }
@@ -65,7 +72,11 @@ private struct BrandHeader: View {
 
 private struct SidebarRow: View {
     @EnvironmentObject var monitor: SystemMonitor
+    @EnvironmentObject private var keepAwake: KeepAwakeController
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHovered = false
     var module: Module
+    var isSelected: Bool
 
     private var title: String {
         module == .battery && !monitor.hasBattery ? "Power" : module.title
@@ -75,18 +86,36 @@ private struct SidebarRow: View {
         module == .battery && !monitor.hasBattery ? "powerplug" : module.systemImage
     }
 
+    private var tint: Color {
+        module == .keepAwake && keepAwake.isActive ? Theme.bad : module.tint
+    }
+
     var body: some View {
-        Label {
+        HStack(spacing: Theme.Spacing.sm) {
+            ModuleGlyph(systemImage: systemImage, tint: tint, size: 28)
             Text(title)
-        } icon: {
-            Image(systemName: systemImage)
-                .foregroundStyle(module.tint)
+                .font(.rounded(13, isSelected ? .semibold : .medium))
+                .foregroundStyle(.primary)
+            Spacer(minLength: 0)
         }
+        .padding(.horizontal, Theme.Spacing.xs)
+        .padding(.vertical, Theme.Spacing.xxs)
+        .background {
+            RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
+                .fill(isHovered && !isSelected ? tint.opacity(0.065) : .clear)
+        }
+        .selectionPlate(isSelected: isSelected, tint: tint)
+        .contentShape(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+        .onHover { isHovered = $0 }
+        .animation(GeraldineMotion.animation(.quick, reduceMotion: reduceMotion), value: isHovered)
     }
 }
 
 private struct SidebarFooter: View {
     @EnvironmentObject var monitor: SystemMonitor
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var acknowledgement = false
+
     var body: some View {
         HStack(spacing: 10) {
             Image(systemName: "internaldrive")
@@ -99,8 +128,24 @@ private struct SidebarFooter: View {
                         tint: Theme.status(for: monitor.diskFraction), height: 5)
             }
         }
-        .padding(.horizontal, 14).padding(.vertical, 10)
-        .background(.ultraThinMaterial)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background {
+            Rectangle()
+                .fill(Theme.surfaceBase)
+                .overlay(Theme.status(for: monitor.diskFraction).opacity(acknowledgement ? 0.13 : 0))
+        }
+        .overlay(alignment: .top) { Rectangle().fill(Theme.separator).frame(height: 1) }
+        .onChange(of: monitor.diskFraction) { oldValue, newValue in
+            guard oldValue < 0.85, newValue >= 0.85 else { return }
+            acknowledgement = true
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(1.1))
+                withAnimation(GeraldineMotion.animation(.emphasis, reduceMotion: reduceMotion)) {
+                    acknowledgement = false
+                }
+            }
+        }
     }
 }
 
@@ -108,8 +153,34 @@ private struct SidebarFooter: View {
 /// polished placeholder so the app feels complete while we fill them in.
 struct DetailHost: View {
     var module: Module
+    var direction: Int
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var displayedModule: Module
+    @State private var transitionDirection = 1
+
+    init(module: Module, direction: Int) {
+        self.module = module
+        self.direction = direction
+        _displayedModule = State(initialValue: module)
+    }
 
     var body: some View {
+        ZStack {
+            moduleContent(for: displayedModule)
+                .id(displayedModule)
+                .transition(GeraldineMotion.moduleTransition(
+                    direction: transitionDirection,
+                    reduceMotion: reduceMotion
+                ))
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onChange(of: module) { _, nextModule in
+            beginTransition(to: nextModule, direction: direction)
+        }
+    }
+
+    @ViewBuilder private func moduleContent(for module: Module) -> some View {
         Group {
             switch module {
             case .dashboard:   DashboardView()
@@ -133,7 +204,14 @@ struct DetailHost: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(WindowBackground())
+    }
+
+    private func beginTransition(to nextModule: Module, direction: Int) {
+        guard nextModule != displayedModule else { return }
+        transitionDirection = direction < 0 ? -1 : 1
+        withAnimation(GeraldineMotion.animation(.standard, reduceMotion: reduceMotion)) {
+            displayedModule = nextModule
+        }
     }
 }
 
@@ -141,13 +219,42 @@ struct DetailHost: View {
 /// from the top leading edge, blue from the trailing edge — quiet, but
 /// unmistakably Geraldine instead of a flat window.
 struct WindowBackground: View {
+    let module: Module
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.geraldineSurfaceActive) private var surfaceActive
+    @EnvironmentObject private var keepAwake: KeepAwakeController
+
+    private var auraTint: Color {
+        module == .keepAwake && keepAwake.isActive ? Theme.bad : module.tint
+    }
+
     var body: some View {
         ZStack {
-            LinearGradient(colors: [Theme.accent.opacity(0.07), .clear],
-                           startPoint: .topLeading, endPoint: .center)
-            LinearGradient(colors: [Theme.accent2.opacity(0.05), .clear],
-                           startPoint: .topTrailing, endPoint: .center)
+            Theme.canvas
+            RadialGradient(
+                colors: [auraTint.opacity(0.12), .clear],
+                center: UnitPoint(x: 0.82, y: 0.14),
+                startRadius: 0,
+                endRadius: 440
+            )
+            LinearGradient(
+                colors: [Theme.accent.opacity(0.065), .clear],
+                startPoint: .topLeading,
+                endPoint: .center
+            )
+            LinearGradient(
+                colors: [Theme.accent2.opacity(0.045), .clear],
+                startPoint: .topTrailing,
+                endPoint: .center
+            )
         }
+        .animation(GeraldineMotion.animation(.emphasis,
+                                             reduceMotion: reduceMotion || !surfaceActive),
+                   value: module)
+        .animation(GeraldineMotion.animation(.emphasis,
+                                             reduceMotion: reduceMotion || !surfaceActive),
+                   value: module == .keepAwake && keepAwake.isActive)
         .ignoresSafeArea()
     }
 }

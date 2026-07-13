@@ -42,6 +42,7 @@ final class DeviceMonitor: ObservableObject {
     @Published private(set) var devices: [ConnectedDevice] = []
     @Published private(set) var scanning = false
     @Published private(set) var ejectErrors: [String: String] = [:]
+    @Published private(set) var ejectingIDs: Set<String> = []
 
     private var observing = false
 
@@ -77,14 +78,31 @@ final class DeviceMonitor: ObservableObject {
     }
 
     func eject(_ device: ConnectedDevice) {
-        guard let url = device.volumeURL else { return }
+        guard let url = device.volumeURL, !ejectingIDs.contains(device.id) else { return }
         ejectErrors[device.id] = nil
-        do {
-            try NSWorkspace.shared.unmountAndEjectDevice(at: url)
-            refresh()
-        } catch {
-            ejectErrors[device.id] = "Could not eject: \(Self.ejectMessage(for: error))"
+        ejectingIDs.insert(device.id)
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await Task.yield()
+            defer { ejectingIDs.remove(device.id) }
+            let errorMessage = await Task.detached(priority: .userInitiated) {
+                do {
+                    try NSWorkspace.shared.unmountAndEjectDevice(at: url)
+                    return nil as String?
+                } catch {
+                    return Self.ejectMessage(for: error)
+                }
+            }.value
+            if let errorMessage {
+                ejectErrors[device.id] = "Could not eject: \(errorMessage)"
+            } else {
+                refresh()
+            }
         }
+    }
+
+    func isEjecting(_ device: ConnectedDevice) -> Bool {
+        ejectingIDs.contains(device.id)
     }
 
     func ejectError(for device: ConnectedDevice) -> String? {
