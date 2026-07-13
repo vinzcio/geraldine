@@ -43,8 +43,8 @@ struct NetworkTrafficChart: View {
             NetworkTimelineGraph(samples: samples,
                                  window: SystemMonitor.liveHistoryWindow,
                                  now: Date(),
-                                 downTint: Theme.accent2,
-                                 upTint: Theme.accent,
+                                 downTint: Theme.Chart.blue,
+                                 upTint: Theme.Chart.purple,
                                  downReference: stats.averageDown,
                                  upReference: stats.averageUp,
                                  showsInspection: showsInspection)
@@ -64,11 +64,11 @@ private struct NetworkThroughputStatsTable: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             headerRow
-            statRow("arrow.down", "Down", Theme.accent2,
+            statRow("arrow.down", "Down", iconTint: Theme.Chart.blue, textTint: Theme.accent2,
                     now: stats.currentDown,
                     average: stats.hasSamples ? stats.averageDown : nil,
                     peak: stats.hasSamples ? stats.peakDown : nil)
-            statRow("arrow.up", "Up", Theme.accent,
+            statRow("arrow.up", "Up", iconTint: Theme.Chart.purple, textTint: Theme.accent,
                     now: stats.currentUp,
                     average: stats.hasSamples ? stats.averageUp : nil,
                     peak: stats.hasSamples ? stats.peakUp : nil)
@@ -97,13 +97,13 @@ private struct NetworkThroughputStatsTable: View {
             .frame(width: valueWidth, alignment: .trailing)
     }
 
-    private func statRow(_ icon: String, _ label: String, _ tint: Color,
+    private func statRow(_ icon: String, _ label: String, iconTint: Color, textTint: Color,
                          now: Double, average: Double?, peak: Double?) -> some View {
         HStack(spacing: 6) {
             HStack(spacing: 4) {
                 Image(systemName: icon)
                     .font(.system(size: 8.5, weight: .bold))
-                    .foregroundStyle(tint)
+                    .foregroundStyle(iconTint)
                     .frame(width: 9)
                 Text(label)
                     .font(.system(size: 9.5, weight: .semibold))
@@ -111,9 +111,9 @@ private struct NetworkThroughputStatsTable: View {
             }
             .frame(width: labelWidth, alignment: .leading)
 
-            statValue(now, tint: tint)
-            statValue(average, tint: tint.opacity(0.88))
-            statValue(peak, tint: tint)
+            statValue(now, tint: textTint)
+            statValue(average, tint: textTint.opacity(0.88))
+            statValue(peak, tint: textTint)
         }
     }
 

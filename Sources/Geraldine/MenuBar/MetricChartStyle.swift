@@ -1,8 +1,8 @@
 import SwiftUI
 
 enum MetricChartStyle {
-    static let usageGradient: [Color] = [Theme.bad, Theme.warn, Theme.good]
-    static let batteryGradient: [Color] = [Theme.good, Theme.warn, Theme.bad]
+    static let usageGradient: [Color] = [Theme.Chart.red, Theme.Chart.amber, Theme.Chart.green]
+    static let batteryGradient: [Color] = [Theme.Chart.green, Theme.Chart.amber, Theme.Chart.red]
     static let normalizedDomain: ClosedRange<Double> = 0...1
     static let expandedWindow: TimeInterval = 24 * 60 * 60
     static let smallWindow: TimeInterval = 6 * 60 * 60
@@ -20,20 +20,16 @@ enum MetricChartStyle {
         }
     }
 
-    static func readoutColor(for metric: MetricKind) -> Color {
+    static func chartColor(for metric: MetricKind) -> Color {
         switch metric {
         case .cpu:
-            return Theme.accent
-        case .memory:
-            return Theme.accent2
+            return Theme.Chart.purple
+        case .memory, .network:
+            return Theme.Chart.blue
         case .storage:
-            return Theme.mint
-        case .battery:
-            return Theme.good
-        case .network:
-            return Theme.accent2
-        case .temperature:
-            return Theme.good
+            return Theme.Chart.mint
+        case .battery, .temperature:
+            return Theme.Chart.green
         }
     }
 

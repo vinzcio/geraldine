@@ -248,41 +248,40 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
             }
             return StatusPlan(kind: .temperature, series: m.thermalHistory.map(\.value), glyph: nil,
                               label: "\(Int(m.thermal.cpu.rounded()))°", widthSample: "888°",
-                              color: NSColor(Thermal.color(m.thermal.cpu)),
+                              color: NSColor(Thermal.chartColor(m.thermal.cpu)),
                               animationValue: m.thermal.cpu,
                               gradient: Thermal.scaleColors.map { NSColor($0) },
                               domain: Thermal.chartDomain,
-                              valueColor: { NSColor(Thermal.color($0)) })
+                              valueColor: { NSColor(Thermal.chartColor($0)) })
         case .cpu:
             return StatusPlan(kind: .cpu, series: m.cpuHistory.map(\.value), glyph: nil,
                               label: Fmt.percent(m.cpuUsage), widthSample: "100%",
-                              color: NSColor(MetricChartStyle.readoutColor(for: .cpu)),
+                              color: NSColor(Theme.Chart.status(for: m.cpuUsage)),
                               animationValue: m.cpuUsage * 100,
                               gradient: MetricChartStyle.gradient(for: .cpu)?.map { NSColor($0) },
                               domain: MetricChartStyle.normalizedDomain)
         case .memory:
             return StatusPlan(kind: .memory, series: m.memHistory.map(\.value), glyph: nil,
                               label: Fmt.percent(m.memoryFraction), widthSample: "100%",
-                              color: NSColor(MetricChartStyle.readoutColor(for: .memory)),
+                              color: NSColor(Theme.Chart.status(for: m.memoryFraction)),
                               animationValue: m.memoryFraction * 100,
                               gradient: MetricChartStyle.gradient(for: .memory)?.map { NSColor($0) },
                               domain: MetricChartStyle.normalizedDomain)
         case .network:
             return StatusPlan(kind: .network, series: nil, networkSamples: m.networkHistory, glyph: nil,
                               label: "↓\(Fmt.fixedScaled(m.netDown))", widthSample: "↓8888.88M",
-                              color: NSColor(Theme.accent2),
+                              color: NSColor(Theme.Chart.blue),
                               animationValue: m.netDown)
         case .battery:
-            let low = (m.batteryLevel ?? 1) < 0.2
             return StatusPlan(kind: .battery, series: nil, glyph: batteryIcon, label: m.batteryLevel.map(Fmt.percent) ?? "AC",
                               widthSample: "100%",
-                              color: NSColor(low ? Theme.bad : MetricChartStyle.readoutColor(for: .battery)),
+                              color: NSColor(Theme.Chart.batteryLevel(m.batteryLevel)),
                               animationValue: m.batteryLevel.map { $0 * 100 })
         case .storage:
             let free = max(0, m.diskTotal - m.diskUsed)
             return StatusPlan(kind: .storage, series: nil, glyph: "internaldrive",
                               label: Fmt.fixedScaled(max(0, m.diskTotal - m.diskUsed)), widthSample: "8888.88G",
-                              color: NSColor(MetricChartStyle.readoutColor(for: .storage)),
+                              color: NSColor(Theme.Chart.mint),
                               animationValue: free)
         }
     }
@@ -652,7 +651,8 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
                                  baseColor: plan.color)
         } else if let series = plan.series {
             drawSparkline(trimmed(series), in: NSRect(x: 0, y: 1, width: geometry.leadingWidth, height: geometry.height - 2),
-                          gradient: plan.gradient, baseColor: plan.color, domain: plan.domain, valueColor: plan.valueColor)
+                          gradient: plan.gradient, baseColor: plan.color,
+                          domain: plan.domain, valueColor: plan.valueColor)
         } else if let glyph = plan.glyph, let symbol = tintedSymbol(glyph, color: plan.color) {
             let size = symbol.size
             symbol.draw(in: NSRect(x: 0, y: (geometry.height - size.height) / 2, width: size.width, height: size.height))

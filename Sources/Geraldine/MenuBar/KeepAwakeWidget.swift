@@ -85,7 +85,7 @@ struct KeepAwakeWidget: View {
             header(eyeSize: 26, title: "Awake", subtitle: nil,
                    tint: stateTint, eyeIsSource: false)
             remainingHeadline(size: 21)
-            if hasEnd { StatBar(fraction: progress, tint: Theme.bad, height: 4) }
+            if hasEnd { StatBar(fraction: progress, tint: Theme.Chart.red, height: 4) }
             Spacer(minLength: 0)
             HStack(spacing: 6) {
                 Text(secondaryStatus)

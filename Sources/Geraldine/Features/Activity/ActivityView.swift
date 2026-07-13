@@ -61,6 +61,7 @@ struct ActivityView: View {
                       valueAnimationValue: monitor.cpuUsage * 100,
                       history: monitor.cpuHistory,
                       tint: Theme.status(for: monitor.cpuUsage),
+                      chartTint: Theme.Chart.status(for: monitor.cpuUsage),
                       footnote: String(format: "Load Average %.2f", monitor.loadAverage),
                       footnoteAnimationValue: monitor.loadAverage)
 
@@ -69,6 +70,7 @@ struct ActivityView: View {
                       valueAnimationValue: monitor.memoryFraction * 100,
                       history: monitor.memHistory,
                       tint: Theme.status(for: monitor.memoryFraction),
+                      chartTint: Theme.Chart.status(for: monitor.memoryFraction),
                       footnote: "\(Fmt.size(monitor.memoryUsed)) of \(Fmt.size(monitor.memoryTotal)) used",
                       footnoteAnimationValue: monitor.memoryUsed)
 
@@ -91,7 +93,8 @@ struct ActivityView: View {
     }
 
     private func graphCard(_ title: String, systemImage: String, value: String, valueAnimationValue: Double,
-                           history: [MetricSample], tint: Color, footnote: String, footnoteAnimationValue: Double) -> some View {
+                           history: [MetricSample], tint: Color, chartTint: Color,
+                           footnote: String, footnoteAnimationValue: Double) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Label(title, systemImage: systemImage).font(.rounded(14, .semibold))
@@ -102,7 +105,7 @@ struct ActivityView: View {
             TimelineSparkGraph(samples: history,
                                window: SystemMonitor.liveHistoryWindow,
                                now: Date(),
-                               tint: tint,
+                               tint: chartTint,
                                domain: MetricChartStyle.normalizedDomain,
                                gapThreshold: SystemMonitor.chartSampleGapThreshold,
                                maximumPointCount: 300,

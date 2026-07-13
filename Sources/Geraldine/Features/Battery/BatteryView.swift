@@ -131,15 +131,15 @@ struct BatteryView: View {
                         .font(.callout).foregroundStyle(.secondary)
                 }
             } else {
-                ChargeHistoryChart(samples: vm.history, range: range, tint: tint,
+                ChargeHistoryChart(samples: vm.history, range: range, tint: Theme.Chart.green,
                                    currentLevel: monitor.batteryLevel,
                                    currentOnAC: monitor.batteryCharging || vm.detail.externalConnected)
                     .frame(height: 168)
                     .id(range)
                     .transition(GeraldineMotion.stateTransition(reduceMotion: reduceMotion))
                 HStack(spacing: 16) {
-                    legendSwatch(tint.opacity(0.18), "Charging / Plugged In")
-                    legendSwatch(tint, "Battery Level")
+                    legendSwatch(Theme.Chart.green.opacity(0.18), "Charging / Plugged In")
+                    legendSwatch(Theme.Chart.green, "Battery Level")
                     Spacer()
                 }
                 .font(.caption2).foregroundStyle(.secondary)
@@ -182,7 +182,7 @@ struct BatteryView: View {
                         HStack(spacing: 12) {
                             Text(c.name).lineLimit(1)
                             Spacer(minLength: 12)
-                            StatBar(fraction: c.impact / maxImpact, tint: tint, height: 6)
+                            StatBar(fraction: c.impact / maxImpact, tint: Theme.Chart.green, height: 6)
                                 .frame(width: 90)
                             AnimatedNumberText(String(format: "%.1f", c.impact), value: c.impact)
                                 .font(.callout.monospacedDigit()).foregroundStyle(.secondary)
@@ -237,8 +237,7 @@ struct BatteryView: View {
     }
 
     private func healthColor(_ d: BatteryDetail) -> Color {
-        guard let h = d.healthFraction else { return tint }
-        return h >= 0.8 ? Theme.good : (h >= 0.6 ? Theme.warn : Theme.bad)
+        Theme.Chart.batteryHealth(d.healthFraction)
     }
 
     private func conditionColor(_ condition: String?) -> Color {

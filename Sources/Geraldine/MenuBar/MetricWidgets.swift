@@ -602,7 +602,7 @@ struct MetricWidget: View {
                                    maximumPointCount: MetricChartStyle.smallMaxPoints)
                 .frame(height: 28)
         } else if kind != .temperature {
-            StatBar(fraction: fraction, tint: tint, height: 5)
+            StatBar(fraction: fraction, tint: chartTint, height: 5)
         }
         Spacer(minLength: 0)
         smallFooter
@@ -628,18 +628,18 @@ struct MetricWidget: View {
         switch kind {
         case .temperature:
             liveHistoryChart(samples: monitor.thermalHistory,
-                             tint: tint,
+                             tint: MetricChartStyle.chartColor(for: .temperature),
                              gradientColors: Thermal.scaleColors,
                              domain: Thermal.chartDomain,
-                             valueColor: Thermal.color)
+                             valueColor: Thermal.chartColor)
         case .cpu:
             liveHistoryChart(samples: monitor.cpuHistory,
-                             tint: MetricChartStyle.readoutColor(for: .cpu),
+                             tint: MetricChartStyle.chartColor(for: .cpu),
                              gradientColors: MetricChartStyle.gradient(for: .cpu),
                              domain: MetricChartStyle.normalizedDomain)
         case .memory:
             liveHistoryChart(samples: monitor.memHistory,
-                             tint: MetricChartStyle.readoutColor(for: .memory),
+                             tint: MetricChartStyle.chartColor(for: .memory),
                              gradientColors: MetricChartStyle.gradient(for: .memory),
                              domain: MetricChartStyle.normalizedDomain)
         case .battery:
@@ -682,7 +682,7 @@ struct MetricWidget: View {
         TimelineSparkGraph(samples: slowMetricHistory,
                            window: window,
                            now: Date(),
-                           tint: MetricChartStyle.readoutColor(for: kind),
+                           tint: MetricChartStyle.chartColor(for: kind),
                            gradientColors: MetricChartStyle.gradient(for: kind),
                            domain: MetricChartStyle.normalizedDomain,
                            gapThreshold: MetricChartStyle.gapThreshold(window: window,
@@ -921,6 +921,23 @@ struct MetricWidget: View {
         case .storage:     return Theme.status(for: monitor.diskFraction)
         case .battery:     return (monitor.batteryLevel ?? 1) < 0.2 ? Theme.bad : Theme.good
         case .network:     return network.online ? Theme.accent2 : Theme.warn
+        }
+    }
+
+    private var chartTint: Color {
+        switch kind {
+        case .temperature:
+            return Thermal.chartColor(monitor.thermal.cpu)
+        case .cpu:
+            return Theme.Chart.status(for: monitor.cpuUsage)
+        case .memory:
+            return Theme.Chart.status(for: monitor.memoryFraction)
+        case .storage:
+            return Theme.Chart.status(for: monitor.diskFraction)
+        case .battery:
+            return Theme.Chart.batteryLevel(monitor.batteryLevel)
+        case .network:
+            return network.online ? Theme.Chart.blue : Theme.Chart.amber
         }
     }
 

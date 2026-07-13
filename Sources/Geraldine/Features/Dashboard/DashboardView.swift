@@ -35,7 +35,7 @@ struct DashboardView: View {
                          valueAnimationValue: monitor.cpuUsage * 100,
                          caption: "In Use",
                          fraction: monitor.cpuUsage,
-                         tint: Theme.status(for: monitor.cpuUsage))
+                         tint: Theme.Chart.status(for: monitor.cpuUsage))
 
                 StatTile(icon: "memorychip", title: "Memory",
                          value: Fmt.percent(monitor.memoryFraction),
@@ -43,7 +43,7 @@ struct DashboardView: View {
                          caption: Fmt.size(monitor.memoryUsed),
                          captionAnimationValue: monitor.memoryUsed,
                          fraction: monitor.memoryFraction,
-                         tint: Theme.status(for: monitor.memoryFraction))
+                         tint: Theme.Chart.status(for: monitor.memoryFraction))
 
                 StatTile(icon: "internaldrive", title: "Storage",
                          value: Fmt.percent(monitor.diskFraction),
@@ -51,7 +51,7 @@ struct DashboardView: View {
                          caption: "\(Fmt.size(max(0, monitor.diskTotal - monitor.diskUsed))) Free",
                          captionAnimationValue: max(0, monitor.diskTotal - monitor.diskUsed),
                          fraction: monitor.diskFraction,
-                         tint: Theme.status(for: monitor.diskFraction))
+                         tint: Theme.Chart.status(for: monitor.diskFraction))
 
                 batteryTile
             }
@@ -148,11 +148,11 @@ struct DashboardView: View {
                         : (monitor.batteryHealth.map { "Health \(Fmt.percent($0))" } ?? "On Battery"),
                      captionAnimationValue: monitor.batteryHealth.map { $0 * 100 },
                      fraction: level,
-                     tint: level < 0.2 ? Theme.bad : Theme.good)
+                     tint: Theme.Chart.batteryLevel(level))
         } else {
             StatTile(icon: "powerplug", title: "Power",
                      value: "AC", caption: "Plugged In",
-                     fraction: 1, tint: Theme.good)
+                     fraction: 1, tint: Theme.Chart.green)
         }
     }
 

@@ -125,7 +125,7 @@ private struct SidebarFooter: View {
                                    value: max(0, monitor.diskTotal - monitor.diskUsed))
                     .font(.caption.weight(.medium))
                 StatBar(fraction: monitor.diskFraction,
-                        tint: Theme.status(for: monitor.diskFraction), height: 5)
+                        tint: Theme.Chart.status(for: monitor.diskFraction), height: 5)
             }
         }
         .padding(.horizontal, 14)

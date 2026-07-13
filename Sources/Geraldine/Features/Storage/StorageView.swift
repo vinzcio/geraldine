@@ -6,6 +6,7 @@ struct StorageCategory: Identifiable {
     var detail: String
     var value: Double
     var color: Color
+    var chartColor: Color
     var confidence: Confidence
     var route: Route
     var isAvailable: Bool = false
@@ -68,7 +69,7 @@ final class StorageViewModel: ObservableObject {
     var segments: [DonutSegment] {
         categories
             .filter { $0.value > 0 }
-            .map { DonutSegment(label: $0.label, value: $0.value, color: $0.color) }
+            .map { DonutSegment(label: $0.label, value: $0.value, color: $0.chartColor) }
     }
 
     var errorMessage: String? {
@@ -175,30 +176,35 @@ final class StorageViewModel: ObservableObject {
                                 detail: "Measured /Applications and /System/Applications; Reveal opens user Applications.",
                                 value: applications,
                                 color: Theme.accent,
+                                chartColor: Theme.Chart.purple,
                                 confidence: .measured,
                                 route: .reveal(applicationsURL)),
                 StorageCategory(label: "Documents",
                                 detail: "Measured your Documents folder.",
                                 value: documents,
                                 color: Theme.accent2,
+                                chartColor: Theme.Chart.blue,
                                 confidence: .measured,
                                 route: .reveal(documentsURL)),
                 StorageCategory(label: "Desktop",
                                 detail: "Measured files and folders on your Desktop.",
                                 value: desktop,
                                 color: Theme.aqua,
+                                chartColor: Theme.Chart.mint,
                                 confidence: .measured,
                                 route: .reveal(desktopURL)),
                 StorageCategory(label: "Downloads",
                                 detail: "Measured your Downloads folder.",
                                 value: downloads,
                                 color: Theme.orange,
+                                chartColor: Theme.Chart.orange,
                                 confidence: .measured,
                                 route: .reveal(downloadsURL)),
                 StorageCategory(label: "User Library",
                                 detail: "Measured app support, containers, caches, and logs Geraldine can read.",
                                 value: library,
                                 color: Theme.green,
+                                chartColor: Theme.Chart.green,
                                 confidence: .measured,
                                 route: .reveal(libraryURL))
             ].filter { $0.value > 0 }
@@ -212,6 +218,7 @@ final class StorageViewModel: ObservableObject {
                     detail: "Derived from used space minus measured folders. Includes macOS, snapshots, other users, protected files, and unmeasured locations.",
                     value: systemOther,
                     color: Theme.slate,
+                    chartColor: Theme.Chart.plum,
                     confidence: .derived,
                     route: .module(.spaceLens)
                 ))
@@ -222,6 +229,7 @@ final class StorageViewModel: ObservableObject {
                 detail: "Free space macOS reports as available for important usage.",
                 value: free,
                 color: Theme.silver,
+                chartColor: Theme.Chart.silver,
                 confidence: .available,
                 route: .none,
                 isAvailable: true
@@ -356,7 +364,7 @@ private struct StorageCategoryRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            Circle().fill(category.color).frame(width: 11, height: 11).padding(.top, 5)
+            Circle().fill(category.chartColor).frame(width: 11, height: 11).padding(.top, 5)
 
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {

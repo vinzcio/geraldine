@@ -298,7 +298,9 @@ struct SmartCareView: View {
             SmartCareScoreHero(phase: scanning ? .scanning : .results,
                                displayedScore: scanning ? 0 : displayedScore,
                                score: vm.score,
-                               tint: scanning ? Theme.accent : vm.healthColor)
+                               tint: scanning
+                                   ? Theme.Chart.purple
+                                   : Theme.Chart.health(for: vm.score))
                 .padding(.top, scanning ? 0 : Theme.Spacing.xs)
 
             if scanning {
@@ -481,7 +483,7 @@ private struct SmartCareScoreHero: View {
     private var ringStyle: AnyShapeStyle {
         if isScanning {
             return AnyShapeStyle(
-                AngularGradient(colors: [Theme.accent.opacity(0), Theme.accent], center: .center)
+                AngularGradient(colors: [tint.opacity(0), tint], center: .center)
             )
         }
         return AnyShapeStyle(tint.gradient)

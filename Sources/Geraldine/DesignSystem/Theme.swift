@@ -100,6 +100,46 @@ enum Theme {
     static let slate = adaptive("GeraldineSlate", light: ns(0.36, 0.39, 0.48), dark: ns(0.68, 0.71, 0.80))
     static let silver = adaptive("GeraldineSilver", light: ns(0.58, 0.61, 0.68), dark: ns(0.46, 0.49, 0.57))
 
+    /// Luminous visualization colors kept separate from semantic foregrounds.
+    /// Thin strokes and small data points need more saturation than body text.
+    enum Chart {
+        static let blue = adaptive("GeraldineChartBlue", light: ns(0.00, 0.48, 0.96), dark: ns(0.38, 0.72, 1.00))
+        static let purple = adaptive("GeraldineChartPurple", light: ns(0.52, 0.34, 0.96), dark: ns(0.70, 0.58, 1.00))
+        static let green = adaptive("GeraldineChartGreen", light: ns(0.05, 0.66, 0.36), dark: ns(0.32, 0.88, 0.58))
+        static let amber = adaptive("GeraldineChartAmber", light: ns(0.96, 0.56, 0.04), dark: ns(1.00, 0.76, 0.34))
+        static let red = adaptive("GeraldineChartRed", light: ns(0.92, 0.22, 0.28), dark: ns(1.00, 0.45, 0.50))
+        static let orange = adaptive("GeraldineChartOrange", light: ns(1.00, 0.39, 0.10), dark: ns(1.00, 0.64, 0.32))
+        static let mint = adaptive("GeraldineChartMint", light: ns(0.00, 0.64, 0.48), dark: ns(0.32, 0.88, 0.70))
+        static let plum = adaptive("GeraldineChartPlum", light: ns(0.73, 0.28, 0.78), dark: ns(0.93, 0.53, 0.95))
+        static let silver = adaptive("GeraldineChartSilver", light: ns(0.62, 0.66, 0.74), dark: ns(0.72, 0.76, 0.84))
+
+        static func status(for usage: Double) -> Color {
+            switch usage {
+            case ..<0.6: green
+            case ..<0.85: amber
+            default: red
+            }
+        }
+
+        static func health(for score: Int) -> Color {
+            switch score {
+            case 85...: green
+            case 60..<85: amber
+            default: red
+            }
+        }
+
+        static func batteryLevel(_ level: Double?) -> Color {
+            (level ?? 1) < 0.2 ? red : green
+        }
+
+        static func batteryHealth(_ health: Double?) -> Color {
+            guard let health else { return green }
+            if health >= 0.8 { return green }
+            return health >= 0.6 ? amber : red
+        }
+    }
+
     enum DecorativeStrength {
         case subtle
         case standard
