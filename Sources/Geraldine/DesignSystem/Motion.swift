@@ -135,9 +135,12 @@ private struct GeraldineEntranceModifier: ViewModifier {
                 if surfaceActive { revealIfNeeded() }
             }
             .onChange(of: surfaceActive) { _, active in
+                // Reveal-once: only animate in when the surface first becomes
+                // active. Don't reset on inactive — that replayed the entrance
+                // every time the window was occluded and re-revealed. Genuine
+                // teardown resets @State (isVisible) on its own.
                 if active { revealIfNeeded() }
             }
-            .onDisappear { isVisible = false }
     }
 
     private func revealIfNeeded() {

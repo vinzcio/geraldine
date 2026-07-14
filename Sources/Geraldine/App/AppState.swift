@@ -51,8 +51,13 @@ final class AppState: ObservableObject {
     let calendar = CalendarSettingsStore()
     let hardware = HardwareInfo.current
 
-    @Published private(set) var previousSelection: Module = .dashboard
-    @Published private(set) var navigationDirection = 1
+    /// Plain storage, not @Published: both only ever change together with
+    /// `selection`, whose own publish triggers the re-render that reads them.
+    /// Publishing again from `didSet` would re-enter SwiftUI mid-update while
+    /// the sidebar List is applying its selection, which makes the highlight
+    /// stutter or revert.
+    private(set) var previousSelection: Module = .dashboard
+    private(set) var navigationDirection = 1
     @Published var selection: Module? = .dashboard {
         didSet {
             guard let newSelection = selection,

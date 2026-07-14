@@ -3,7 +3,6 @@ import SwiftUI
 struct MaintenanceView: View {
     @StateObject private var vm = MaintenanceViewModel()
     @State private var pendingTask: MaintenanceTask?
-    @State private var acceptedTaskID: String?
     @State private var recentlyCancelledTaskID: String?
 
     var body: some View {
@@ -16,39 +15,30 @@ struct MaintenanceView: View {
                         lastRun: vm.lastRun(task.id),
                         recentlyCancelled: recentlyCancelledTaskID == task.id
                     ) {
-                        acceptedTaskID = nil
                         pendingTask = task
                     }
                 }
             }
         }
+        // `presenting:` hands the task to the buttons directly. SwiftUI writes
+        // isPresented back to false *before* running the chosen button's
+        // action, so the buttons must not depend on reading `pendingTask`.
         .confirmationDialog(pendingTask.map { "Run \($0.title)?" } ?? "Run maintenance task?",
                             isPresented: Binding(
                                 get: { pendingTask != nil },
-                                set: { presented in
-                                    guard !presented else { return }
-                                    if let task = pendingTask, acceptedTaskID != task.id {
-                                        markCancelled(task.id)
-                                    }
-                                    pendingTask = nil
-                                    acceptedTaskID = nil
-                                }
-                            )) {
-            Button(pendingTask?.needsAdmin == true ? "Run with Password" : "Run Task",
+                                set: { if !$0 { pendingTask = nil } }
+                            ),
+                            presenting: pendingTask) { task in
+            Button(task.needsAdmin ? "Run with Password" : "Run Task",
                    role: .destructive) {
-                if let task = pendingTask {
-                    acceptedTaskID = task.id
-                    recentlyCancelledTaskID = nil
-                    vm.run(task)
-                }
-                pendingTask = nil
+                recentlyCancelledTaskID = nil
+                vm.run(task)
             }
             Button("Cancel", role: .cancel) {
-                if let task = pendingTask { markCancelled(task.id) }
-                pendingTask = nil
+                markCancelled(task.id)
             }
-        } message: {
-            Text(pendingTask?.confirmationMessage ?? "")
+        } message: { task in
+            Text(task.confirmationMessage)
         }
     }
 

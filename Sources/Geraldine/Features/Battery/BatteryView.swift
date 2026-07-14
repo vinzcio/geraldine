@@ -9,7 +9,10 @@ struct BatteryView: View {
     @State private var range: HistoryRange = .day
 
     private var tint: Color { Module.battery.tint }
-    private var level: Double { monitor.batteryLevel ?? vm.detail.healthFraction ?? 0 }
+    // Charge only — never health. Falls back to the last charge we sampled, and stays
+    // nil (shown as an em dash) until a real reading exists so we never fabricate 0%.
+    private var knownLevel: Double? { monitor.batteryLevel ?? monitor.batteryHistory.last?.value }
+    private var level: Double { knownLevel ?? 0 }
     private var hardwareName: String { state.hardware.displayName }
     private var hasInternalBattery: Bool { monitor.hasBattery || vm.detail.hasBattery }
 
@@ -45,7 +48,7 @@ struct BatteryView: View {
         HStack(spacing: 18) {
             BatteryGlyph(level: level, charging: monitor.batteryCharging)
             VStack(alignment: .leading, spacing: 4) {
-                AnimatedNumberText(Fmt.percent(level), value: level * 100)
+                AnimatedNumberText(knownLevel.map(Fmt.percent) ?? "—", value: level * 100)
                     .font(.rounded(40, .bold))
                     .foregroundStyle(BatteryGlyph.color(level: level, charging: monitor.batteryCharging))
                 Text(statusText)
@@ -173,13 +176,14 @@ struct BatteryView: View {
             let maxImpact = max(vm.consumers.map(\.impact).max() ?? 1, 1)
             VStack(spacing: 0) {
                 if vm.consumers.isEmpty {
-                    Text(vm.sampling ? "Measuring energy use…" : "No significant energy use right now.")
+                    Text(vm.sampling ? "Measuring Energy Use…" : "No significant energy use right now.")
                         .font(.callout).foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.vertical, 10)
                 } else {
                     ForEach(Array(vm.consumers.enumerated()), id: \.element.id) { idx, c in
                         HStack(spacing: 12) {
+                            ProcessIconPlate(pid: Int32(c.pid), tint: tint)
                             Text(c.name).lineLimit(1)
                             Spacer(minLength: 12)
                             StatBar(fraction: c.impact / maxImpact, tint: Theme.Chart.green, height: 6)
@@ -617,9 +621,10 @@ struct ChargeHistoryChart: View {
         let within = samples.filter { $0.date >= start && $0.date <= end }
         var pts: [ChargeSample] = []
         let prior = samples.last { $0.date < start }
-        if let first = within.first, first.date > start {
-            let anchor = prior ?? first
-            pts.append(ChargeSample(date: start, level: anchor.level, onAC: anchor.onAC))
+        // Only extend a real earlier sample to the left edge; without one the curve
+        // starts at the first true sample rather than inventing flat history before it.
+        if let prior, let first = within.first, first.date > start {
+            pts.append(ChargeSample(date: start, level: prior.level, onAC: prior.onAC))
         } else if within.isEmpty, let prior {
             pts.append(ChargeSample(date: start, level: prior.level, onAC: prior.onAC))
         }

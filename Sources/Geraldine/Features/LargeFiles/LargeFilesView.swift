@@ -19,6 +19,7 @@ struct LargeFilesView: View {
             ModuleHeader(module: .largeFiles) {
                 if vm.phase == .results || vm.phase == .done {
                     Button { vm.reset() } label: { Label("New Scan", systemImage: "arrow.clockwise") }
+                        .buttonStyle(.soft(Module.largeFiles.tint))
                 }
             }
 

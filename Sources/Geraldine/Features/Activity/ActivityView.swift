@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 @MainActor
@@ -9,7 +10,10 @@ final class ActivityViewModel: ObservableObject {
     private var lifecycleID = UUID()
 
     var sorted: [ProcUsage] {
-        sortByMemory ? consumers.sorted { $0.mem > $1.mem } : consumers.sorted { $0.cpu > $1.cpu }
+        // Rank the whole sampled pool by the active metric before trimming, so Memory
+        // mode surfaces true memory hogs rather than only the CPU-ranked head.
+        let ranked = sortByMemory ? consumers.sorted { $0.mem > $1.mem } : consumers.sorted { $0.cpu > $1.cpu }
+        return Array(ranked.prefix(8))
     }
 
     func start() {
@@ -33,7 +37,7 @@ final class ActivityViewModel: ObservableObject {
         guard sampleTask == nil else { return }
         let lifecycleID = self.lifecycleID
         sampleTask = Task { [weak self] in
-            let procs = await Task.detached { ProcessSampler.sample(limit: 8) }.value
+            let procs = await Task.detached { ProcessSampler.sample() }.value
             guard let self,
                   !Task.isCancelled,
                   self.lifecycleID == lifecycleID else { return }
@@ -208,11 +212,12 @@ struct ActivityView: View {
             VStack(spacing: 0) {
                 ForEach(Array(vm.sorted.enumerated()), id: \.element.id) { idx, p in
                     CareLedgerRow(
-                        icon: "app.fill",
                         tint: Module.activity.tint,
                         title: p.name,
                         detail: vm.sortByMemory ? "Memory share" : "CPU share"
                     ) {
+                        ProcessIconPlate(pid: p.id, tint: Module.activity.tint)
+                    } accessory: {
                         AnimatedNumberText(String(format: "%.1f%%", vm.sortByMemory ? p.mem : p.cpu),
                                            value: vm.sortByMemory ? p.mem : p.cpu)
                             .font(.callout.monospacedDigit()).foregroundStyle(.secondary)
@@ -225,6 +230,28 @@ struct ActivityView: View {
                 }
             }
             .card(tier: .base)
+        }
+    }
+}
+
+/// A running process's app icon on the neutral plate used for third-party apps.
+/// Daemons and helpers without a bundle icon fall back to the module glyph.
+struct ProcessIconPlate: View {
+    let pid: Int32
+    var tint: Color
+    var symbol: String = "app.fill"
+    var size: CGFloat = 34
+
+    var body: some View {
+        if let icon = NSRunningApplication(processIdentifier: pid)?.icon {
+            AppIconPlate(size: size) {
+                Image(nsImage: icon)
+                    .resizable()
+                    .scaledToFit()
+                    .padding(3)
+            }
+        } else {
+            ModuleGlyph(systemImage: symbol, tint: tint, size: size)
         }
     }
 }

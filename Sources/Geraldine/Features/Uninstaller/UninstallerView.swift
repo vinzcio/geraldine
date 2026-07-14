@@ -163,10 +163,13 @@ private struct LeftoversSheet: View {
                     Text("Review what will move to the Trash.").font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button { onClose(false) } label: {
+                // Report completion so a close after a finished uninstall still
+                // refreshes the app grid, matching the Done button.
+                Button { onClose(model.phase == .done) } label: {
                     Image(systemName: "xmark")
                 }
                 .buttonStyle(.quiet(Module.uninstaller.tint))
+                .disabled(model.phase == .uninstalling)
                 .accessibilityLabel("Close uninstall review")
             }
             .padding(16)
@@ -182,7 +185,6 @@ private struct LeftoversSheet: View {
                 case .scanning:
                     ScanningState(tint: Module.uninstaller.tint, icon: "doc.on.doc",
                                   label: "Finding Leftover Files")
-                        .frame(height: 320)
                 case .results, .uninstalling:
                     if model.groups.isEmpty {
                         ScanEmptyState(icon: "lock.fill",
@@ -192,7 +194,6 @@ private struct LeftoversSheet: View {
                                        diagnostics: model.diagnostics,
                                        actionTitle: "Close",
                                        action: { onClose(false) })
-                            .frame(height: 320)
                     } else {
                         VStack(spacing: 0) {
                             if let cancellationMessage {
@@ -208,7 +209,6 @@ private struct LeftoversSheet: View {
                                 showUninstallConfirmation = true
                             }
                         }
-                        .frame(height: 380)
                         .geraldineAnimation(.standard, value: cancellationMessage)
                     }
                 case .done:
@@ -216,9 +216,9 @@ private struct LeftoversSheet: View {
                                    actionTitle: "Done",
                                    actionIcon: "checkmark",
                                    again: { onClose(true) })
-                        .frame(height: 300)
                 }
             }
+            .frame(height: 380)
         }
         .frame(width: 520)
         .onAppear { model.scan() }

@@ -346,6 +346,7 @@ struct WidgetControls: View {
                     )
                 }
                 .buttonStyle(.quiet(customizationActive ? Theme.accent : Color.secondary))
+                .minimumHitArea()
                 .help(size == .small ? "Expand widget" : "Shrink widget")
                 .accessibilityLabel(size == .small
                                     ? "Expand \(kind.title(hasBattery: monitor.hasBattery))"
@@ -401,10 +402,10 @@ private struct WidgetDropTarget: ViewModifier {
     @Environment(\.widgetCustomizationActive) private var customizationActive
     let target: WidgetKind
 
-    @ViewBuilder func body(content: Content) -> some View {
-        if customizationActive {
-            content
+    func body(content: Content) -> some View {
+        content
             .dropDestination(for: String.self) { dropped, _ in
+                guard customizationActive else { return false }
                 guard let raw = dropped.first,
                       let dragged = WidgetKind(id: raw),
                       dragged != target else {
@@ -417,11 +418,8 @@ private struct WidgetDropTarget: ViewModifier {
                 dragCoordinator.end()
                 return true
             } isTargeted: { isTargeted in
-                dragCoordinator.setTarget(target, active: isTargeted)
+                dragCoordinator.setTarget(target, active: isTargeted && customizationActive)
             }
-        } else {
-            content
-        }
     }
 }
 

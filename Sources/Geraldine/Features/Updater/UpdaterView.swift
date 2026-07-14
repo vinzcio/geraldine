@@ -184,6 +184,10 @@ struct UpdaterView: View {
                 Button {
                     vm.copyInstallCommand()
                     copiedInstallCommand = true
+                    Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: 1_800_000_000)
+                        copiedInstallCommand = false
+                    }
                 } label: {
                     Label(copiedInstallCommand ? "Copied" : "Copy Install Command",
                           systemImage: copiedInstallCommand ? "checkmark" : "doc.on.doc")

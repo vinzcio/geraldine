@@ -87,34 +87,43 @@ struct MenuBarView: View {
 
     @ViewBuilder private var recommendation: some View {
         let rec = recommend()
+        let busy = rec.freesMemory && freeingMemory
         Button(action: rec.action) {
             HStack(spacing: 10) {
-                Image(systemName: rec.icon).foregroundStyle(rec.tint)
+                Group {
+                    if busy {
+                        ProgressView().controlSize(.mini)
+                    } else {
+                        Image(systemName: rec.icon).foregroundStyle(rec.tint)
+                    }
+                }
                 VStack(alignment: .leading, spacing: 1) {
                     Text(rec.title).font(.caption.weight(.semibold)).foregroundStyle(.primary)
-                    Text(rec.subtitle).font(.caption2).foregroundStyle(.secondary)
+                    Text(busy ? "Freeing Up Memory…" : rec.subtitle).font(.caption2).foregroundStyle(.secondary)
                 }
                 Spacer()
                 if rec.actionable { Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary) }
             }
+            .geraldineAnimation(.standard, value: freeingMemory)
         }
         .buttonStyle(.actionableCard(padding: 10,
                                      tier: .tinted(rec.tint),
                                      cornerRadius: Theme.Radius.control))
+        .disabled(busy)
     }
 
-    private struct Rec { var title: String; var subtitle: String; var icon: String; var tint: Color; var actionable: Bool; var action: () -> Void }
+    private struct Rec { var title: String; var subtitle: String; var icon: String; var tint: Color; var actionable: Bool; var freesMemory: Bool = false; var action: () -> Void }
 
     private func recommend() -> Rec {
         if monitor.diskFraction > 0.88 {
-            return Rec(title: "You're Low On Disk Space", subtitle: "Run Cleanup to free some up",
+            return Rec(title: "You're Low On Disk Space", subtitle: "Run Cleanup To Free Some Up",
                        icon: "internaldrive.fill", tint: Theme.warn, actionable: true) { state.open(.cleanup) }
         }
         if monitor.memoryFraction > 0.85 {
-            return Rec(title: "Memory Is Running High", subtitle: "Free up inactive memory",
-                       icon: "memorychip", tint: Theme.warn, actionable: true, action: freeMemory)
+            return Rec(title: "Memory Is Running High", subtitle: "Free Up Inactive Memory",
+                       icon: "memorychip", tint: Theme.warn, actionable: true, freesMemory: true, action: freeMemory)
         }
-        return Rec(title: "Your Mac Looks Healthy", subtitle: "Run a Smart Care check anytime",
+        return Rec(title: "Your Mac Looks Healthy", subtitle: "Run A Smart Care Check Anytime",
                    icon: "checkmark.seal.fill", tint: Theme.good, actionable: true) { state.open(.smartCare) }
     }
 

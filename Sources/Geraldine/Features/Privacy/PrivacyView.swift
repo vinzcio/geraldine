@@ -22,6 +22,7 @@ struct PrivacyView: View {
             ModuleHeader(module: .privacy) {
                 if vm.phase == .results || vm.phase == .done {
                     Button { rescan() } label: { Label("Rescan", systemImage: "arrow.clockwise") }
+                        .buttonStyle(.soft(Module.privacy.tint))
                 }
             }
 

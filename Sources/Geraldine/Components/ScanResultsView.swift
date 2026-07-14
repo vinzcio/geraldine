@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// Reusable grouped, selectable results list with a clean-action footer.
 /// Used by Cleanup, Privacy, Uninstaller leftovers, and Large & Old Files.
@@ -35,6 +36,9 @@ struct ScanResultsView: View {
                 }
             }
             .listStyle(.inset)
+            .disabled(isBusy)
+            .opacity(isBusy ? 0.7 : 1)
+            .geraldineAnimation(.standard, value: isBusy)
 
             footer
         }
@@ -104,9 +108,29 @@ struct ScanResultsView: View {
                     .scaledToFit()
                     .padding(3)
             }
+        } else if let icon = Self.fileIcon(for: item.url) {
+            AppIconPlate(size: 34) {
+                Image(nsImage: icon)
+                    .resizable()
+                    .scaledToFit()
+                    .padding(3)
+            }
         } else {
             ModuleGlyph(systemImage: group.icon, tint: group.tint, size: 34)
         }
+    }
+
+    /// Real Finder icon for a scan row's file, cached by path so long lists
+    /// don't re-hit the workspace. Returns nil when the file is gone, so the
+    /// caller can fall back to the group glyph.
+    private static let iconCache = NSCache<NSString, NSImage>()
+    private static func fileIcon(for url: URL) -> NSImage? {
+        let path = url.path
+        if let cached = iconCache.object(forKey: path as NSString) { return cached }
+        guard FileManager.default.fileExists(atPath: path) else { return nil }
+        let icon = NSWorkspace.shared.icon(forFile: path)
+        iconCache.setObject(icon, forKey: path as NSString)
+        return icon
     }
 
     private var footer: some View {

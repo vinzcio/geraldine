@@ -3,9 +3,19 @@ import Foundation
 enum Shell {
     struct RunResult {
         let status: Int32
-        let output: String
+        let stdout: String
+        let stderr: String
         let startedAt: Date
         let finishedAt: Date
+
+        /// Both streams, for human-facing logs and error reporting. Parsers of
+        /// machine output (JSON, tables) should read `stdout` — tools like brew
+        /// route progress and warnings to stderr.
+        var output: String {
+            if stderr.isEmpty { return stdout }
+            if stdout.isEmpty { return stderr }
+            return stdout + "\n" + stderr
+        }
     }
 
     struct AdminResult {
@@ -15,28 +25,37 @@ enum Shell {
         let finishedAt: Date
     }
 
-    /// Run a non-interactive command and capture combined output.
+    /// Run a non-interactive command and capture stdout and stderr separately.
     @discardableResult
     static func run(_ launchPath: String, _ args: [String]) -> RunResult {
         let startedAt = Date()
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: launchPath)
         proc.arguments = args
-        let pipe = Pipe()
-        proc.standardOutput = pipe
-        proc.standardError = pipe
+        let outPipe = Pipe()
+        let errPipe = Pipe()
+        proc.standardOutput = outPipe
+        proc.standardError = errPipe
         do {
             try proc.run()
         } catch {
             return RunResult(status: -1,
-                             output: (error as NSError).localizedDescription,
+                             stdout: "",
+                             stderr: (error as NSError).localizedDescription,
                              startedAt: startedAt,
                              finishedAt: Date())
         }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        // Drain stderr alongside stdout so a chatty stream can't fill its pipe
+        // and stall the child before stdout reaches EOF.
+        var errData = Data()
+        let errDrain = DispatchWorkItem { errData = errPipe.fileHandleForReading.readDataToEndOfFile() }
+        DispatchQueue.global(qos: .utility).async(execute: errDrain)
+        let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
+        errDrain.wait()
         proc.waitUntilExit()
         return RunResult(status: proc.terminationStatus,
-                         output: String(data: data, encoding: .utf8) ?? "",
+                         stdout: String(data: outData, encoding: .utf8) ?? "",
+                         stderr: String(data: errData, encoding: .utf8) ?? "",
                          startedAt: startedAt,
                          finishedAt: Date())
     }
@@ -50,7 +69,7 @@ enum Shell {
         ]
         for c in candidates where FileManager.default.isExecutableFile(atPath: c) { return c }
         let r = run("/usr/bin/which", [tool])
-        let path = r.output.trimmingCharacters(in: .whitespacesAndNewlines)
+        let path = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
         return (r.status == 0 && !path.isEmpty) ? path : nil
     }
 

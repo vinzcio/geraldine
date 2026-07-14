@@ -1,5 +1,8 @@
 import SwiftUI
 
+/// Declaration order is the sidebar order (groups filter it top to bottom) and
+/// drives `navigationIndex`, so the detail slide direction matches what the
+/// user sees. Keep new cases in their visual position.
 enum Module: String, CaseIterable, Identifiable {
     case dashboard
     case smartCare
@@ -8,11 +11,11 @@ enum Module: String, CaseIterable, Identifiable {
     case battery
     case keepAwake
     case calendar
-    case powerTools
     case cleanup
     case largeFiles
     case spaceLens
     case uninstaller
+    case powerTools
     case privacy
     case loginItems
     case maintenance

@@ -27,7 +27,7 @@ final class LargeFilesViewModel: ObservableObject {
     var emptyMessage: String {
         diagnostics.hasVisibleIssues
             ? "No files matched in the readable locations under \(root.path)."
-            : "No files over \(Int(minSizeMB)) MB or older large files were found under \(root.path)."
+            : "No files over \(thresholdLabel) or older large files were found under \(root.path)."
     }
 
     func chooseFolder() {

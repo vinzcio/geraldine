@@ -85,6 +85,16 @@ final class MaintenanceViewModel: ObservableObject {
             }.value
             self.lastRuns[task.id] = run
             self.status[task.id] = run.ok ? .done : .failed
+            if run.ok { self.scheduleIdleRevert(task.id) }
+        }
+    }
+
+    /// A successful task shows .done briefly, then returns to .idle so its button
+    /// stays tappable. lastRuns is left intact so the completion time still reads.
+    private func scheduleIdleRevert(_ id: String) {
+        Task {
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            if self.status[id] == .done { self.status[id] = .idle }
         }
     }
 }

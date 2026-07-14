@@ -211,8 +211,8 @@ private struct ActionableCardButtonBody: View {
     let cornerRadius: CGFloat
 
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.isFocused) private var isFocused
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @FocusState private var isFocused: Bool
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
@@ -226,11 +226,7 @@ private struct ActionableCardButtonBody: View {
                          ? GeraldineMotion.pressScale : 1)
             .opacity(isEnabled ? 1 : 0.50)
             .contentShape(shape)
-            .focusable(isEnabled)
-            .focused($isFocused)
-            .onChange(of: isEnabled) { _, enabled in
-                if !enabled { isFocused = false }
-            }
+            .focusEffectDisabled()
             .animation(GeraldineMotion.animation(.quick, reduceMotion: reduceMotion),
                        value: configuration.isPressed)
             .animation(GeraldineMotion.animation(.quick, reduceMotion: reduceMotion),
@@ -680,9 +676,9 @@ private struct ProminentButtonBody: View {
     let configuration: ButtonStyleConfiguration
 
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.isFocused) private var isFocused
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovered = false
-    @FocusState private var isFocused: Bool
 
     var body: some View {
         configuration.label
@@ -709,11 +705,10 @@ private struct ProminentButtonBody: View {
             .offset(y: isHovered && !configuration.isPressed && !reduceMotion ? -1 : 0)
             .opacity(isEnabled ? 1 : 0.46)
             .contentShape(Capsule())
-            .focusable(isEnabled)
-            .focused($isFocused)
+            .focusEffectDisabled()
             .onHover { isHovered = isEnabled && $0 }
             .onChange(of: isEnabled) { _, enabled in
-                if !enabled { isHovered = false; isFocused = false }
+                if !enabled { isHovered = false }
             }
             .animation(GeraldineMotion.animation(.quick, reduceMotion: reduceMotion), value: configuration.isPressed)
             .animation(GeraldineMotion.animation(.quick, reduceMotion: reduceMotion), value: isHovered)
@@ -738,15 +733,15 @@ private struct SoftButtonBody: View {
     var compact = false
 
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.isFocused) private var isFocused
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovered = false
-    @FocusState private var isFocused: Bool
 
     var body: some View {
         configuration.label
             .font(.rounded(compact ? 11 : 13, .semibold))
             .padding(.horizontal, compact ? 10 : 14)
-            .frame(minHeight: Theme.Layout.minimumHitArea)
+            .frame(minWidth: Theme.Layout.minimumHitArea, minHeight: Theme.Layout.minimumHitArea)
             .foregroundStyle(isEnabled ? tint : Theme.disabledForeground(tint))
             .background(
                 tint.opacity(configuration.isPressed ? 0.22 : (isHovered ? 0.16 : 0.10)),
@@ -763,11 +758,10 @@ private struct SoftButtonBody: View {
             .offset(y: isHovered && !configuration.isPressed && !reduceMotion ? -1 : 0)
             .opacity(isEnabled ? 1 : 0.82)
             .contentShape(Capsule())
-            .focusable(isEnabled)
-            .focused($isFocused)
+            .focusEffectDisabled()
             .onHover { isHovered = isEnabled && $0 }
             .onChange(of: isEnabled) { _, enabled in
-                if !enabled { isHovered = false; isFocused = false }
+                if !enabled { isHovered = false }
             }
             .animation(GeraldineMotion.animation(.quick, reduceMotion: reduceMotion), value: configuration.isPressed)
             .animation(GeraldineMotion.animation(.quick, reduceMotion: reduceMotion), value: isHovered)
@@ -788,15 +782,15 @@ private struct QuietButtonBody: View {
     let tint: Color
 
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.isFocused) private var isFocused
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovered = false
-    @FocusState private var isFocused: Bool
 
     var body: some View {
         configuration.label
             .font(.rounded(13, .medium))
             .padding(.horizontal, 10)
-            .frame(minHeight: Theme.Layout.minimumHitArea)
+            .frame(minWidth: Theme.Layout.minimumHitArea, minHeight: Theme.Layout.minimumHitArea)
             .foregroundStyle(
                 isEnabled
                     ? (isHovered || isFocused ? tint : Color.secondary)
@@ -813,11 +807,10 @@ private struct QuietButtonBody: View {
             .scaleEffect(configuration.isPressed && !reduceMotion ? GeraldineMotion.pressScale : 1)
             .opacity(isEnabled ? 1 : 0.82)
             .contentShape(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
-            .focusable(isEnabled)
-            .focused($isFocused)
+            .focusEffectDisabled()
             .onHover { isHovered = isEnabled && $0 }
             .onChange(of: isEnabled) { _, enabled in
-                if !enabled { isHovered = false; isFocused = false }
+                if !enabled { isHovered = false }
             }
             .animation(GeraldineMotion.animation(.quick, reduceMotion: reduceMotion), value: configuration.isPressed)
             .animation(GeraldineMotion.animation(.quick, reduceMotion: reduceMotion), value: isHovered)

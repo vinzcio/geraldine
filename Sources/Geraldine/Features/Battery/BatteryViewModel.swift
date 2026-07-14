@@ -14,6 +14,7 @@ final class BatteryViewModel: ObservableObject {
     private var historyTask: Task<Void, Never>?
     private var consumerTask: Task<Void, Never>?
     private var lifecycleID = UUID()
+    private var lastHistoryLoad: Date?
 
     func start() {
         detailTimer?.invalidate()
@@ -24,7 +25,10 @@ final class BatteryViewModel: ObservableObject {
         sampleConsumers()
 
         let dt = Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.loadDetail() }
+            Task { @MainActor in
+                self?.loadDetail()
+                self?.reloadHistoryIfStale()
+            }
         }
         dt.tolerance = 4
         detailTimer = dt
@@ -65,8 +69,17 @@ final class BatteryViewModel: ObservableObject {
                   self.lifecycleID == lifecycleID else { return }
             self.history = h
             self.loadedHistory = true
+            self.lastHistoryLoad = Date()
             self.historyTask = nil
         }
+    }
+
+    /// pmset history is a point-in-time snapshot; without periodic reloads the chart
+    /// bridges a flat line from the last sample to now once the app has been open a
+    /// while. `loadedHistory` stays set, so only the very first fetch shows a spinner.
+    private func reloadHistoryIfStale() {
+        guard let lastHistoryLoad, Date().timeIntervalSince(lastHistoryLoad) >= 300 else { return }
+        loadHistory()
     }
 
     /// `top -l 2` blocks for ~2s, so guard against overlapping samples.

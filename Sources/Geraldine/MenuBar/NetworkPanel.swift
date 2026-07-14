@@ -159,6 +159,7 @@ private struct DeviceRow: View {
                         .frame(width: 16, height: 16)
                     }
                     .buttonStyle(.quiet(identityTint))
+                    .minimumHitArea()
                     .disabled(ejecting)
                     .help(ejecting ? "Ejecting \(device.name)" : "Eject \(device.name)")
                     .accessibilityLabel(ejecting ? "Ejecting \(device.name)" : "Eject \(device.name)")

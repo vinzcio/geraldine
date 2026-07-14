@@ -37,7 +37,9 @@ struct BrewCommandFeedback: Equatable {
 
 @MainActor
 final class UpdaterViewModel: ObservableObject {
-    @Published var loading = false
+    /// Starts true: the view checks on appear, so the first frame should read
+    /// as "checking" rather than flashing the idle state for a beat.
+    @Published var loading = true
     @Published var brewPath: String?
     @Published var outdated: [OutdatedApp] = []
     @Published var upgrading: Set<String> = []
@@ -124,23 +126,20 @@ final class UpdaterViewModel: ObservableObject {
         }
 
         let result = Shell.run(brew, ["outdated", "--cask", "--json=v2"])
-        guard result.status == 0 else {
-            return UpdaterCheckReport(
-                brewPath: brew,
-                outdated: [],
-                state: .failed(message: "Homebrew outdated check failed with exit code \(result.status).",
-                               output: result.output.trimmingCharacters(in: .whitespacesAndNewlines),
-                               checkedAt: result.finishedAt)
-            )
-        }
 
-        guard let data = result.output.data(using: .utf8),
+        // Parse stdout only: brew routes progress and warnings to stderr, and
+        // some versions exit non-zero simply because updates exist. Valid JSON
+        // is authoritative; the exit code only matters when there is none.
+        guard let data = result.stdout.data(using: .utf8),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let casks = root["casks"] as? [[String: Any]] else {
+            let message = result.status == 0
+                ? "Homebrew returned output Geraldine could not read."
+                : "Homebrew outdated check failed with exit code \(result.status)."
             return UpdaterCheckReport(
                 brewPath: brew,
                 outdated: [],
-                state: .failed(message: "Homebrew returned output Geraldine could not read.",
+                state: .failed(message: message,
                                output: result.output.trimmingCharacters(in: .whitespacesAndNewlines),
                                checkedAt: result.finishedAt)
             )

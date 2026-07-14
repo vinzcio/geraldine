@@ -27,7 +27,7 @@ struct PowerToolsView: View {
             finderCard
             utilitiesCard
         }
-        .alert("Empty Trash permanently?", isPresented: $showEmptyTrashConfirmation) {
+        .alert("Empty Trash Permanently?", isPresented: $showEmptyTrashConfirmation) {
             Button("Empty Trash", role: .destructive) {
                 perform(section: .utilities, actionID: "emptyTrash") {
                     powerTools.emptyTrash()
@@ -93,7 +93,7 @@ struct PowerToolsView: View {
             result: result(for: .dock),
             cancellationMessage: cancellation(for: .dock)
         ) {
-            Toggle("Enable Dock click actions",
+            Toggle("Enable Dock Click Actions",
                    isOn: tracking($powerTools.dockActionsEnabled, section: .dock))
                 .toggleStyle(.switch)
 
@@ -122,10 +122,10 @@ struct PowerToolsView: View {
                 }
             }
 
-            Toggle("Shift-click a running Dock app opens a new window",
+            Toggle("Shift-Click A Running Dock App Opens A New Window",
                    isOn: tracking($powerTools.shiftClickNewWindow, section: .dock))
                 .toggleStyle(.switch)
-            Toggle("Unminimize windows when an app is activated",
+            Toggle("Unminimize Windows When An App Is Activated",
                    isOn: tracking($powerTools.unminimizeOnActivation, section: .dock))
                 .toggleStyle(.switch)
         }
@@ -159,10 +159,10 @@ struct PowerToolsView: View {
 
             Divider()
 
-            Toggle("Green traffic-light fills/restores the window",
+            Toggle("Green Traffic-Light Fills Or Restores The Window",
                    isOn: tracking($powerTools.greenButtonFillsWindow, section: .windows))
                 .toggleStyle(.switch)
-            Toggle("Yellow traffic-light hides the app",
+            Toggle("Yellow Traffic-Light Hides The App",
                    isOn: tracking($powerTools.yellowButtonHidesApp, section: .windows))
                 .toggleStyle(.switch)
             Text("Hold Option while clicking a traffic-light button to let macOS handle the original action.")
@@ -181,10 +181,10 @@ struct PowerToolsView: View {
             result: result(for: .safety),
             cancellationMessage: cancellation(for: .safety)
         ) {
-            Toggle("Require a quick second press for Command-Q",
+            Toggle("Require A Quick Second Press For Command-Q",
                    isOn: tracking($powerTools.commandQDoubleTap, section: .safety))
                 .toggleStyle(.switch)
-            Toggle("Require a quick second press for Command-W",
+            Toggle("Require A Quick Second Press For Command-W",
                    isOn: tracking($powerTools.commandWDoubleTap, section: .safety))
                 .toggleStyle(.switch)
             Text("The first press is swallowed with a short beep; pressing the same shortcut again within about a second allows it through.")
@@ -204,13 +204,13 @@ struct PowerToolsView: View {
             cancellationMessage: cancellation(for: .finder)
         ) {
             VStack(alignment: .leading, spacing: Theme.Spacing.sm) {
-                Toggle("Return opens the Finder selection",
+                Toggle("Return Opens The Finder Selection",
                        isOn: tracking($powerTools.finderReturnOpens, section: .finder))
                     .toggleStyle(.switch)
-                Toggle("Command-X / Command-V cuts and moves Finder items",
+                Toggle("Command-X / Command-V Cuts And Moves Finder Items",
                        isOn: tracking($powerTools.finderCutPaste, section: .finder))
                     .toggleStyle(.switch)
-                Toggle("Option-N creates a new text file in Finder",
+                Toggle("Option-N Creates A New Text File In Finder",
                        isOn: tracking($powerTools.finderOptionNNewFile, section: .finder))
                     .toggleStyle(.switch)
             }

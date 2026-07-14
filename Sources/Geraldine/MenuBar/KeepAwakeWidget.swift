@@ -72,7 +72,6 @@ struct KeepAwakeWidget: View {
             HStack(spacing: 6) {
                 durationPill
                 actionButton(compact: true)
-                idleActivityMenuPill
                 Spacer(minLength: 0)
             }
             if let lastError { errorLabel(lastError, lineLimit: 2) }
@@ -87,14 +86,13 @@ struct KeepAwakeWidget: View {
             remainingHeadline(size: 21)
             if hasEnd { StatBar(fraction: progress, tint: Theme.Chart.red, height: 4) }
             Spacer(minLength: 0)
+            // The idle-activity menu replaces the end-time line here (the
+            // countdown headline already carries the time): the small active
+            // tile has room for only two controls, and idle activity must stay
+            // reachable because toggling it affects the running session.
             HStack(spacing: 6) {
-                Text(secondaryStatus)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
-                Spacer(minLength: 4)
                 idleActivityMenuPill
+                Spacer(minLength: 4)
                 actionButton(compact: true)
             }
         }
@@ -117,7 +115,7 @@ struct KeepAwakeWidget: View {
 
     private var largeIdle: some View {
         VStack(alignment: .leading, spacing: 11) {
-            header(eyeSize: 44, title: "Keep Awake", subtitle: "Your Mac sleeps normally",
+            header(eyeSize: 44, title: "Keep Awake", subtitle: "Your Mac Sleeps Normally",
                    eyeIsSource: true)
             durationGrid
             idleActivityRow
@@ -167,7 +165,7 @@ struct KeepAwakeWidget: View {
                             .foregroundStyle(.secondary)
                     }
                 } else {
-                    Text("No time limit")
+                    Text("No Time Limit")
                         .font(.rounded(22, .semibold))
                         .foregroundStyle(countdownTint)
                 }
@@ -233,7 +231,7 @@ struct KeepAwakeWidget: View {
                     .foregroundStyle(.secondary)
             }
         } else {
-            Text("No time limit")
+            Text("No Time Limit")
                 .font(.rounded(size * 0.62, .semibold))
                 .foregroundStyle(Theme.bad)
         }
@@ -277,6 +275,8 @@ struct KeepAwakeWidget: View {
             Picker("Duration", selection: $keepAwake.defaultDuration) {
                 ForEach(KeepAwakeDuration.allCases) { Text($0.label).tag($0) }
             }
+            Divider()
+            idleActivityMenuItems
         } label: {
             HStack(spacing: 4) {
                 Text(keepAwake.defaultDuration.shortLabel)
@@ -296,7 +296,7 @@ struct KeepAwakeWidget: View {
         .fixedSize()
         .minimumHitArea()
         .pointingHandCursor()
-        .help("Choose how long to stay awake")
+        .help("Choose duration and idle activity")
     }
 
     private var idleActivityRow: some View {
@@ -346,17 +346,44 @@ struct KeepAwakeWidget: View {
         .accessibilityValue(keepAwake.idleActivityStatusLine)
     }
 
+    /// The idle-activity controls, shared by the small tile's duration menu and the large tile's
+    /// idle pill. A Stepper is inert inside an NSMenu-backed Menu, so the delay uses a Picker.
+    @ViewBuilder private var idleActivityMenuItems: some View {
+        Toggle("Enable Idle Activity", isOn: $keepAwake.simulateIdleActivity)
+        Picker("Start After", selection: $keepAwake.idleActivityDelayMinutes) {
+            ForEach(idleActivityDelayOptions, id: \.self) { minutes in
+                Text(idleActivityDelayMenuLabel(minutes)).tag(minutes)
+            }
+        }
+        if keepAwake.idleActivityNeedsAccessibility {
+            Button("Grant Accessibility") {
+                keepAwake.refreshIdleActivityAccess(prompt: true)
+            }
+        }
+    }
+
+    private static let idleActivityDelayPresets = [1, 2, 5, 10, 15, 30, 60, 120]
+
+    /// Presets, plus the current value when the large tile's stepper picked an off-preset delay,
+    /// so the menu always shows the active selection.
+    private var idleActivityDelayOptions: [Int] {
+        let current = keepAwake.idleActivityDelayMinutes
+        guard !Self.idleActivityDelayPresets.contains(current) else { return Self.idleActivityDelayPresets }
+        return (Self.idleActivityDelayPresets + [current]).sorted()
+    }
+
+    private func idleActivityDelayMenuLabel(_ minutes: Int) -> String {
+        switch minutes {
+        case 1:   return "1 Minute"
+        case 60:  return "1 Hour"
+        case 120: return "2 Hours"
+        default:  return "\(minutes) Minutes"
+        }
+    }
+
     private var idleActivityMenuPill: some View {
         Menu {
-            Toggle("Enable Idle Activity", isOn: $keepAwake.simulateIdleActivity)
-            Stepper(value: $keepAwake.idleActivityDelayMinutes, in: 1...120, step: 1) {
-                Text("Start After \(keepAwake.idleActivityDelayLabel)")
-            }
-            if keepAwake.idleActivityNeedsAccessibility {
-                Button("Grant Accessibility") {
-                    keepAwake.refreshIdleActivityAccess(prompt: true)
-                }
-            }
+            idleActivityMenuItems
         } label: {
             HStack(spacing: 4) {
                 Image(systemName: "timer")
@@ -476,14 +503,9 @@ struct KeepAwakeWidget: View {
     }
 
     /// Sub-line shown while active: the pause reason if paused, otherwise the end time.
-    private var secondaryStatus: String {
-        if keepAwake.isPaused, let reason = keepAwake.pauseReason { return "Paused · \(reason)" }
-        return hasEnd ? keepAwake.endTimeLine : "No time limit"
-    }
-
     private var countdownDetail: String {
         if keepAwake.isPaused, let reason = keepAwake.pauseReason { return "Paused · \(reason)" }
-        return hasEnd ? keepAwake.endTimeLine : "Active until you stop it"
+        return hasEnd ? keepAwake.endTimeLine : "Active Until You Stop It"
     }
 
     private var countdownTint: Color {
@@ -492,7 +514,7 @@ struct KeepAwakeWidget: View {
     }
 
     private var startHint: String {
-        keepAwake.defaultDuration == .indefinitely ? "No time limit" : "For \(keepAwake.defaultDuration.label)"
+        keepAwake.defaultDuration == .indefinitely ? "No Time Limit" : "For \(keepAwake.defaultDuration.label)"
     }
 }
 

@@ -5,6 +5,7 @@ import SwiftUI
 /// Keep Awake behavior, previews, and build context stay in one place.
 struct SettingsView: View {
     @EnvironmentObject private var state: AppState
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         ZStack {
@@ -29,6 +30,7 @@ struct SettingsView: View {
                 }
                 PrimaryButton(title: "Open Settings", icon: "arrow.up.forward.app") {
                     state.open(.settings)
+                    dismiss()
                 }
             }
             .padding(Theme.Spacing.xxl)
@@ -73,6 +75,14 @@ struct AppSettingsView: View {
                     subtitle: "Controls Geraldine itself, not other apps that start with macOS."
                 )
                 LaunchAtLoginControl()
+            }
+
+            SettingsSectionCard(tier: .tinted(Theme.indigo)) {
+                SectionHeader(
+                    "Akko Keyboard",
+                    subtitle: "A local connection confirmation for the external keyboard on this Mac."
+                )
+                KeyboardTransportHUDControl()
             }
 
             SettingsSectionCard(tier: .tinted(Module.permissions.tint)) {
@@ -300,6 +310,30 @@ struct LaunchAtLoginControl: View {
         .onAppear {
             launchAtLogin = LaunchAtLogin.isEnabled
             onChange?(launchAtLogin)
+        }
+    }
+}
+
+private struct KeyboardTransportHUDControl: View {
+    @AppStorage(KeyboardTransportHUDPreferences.enabledKey) private var isEnabled = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
+            HStack(spacing: Theme.Spacing.sm) {
+                Toggle("Show Transport Changes", isOn: $isEnabled)
+                    .tint(Theme.accent)
+                Spacer(minLength: 0)
+                Button("Preview HUD") {
+                    NotificationCenter.default.post(name: .keyboardTransportHUDPreview, object: nil)
+                }
+                .buttonStyle(.soft(Theme.indigo))
+                .disabled(!isEnabled)
+            }
+
+            Text("Shows Wired USB, 2.4 GHz, or Bluetooth at the top of the screen when the Akko PC98B Plus+ changes transport. This preference is stored only on this Mac.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }

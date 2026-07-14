@@ -59,6 +59,7 @@ struct WorkflowMark: View {
                 IconBadge(icon: state == .idle ? idleIcon : state.icon,
                           tint: resolvedTint,
                           size: size)
+                    .id(state)
                     .transition(.opacity.combined(with: .scale(scale: GeraldineMotion.iconSwapScale)))
             }
         }
@@ -164,6 +165,7 @@ private struct OutcomeWashModifier: ViewModifier {
                     Image(systemName: tone.icon)
                         .foregroundStyle(tone.tint)
                         .padding(.trailing, Theme.Spacing.sm)
+                        .allowsHitTesting(false)
                         .transition(GeraldineMotion.stateTransition(
                             reduceMotion: reduceMotion || !surfaceActive
                         ))
@@ -214,6 +216,7 @@ struct StatefulActionButton: View {
                         tint: resolvedTint,
                         size: 13
                     )
+                    .frame(width: 16, height: 16)
                 }
                 Text(title)
                     .frame(minWidth: 66, alignment: .leading)
@@ -262,33 +265,35 @@ enum LedgerStatus: Equatable {
 
 /// Shared row language for native Lists. The List keeps keyboard/VoiceOver
 /// semantics and virtualization; this view supplies consistent local hierarchy.
-struct CareLedgerRow<Accessory: View>: View {
-    let icon: String
+/// The leading identity defaults to a `ModuleGlyph`; rows that represent real
+/// apps or files can supply their own (app icon plate, monogram, thumbnail).
+struct CareLedgerRow<Leading: View, Accessory: View>: View {
     let tint: Color
     let title: String
     let detail: String?
     let status: LedgerStatus
+    @ViewBuilder let leading: Leading
     @ViewBuilder let accessory: Accessory
 
     init(
-        icon: String,
         tint: Color,
         title: String,
         detail: String? = nil,
         status: LedgerStatus = .neutral,
+        @ViewBuilder leading: () -> Leading,
         @ViewBuilder accessory: () -> Accessory
     ) {
-        self.icon = icon
         self.tint = tint
         self.title = title
         self.detail = detail
         self.status = status
+        self.leading = leading()
         self.accessory = accessory()
     }
 
     var body: some View {
         HStack(spacing: Theme.Spacing.sm) {
-            ModuleGlyph(systemImage: icon, tint: tint, size: 34)
+            leading
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).font(.rounded(13, .semibold))
                 if let detail {
@@ -309,7 +314,24 @@ struct CareLedgerRow<Accessory: View>: View {
     }
 }
 
-extension CareLedgerRow where Accessory == EmptyView {
+extension CareLedgerRow where Leading == ModuleGlyph {
+    init(
+        icon: String,
+        tint: Color,
+        title: String,
+        detail: String? = nil,
+        status: LedgerStatus = .neutral,
+        @ViewBuilder accessory: () -> Accessory
+    ) {
+        self.init(tint: tint, title: title, detail: detail, status: status) {
+            ModuleGlyph(systemImage: icon, tint: tint, size: 34)
+        } accessory: {
+            accessory()
+        }
+    }
+}
+
+extension CareLedgerRow where Leading == ModuleGlyph, Accessory == EmptyView {
     init(
         icon: String,
         tint: Color,

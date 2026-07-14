@@ -15,7 +15,9 @@ struct AppEntry: Identifiable, Hashable {
 @MainActor
 final class UninstallerViewModel: ObservableObject {
     @Published var apps: [AppEntry] = []
-    @Published var loading = false
+    /// Starts true: the view loads on appear, so the first frame reads as
+    /// loading rather than flashing the empty state.
+    @Published var loading = true
     @Published var query = ""
     @Published var diagnostics: ScanDiagnostics = .empty
 

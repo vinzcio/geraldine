@@ -695,14 +695,14 @@ private struct CollectingHistoryState: View {
         VStack(spacing: 4) {
             Image(systemName: "chart.line.uptrend.xyaxis")
                 .font(.system(size: 13, weight: .semibold))
-            Text("Collecting history…")
+            Text("Collecting History…")
                 .font(.caption2.weight(.medium))
         }
         .foregroundStyle(tint.opacity(0.75))
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: Theme.Radius.badge, style: .continuous))
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Collecting history")
+        .accessibilityLabel("Collecting History")
     }
 }
 

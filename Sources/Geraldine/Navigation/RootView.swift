@@ -6,7 +6,15 @@ struct RootView: View {
 
     var body: some View {
         NavigationSplitView {
-            Sidebar(selection: $state.selection)
+            // Swallow nil writes: clicking empty sidebar space deselects the
+            // List, which would drop the highlight while a module stays open.
+            Sidebar(selection: Binding(
+                get: { state.selection },
+                set: { newValue in
+                    guard let newValue else { return }
+                    state.selection = newValue
+                }
+            ))
                 .navigationSplitViewColumnWidth(
                     min: Theme.Layout.sidebarMinWidth,
                     ideal: Theme.Layout.sidebarIdealWidth,
@@ -30,9 +38,14 @@ struct RootView: View {
 
 struct Sidebar: View {
     @Binding var selection: Module?
-    @EnvironmentObject var monitor: SystemMonitor
 
     var body: some View {
+        // The List stays the column root so NavigationSplitView bounds it and
+        // its scrolling works; wrapping it in a VStack/GeometryReader collapses
+        // (the sidebar column proposes no definite height to a wrapper) and a
+        // bottom safeAreaInset is silently dropped on a sidebar List — both
+        // routes leave the disk footer invisible. So the footer rides along as
+        // the List's last row instead of a pinned strip.
         List(selection: $selection) {
             BrandHeader()
                 .listRowSeparator(.hidden)
@@ -47,11 +60,16 @@ struct Sidebar: View {
                     }
                 }
             }
+
+            SidebarFooter()
+                .listRowSeparator(.hidden)
+                .listRowInsets(EdgeInsets(top: 12, leading: 6, bottom: 6, trailing: 6))
+                .listRowBackground(Color.clear)
+                .selectionDisabled()
         }
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
         .background(Theme.sidebar)
-        .safeAreaInset(edge: .bottom) { SidebarFooter() }
     }
 }
 
@@ -120,7 +138,7 @@ private struct SidebarFooter: View {
         HStack(spacing: 10) {
             Image(systemName: "internaldrive")
                 .foregroundStyle(.secondary)
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 3) {
                 AnimatedNumberText("\(Fmt.size(max(0, monitor.diskTotal - monitor.diskUsed))) Free",
                                    value: max(0, monitor.diskTotal - monitor.diskUsed))
                     .font(.caption.weight(.medium))
@@ -128,14 +146,23 @@ private struct SidebarFooter: View {
                         tint: Theme.Chart.status(for: monitor.diskFraction), height: 5)
             }
         }
-        .padding(.horizontal, 14)
+        .padding(.horizontal, 12)
         .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background {
-            Rectangle()
+            RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
                 .fill(Theme.surfaceBase)
-                .overlay(Theme.status(for: monitor.diskFraction).opacity(acknowledgement ? 0.13 : 0))
+                .overlay {
+                    RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
+                        .fill(Theme.status(for: monitor.diskFraction).opacity(acknowledgement ? 0.14 : 0))
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
+                        .strokeBorder(Theme.separator, lineWidth: 1)
+                }
         }
-        .overlay(alignment: .top) { Rectangle().fill(Theme.separator).frame(height: 1) }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(Fmt.size(max(0, monitor.diskTotal - monitor.diskUsed))) free of \(Fmt.size(monitor.diskTotal))")
         .onChange(of: monitor.diskFraction) { oldValue, newValue in
             guard oldValue < 0.85, newValue >= 0.85 else { return }
             acknowledgement = true

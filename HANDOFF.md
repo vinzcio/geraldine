@@ -1,7 +1,15 @@
 # Geraldine — Menu Bar Work Handoff
 
-**Last updated:** 2026-06-21
-**Status:** Features built & installed. **One blocker remains: the menu-bar status item is intermittently not shown by macOS (see §6).**
+**Last updated:** 2026-07-14
+**Status:** Active development consolidated onto `main`; tests, structured review, installed-app verification, and repository cleanup are the closeout gates. The June menu-bar adoption investigation in §6 is retained as historical troubleshooting context, not an unverified current blocker.
+
+## Current closeout snapshot — 2026-07-14
+
+- Network throughput now has a persistent in-widget `B/s` ↔ `bps` toggle with adaptive B/K/M/G units across live values, chart statistics, inspection, help, and accessibility text. Negotiated link speed and the speed-test result remain Mbps.
+- A local Akko keyboard transport monitor and optional HUD distinguish wired USB, 2.4 GHz, Bluetooth, and disconnect transitions using IORegistry activity counters; Settings includes an enable toggle and preview.
+- Login Items now resolves friendly app ownership, shows real app icons or monograms, preserves stable identities across enabled/disabled locations, and guards asynchronous rescan ordering.
+- Shared workflow/navigation polish covers stable sidebar selection, explicit loading/empty states, accessible hit targets, and consistent status/outcome presentation across maintenance and cleanup surfaces.
+- Canonical verification remains `swift test --scratch-path /tmp/geraldine-closeout-tests` followed by `./build.sh install run`, signature/build-stamp checks, and live process-path verification against `/Applications/Geraldine.app`.
 
 This doc is a self-contained handoff so you (or a fresh Claude Code session) can resume without re-deriving everything. Read §6 first if you only have time for one section — that's the open problem.
 

@@ -2,6 +2,7 @@ import AppKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var menuBarController: MenuBarController?
+    private var keyboardTransportHUD: KeyboardTransportHUDCoordinator?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let state = AppState.shared
@@ -12,6 +13,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         state.devices.start()
         state.powerTools.start()
         menuBarController = MenuBarController(state: state)
+        keyboardTransportHUD = KeyboardTransportHUDCoordinator()
+        keyboardTransportHUD?.start()
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
@@ -42,6 +45,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        keyboardTransportHUD?.stop()
         AppState.shared.keepAwake.shutdown()
         AppState.shared.powerTools.stop()
     }

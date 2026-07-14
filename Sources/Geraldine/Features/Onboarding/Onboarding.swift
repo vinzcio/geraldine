@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 private enum OnboardingStage: Int, CaseIterable, Identifiable, Hashable {
@@ -71,6 +72,9 @@ struct WelcomeView: View {
         }
         .frame(width: 720, height: 680)
         .onAppear(perform: refreshReadiness)
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            refreshReadiness()
+        }
     }
 
     private var stageRail: some View {
@@ -144,13 +148,13 @@ struct WelcomeView: View {
                 OnboardingPrinciple(
                     icon: "waveform.path.ecg",
                     tint: Theme.accent2,
-                    title: "Quietly live",
+                    title: "Quietly Live",
                     detail: "CPU, memory, network, storage, power, and thermal signals stay readable without becoming a wall of gauges."
                 )
                 OnboardingPrinciple(
                     icon: "checkmark.shield.fill",
                     tint: Theme.good,
-                    title: "Review first",
+                    title: "Review First",
                     detail: "Files move to the Trash when possible, sensitive data stays opt-in, and destructive actions keep their native confirmation."
                 )
             }
@@ -168,7 +172,7 @@ struct WelcomeView: View {
 
             VStack(alignment: .leading, spacing: Theme.Spacing.md) {
                 SectionHeader(
-                    "Start with macOS",
+                    "Start With macOS",
                     subtitle: "This affects Geraldine only; other startup apps remain in Login Items."
                 )
                 LaunchAtLoginControl { launchAtLoginEnabled = $0 }
@@ -225,7 +229,7 @@ struct WelcomeView: View {
                 readinessRow(
                     icon: "location.fill",
                     tint: Theme.accent2,
-                    title: "Location for Wi-Fi name",
+                    title: "Location For Wi-Fi Name",
                     detail: "Optional. macOS requires Location only to reveal the current Wi-Fi network name; Geraldine does not store location.",
                     status: network.nameAccess == .authorized ? .ready : .optional
                 ) {
@@ -271,8 +275,8 @@ struct WelcomeView: View {
                     icon: "lock.shield.fill",
                     tint: state.hasFullDiskAccess && state.hasAccessibility ? Theme.good : Theme.warn,
                     title: state.hasFullDiskAccess && state.hasAccessibility
-                        ? "Core access ready"
-                        : "Core access needs setup",
+                        ? "Core Access Ready"
+                        : "Core Access Needs Setup",
                     detail: state.hasFullDiskAccess && state.hasAccessibility
                         ? "Optional access can be added later"
                         : "Finish required access from Permissions"

@@ -95,8 +95,8 @@ private struct NetworkThroughputStatsTable: View {
 
     private func header(_ text: String) -> some View {
         Text(text)
-            .font(.system(size: 8.5, weight: .semibold))
-            .foregroundStyle(.tertiary)
+            .font(.rounded(10, .semibold))
+            .foregroundStyle(.secondary)
             .frame(width: valueWidth, alignment: .trailing)
     }
 
@@ -105,11 +105,11 @@ private struct NetworkThroughputStatsTable: View {
         HStack(spacing: 6) {
             HStack(spacing: 4) {
                 Image(systemName: icon)
-                    .font(.system(size: 8.5, weight: .bold))
+                    .font(.rounded(10, .bold))
                     .foregroundStyle(iconTint)
                     .frame(width: 9)
                 Text(label)
-                    .font(.system(size: 9.5, weight: .semibold))
+                    .font(.rounded(10, .semibold))
                     .foregroundStyle(.secondary)
             }
             .frame(width: labelWidth, alignment: .leading)
@@ -124,13 +124,13 @@ private struct NetworkThroughputStatsTable: View {
         if let value {
             AnimatedNumberText(Fmt.compactRate(value, unit: rateUnit),
                                value: rateUnit.displayValue(for: value))
-                .font(.system(size: 10, weight: .semibold).monospacedDigit())
+                .font(.rounded(11, .semibold).monospacedDigit())
                 .foregroundStyle(tint)
                 .minimumScaleFactor(0.76)
                 .frame(width: valueWidth, alignment: .trailing)
         } else {
             Text("-")
-                .font(.system(size: 10, weight: .semibold).monospacedDigit())
+                .font(.rounded(11, .semibold).monospacedDigit())
                 .foregroundStyle(.tertiary)
                 .frame(width: valueWidth, alignment: .trailing)
         }

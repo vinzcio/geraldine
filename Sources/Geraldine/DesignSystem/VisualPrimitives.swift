@@ -89,9 +89,9 @@ private struct GeraldineSelectionButtonBody: View {
     let showsSelectionRail: Bool
 
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.isFocused) private var isFocused
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovered = false
-    @FocusState private var isFocused: Bool
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
@@ -113,11 +113,10 @@ private struct GeraldineSelectionButtonBody: View {
             .scaleEffect(configuration.isPressed && !reduceMotion ? GeraldineMotion.pressScale : 1)
             .opacity(isEnabled ? 1 : 0.46)
             .contentShape(shape)
-            .focusable(isEnabled)
-            .focused($isFocused)
+            .focusEffectDisabled()
             .onHover { isHovered = isEnabled && $0 }
             .onChange(of: isEnabled) { _, enabled in
-                if !enabled { isHovered = false; isFocused = false }
+                if !enabled { isHovered = false }
             }
             .animation(GeraldineMotion.animation(.quick, reduceMotion: reduceMotion),
                        value: configuration.isPressed)
@@ -173,6 +172,42 @@ struct ModuleGlyph: View {
             Image(systemName: systemImage)
                 .font(.system(size: size * 0.42, weight: .semibold))
                 .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(tint)
+        }
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
+    }
+}
+
+/// Letter plate for items without a resolvable app icon: the first character
+/// of the display name on the standard glyph plate, so ad-hoc helpers and
+/// daemons still get an identity instead of a generic symbol.
+struct MonogramPlate: View {
+    let text: String
+    let tint: Color
+    var size: CGFloat = 36
+
+    private var monogram: String {
+        text.first.map { String($0).uppercased() } ?? "?"
+    }
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: size * 0.26, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [Theme.decorativeFill(tint, strength: .strong),
+                                 Theme.decorativeFill(tint, strength: .subtle)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: size * 0.26, style: .continuous)
+                        .strokeBorder(tint.opacity(0.18), lineWidth: 1)
+                }
+            Text(monogram)
+                .font(.rounded(size * 0.44, .semibold))
                 .foregroundStyle(tint)
         }
         .frame(width: size, height: size)

@@ -24,6 +24,7 @@ struct CleanupView: View {
                     Button { rescan() } label: {
                         Label("Rescan", systemImage: "arrow.clockwise")
                     }
+                    .buttonStyle(.soft(Module.cleanup.tint))
                 }
             }
 

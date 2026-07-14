@@ -1,9 +1,9 @@
+import AppKit
 import SwiftUI
 
 struct LoginItemsView: View {
     @StateObject private var vm = LoginItemsViewModel()
     @State private var pendingRemoval: LaunchItem?
-    @State private var acceptedRemovalID: String?
     @State private var expandedLockedItems: Set<String> = []
 
     var body: some View {
@@ -23,30 +23,22 @@ struct LoginItemsView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .onAppear { if vm.items.isEmpty { vm.load() } }
+        // `presenting:` hands the item to the buttons directly. SwiftUI writes
+        // isPresented back to false *before* running the chosen button's
+        // action, so the buttons must not depend on reading `pendingRemoval`.
         .confirmationDialog("Remove login item?",
                             isPresented: Binding(
                                 get: { pendingRemoval != nil },
-                                set: { presented in
-                                    guard !presented else { return }
-                                    if let item = pendingRemoval, acceptedRemovalID != item.id {
-                                        vm.noteRemovalCancelled(item)
-                                    }
-                                    pendingRemoval = nil
-                                    acceptedRemovalID = nil
-                                }
-                            )) {
+                                set: { if !$0 { pendingRemoval = nil } }
+                            ),
+                            presenting: pendingRemoval) { item in
             Button("Move Login Item to Trash", role: .destructive) {
-                if let item = pendingRemoval {
-                    acceptedRemovalID = item.id
-                    vm.remove(item)
-                }
-                pendingRemoval = nil
+                vm.remove(item)
             }
             Button("Cancel", role: .cancel) {
-                if let item = pendingRemoval { vm.noteRemovalCancelled(item) }
-                pendingRemoval = nil
+                vm.noteRemovalCancelled(item)
             }
-        } message: {
+        } message: { _ in
             Text("This moves the selected LaunchAgent plist to the Trash. The app or helper will stop launching automatically at your next login.")
         }
     }
@@ -87,10 +79,7 @@ struct LoginItemsView: View {
                                     actionState: vm.actionState(for: item),
                                     explanationExpanded: expandedLockedItems.contains(item.id),
                                     toggle: { vm.toggle(item) },
-                                    remove: {
-                                        acceptedRemovalID = nil
-                                        pendingRemoval = item
-                                    },
+                                    remove: { pendingRemoval = item },
                                     toggleExplanation: { toggleExplanation(for: item) }
                                 )
                                 .listRowInsets(EdgeInsets(top: 3, leading: 14, bottom: 3, trailing: 14))
@@ -98,9 +87,15 @@ struct LoginItemsView: View {
                                 .listRowBackground(Color.clear)
                             }
                         } header: {
-                            Text(scope.rawValue)
-                                .font(.geraldineLabel)
-                                .foregroundStyle(.secondary)
+                            HStack(spacing: Theme.Spacing.xs) {
+                                Text(scope.rawValue)
+                                Spacer()
+                                Text("\(rows.count)")
+                                    .font(.caption2.monospacedDigit().weight(.semibold))
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .font(.geraldineLabel)
+                            .foregroundStyle(.secondary)
                         }
                     }
                 }
@@ -159,12 +154,13 @@ private struct LoginItemLedgerRow: View {
 
     var body: some View {
         CareLedgerRow(
-            icon: item.editable ? "power" : "lock.fill",
             tint: rowTint,
-            title: item.label,
+            title: item.displayName,
             detail: detail,
             status: ledgerStatus
         ) {
+            LaunchItemBadge(item: item, tint: rowTint)
+        } accessory: {
             accessory
         }
         .background {
@@ -182,20 +178,20 @@ private struct LoginItemLedgerRow: View {
             ProgressView()
                 .controlSize(.small)
                 .frame(width: 72, height: Theme.Layout.minimumHitArea)
-                .accessibilityLabel("Updating \(item.label)")
+                .accessibilityLabel("Updating \(item.displayName)")
         } else if item.editable {
             HStack(spacing: Theme.Spacing.xs) {
                 Toggle("", isOn: Binding(get: { item.enabled }, set: { _ in toggle() }))
                     .labelsHidden()
                     .toggleStyle(.switch)
                     .controlSize(.small)
-                    .help(item.enabled ? "Disable \(item.label)" : "Enable \(item.label)")
+                    .help(item.enabled ? "Disable \(item.displayName)" : "Enable \(item.displayName)")
                 Button(action: remove) {
                     Image(systemName: "trash")
                 }
                 .buttonStyle(.quiet(Theme.bad))
                 .help("Remove this startup item")
-                .accessibilityLabel("Remove \(item.label)")
+                .accessibilityLabel("Remove \(item.displayName)")
             }
         } else {
             Button(action: toggleExplanation) {
@@ -214,14 +210,12 @@ private struct LoginItemLedgerRow: View {
     }
 
     private var detail: String? {
-        if item.editable {
-            return item.program.isEmpty ? (item.enabled ? "Enabled for your account" : "Disabled by Geraldine") : item.program
+        if !item.editable && explanationExpanded {
+            return "Managed by macOS or an administrator. Geraldine can inspect this item but cannot change it."
         }
-        if explanationExpanded {
-            let program = item.program.isEmpty ? "" : " \(item.program)"
-            return "Managed by macOS or an administrator. Geraldine can inspect this item but cannot change it.\(program)"
-        }
-        return item.program.isEmpty ? "Managed by macOS" : item.program
+        if item.label != item.displayName { return item.label }
+        if !item.program.isEmpty { return item.program }
+        return item.enabled ? "Enabled For Your Account" : "Disabled By Geraldine"
     }
 
     private var rowTint: Color {
@@ -242,6 +236,28 @@ private struct LoginItemLedgerRow: View {
         case .failure: return Theme.bad.opacity(0.08)
         case .cancelled: return Color.secondary.opacity(0.06)
         case .working, nil: return isHovered ? rowTint.opacity(0.06) : Color.clear
+        }
+    }
+}
+
+/// The row identity: the owning app's real icon when the launch item points
+/// into an .app bundle, otherwise a tinted monogram of the display name.
+private struct LaunchItemBadge: View {
+    let item: LaunchItem
+    let tint: Color
+    var size: CGFloat = 36
+
+    var body: some View {
+        if let appURL = item.appURL {
+            AppIconPlate(size: size) {
+                Image(nsImage: NSWorkspace.shared.icon(forFile: appURL.path))
+                    .resizable()
+                    .scaledToFit()
+                    .padding(3)
+            }
+            .accessibilityHidden(true)
+        } else {
+            MonogramPlate(text: item.displayName, tint: tint, size: size)
         }
     }
 }

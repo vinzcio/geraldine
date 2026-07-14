@@ -224,6 +224,7 @@ struct KeepAwakeView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            .disabled(!keepAwake.simulateIdleActivity)
 
             if keepAwake.idleActivityNeedsAccessibility {
                 HStack(spacing: 8) {
@@ -275,6 +276,7 @@ struct KeepAwakeView: View {
                 Label("geraldine:activate?minutes=10", systemImage: "link")
                     .font(.callout.monospaced())
                     .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
                 HStack(spacing: 8) {
                     commandPill("activate")
                     commandPill("deactivate")
@@ -332,9 +334,9 @@ private struct KeepAwakeEyeButtonBody: View {
     let configuration: ButtonStyleConfiguration
 
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.isFocused) private var isFocused
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovered = false
-    @FocusState private var isFocused: Bool
 
     var body: some View {
         configuration.label
@@ -351,11 +353,10 @@ private struct KeepAwakeEyeButtonBody: View {
                     )
             }
             .opacity(isEnabled ? 1 : 0.45)
-            .focusable(isEnabled)
-            .focused($isFocused)
+            .focusEffectDisabled()
             .onHover { isHovered = isEnabled && $0 }
             .onChange(of: isEnabled) { _, enabled in
-                if !enabled { isHovered = false; isFocused = false }
+                if !enabled { isHovered = false }
             }
             .animation(GeraldineMotion.animation(.quick, reduceMotion: reduceMotion), value: isHovered)
             .animation(GeraldineMotion.animation(.quick, reduceMotion: reduceMotion), value: isFocused)
