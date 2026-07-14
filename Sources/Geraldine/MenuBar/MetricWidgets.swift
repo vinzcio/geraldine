@@ -42,9 +42,13 @@ private struct WidgetFullWidthKey: LayoutValueKey {
 /// same subview while neighboring tiles reflow between half and full-width rows.
 private struct WidgetPackingLayout: Layout {
     var spacing: CGFloat = 8
+    private let wideLayoutBreakpoint: CGFloat = 520
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         let width = proposal.width ?? 292
+        if width >= wideLayoutBreakpoint {
+            return wideSizeThatFits(width: width, subviews: subviews)
+        }
         let rows = measuredRows(width: width, subviews: subviews)
         let height = rows.reduce(0) { $0 + $1.height } + spacing * CGFloat(max(0, rows.count - 1))
         return CGSize(width: width, height: height)
@@ -52,6 +56,10 @@ private struct WidgetPackingLayout: Layout {
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize,
                        subviews: Subviews, cache: inout ()) {
+        if bounds.width >= wideLayoutBreakpoint {
+            placeWideSubviews(in: bounds, subviews: subviews)
+            return
+        }
         let rows = measuredRows(width: bounds.width, subviews: subviews)
         var y = bounds.minY
         for row in rows {
@@ -76,6 +84,72 @@ private struct WidgetPackingLayout: Layout {
     private struct Row {
         let cells: [Cell]
         let height: CGFloat
+    }
+
+    private func wideSizeThatFits(width: CGFloat, subviews: Subviews) -> CGSize {
+        let rows = measuredWideRows(width: width, subviews: subviews)
+        let height = rows.reduce(0) { $0 + $1.height }
+            + spacing * CGFloat(max(0, rows.count - 1))
+        return CGSize(width: width, height: height)
+    }
+
+    private func placeWideSubviews(in bounds: CGRect, subviews: Subviews) {
+        let rows = measuredWideRows(width: bounds.width, subviews: subviews)
+        var y = bounds.minY
+        for row in rows {
+            for cell in row.cells {
+                cell.subview.place(
+                    at: CGPoint(x: bounds.minX + cell.x, y: y),
+                    anchor: .topLeading,
+                    proposal: ProposedViewSize(width: cell.width, height: cell.height)
+                )
+            }
+            y += row.height + spacing
+        }
+    }
+
+    private struct WideCell {
+        let subview: LayoutSubview
+        let x: CGFloat
+        let width: CGFloat
+        let height: CGFloat
+    }
+
+    private struct WideRow {
+        let cells: [WideCell]
+        let height: CGFloat
+    }
+
+    /// Four tracks preserve the original small-tile density while letting rich widgets
+    /// share a row: small = one track, large/calendar = two tracks.
+    private func measuredWideRows(width: CGFloat, subviews: Subviews) -> [WideRow] {
+        let trackCount = 4
+        let trackWidth = max(0, (width - spacing * CGFloat(trackCount - 1)) / CGFloat(trackCount))
+        var rows: [WideRow] = []
+        var cells: [WideCell] = []
+        var usedTracks = 0
+
+        func appendRow() {
+            guard !cells.isEmpty else { return }
+            rows.append(WideRow(cells: cells, height: cells.map(\.height).max() ?? 0))
+            cells = []
+            usedTracks = 0
+        }
+
+        for subview in subviews {
+            let span = subview[WidgetFullWidthKey.self] ? 2 : 1
+            if usedTracks + span > trackCount { appendRow() }
+            let cellWidth = trackWidth * CGFloat(span) + spacing * CGFloat(span - 1)
+            let height = subview.sizeThatFits(
+                ProposedViewSize(width: cellWidth, height: nil)
+            ).height
+            let x = CGFloat(usedTracks) * (trackWidth + spacing)
+            cells.append(WideCell(subview: subview, x: x, width: cellWidth, height: height))
+            usedTracks += span
+            if usedTracks == trackCount { appendRow() }
+        }
+        appendRow()
+        return rows
     }
 
     private func measuredRows(width: CGFloat, subviews: Subviews) -> [Row] {
@@ -113,8 +187,8 @@ private struct WidgetPackingLayout: Layout {
 
 // MARK: - Grid
 
-/// Lays out the metric widgets like iOS Home Screen widgets: two small tiles per row,
-/// a large tile spanning the full width, in the user's chosen order.
+/// Uses the original iOS-style rows at compact widths. In the wider right-edge panel,
+/// four tracks let rich cards share rows while small cards keep their compact density.
 struct WidgetGrid: View {
     @EnvironmentObject var layout: WidgetLayoutStore
     @EnvironmentObject private var monitor: SystemMonitor
@@ -596,10 +670,12 @@ struct MetricWidget: View {
     @ViewBuilder private var standardSmall: some View {
         animatedValueText(size: 16, weight: .semibold)
             .foregroundStyle(kind == .temperature ? tint : .primary)
-        if kind == .battery || kind == .storage {
+        if kind == .battery {
             normalizedHistoryChart(window: MetricChartStyle.smallWindow,
                                    maximumPointCount: MetricChartStyle.smallMaxPoints)
                 .frame(height: 28)
+        } else if kind == .storage {
+            StatBar(fraction: fraction, tint: chartTint, height: 6)
         } else if kind != .temperature {
             StatBar(fraction: fraction, tint: chartTint, height: 5)
         }
@@ -612,15 +688,39 @@ struct MetricWidget: View {
         case .temperature: caption(monitor.thermal.available ? "CPU Die" : "Unavailable")
         case .cpu:         actionButton("Details") { state.open(.activity) }
         case .memory:      actionButton("Free Up", busy: freeing) { freeMemory() }
-        case .storage:     actionButton("Clean Up") { state.open(.cleanup) }
+        case .storage:
+            HStack {
+                caption("\(Fmt.percent(monitor.diskFraction)) Used",
+                        animationValue: monitor.diskFraction * 100)
+                Spacer(minLength: 4)
+                actionButton("Review") { state.open(.storage) }
+            }
         case .battery:     caption(batteryCaption, animationValue: batteryCaptionAnimationValue)
         case .network:     EmptyView()
         }
     }
 
     @ViewBuilder private var standardLarge: some View {
-        chart.frame(height: 66)
+        if kind == .storage {
+            storageCapacitySummary
+                .frame(height: 66)
+        } else {
+            chart.frame(height: 66)
+        }
         largeFooter
+    }
+
+    private var storageCapacitySummary: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            StatBar(fraction: monitor.diskFraction, tint: chartTint, height: 8)
+            HStack(spacing: 16) {
+                caption("\(Fmt.size(monitor.diskUsed)) Used", animationValue: monitor.diskUsed)
+                Spacer(minLength: 4)
+                caption("\(Fmt.percent(monitor.diskFraction)) Full",
+                        animationValue: monitor.diskFraction * 100)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder private var chart: some View {
@@ -645,8 +745,7 @@ struct MetricWidget: View {
             normalizedHistoryChart(window: MetricChartStyle.expandedWindow,
                                    maximumPointCount: MetricChartStyle.expandedMaxPoints)
         case .storage:
-            normalizedHistoryChart(window: MetricChartStyle.expandedWindow,
-                                   maximumPointCount: MetricChartStyle.expandedMaxPoints)
+            EmptyView()
         case .network:
             EmptyView()
         }
@@ -656,8 +755,6 @@ struct MetricWidget: View {
         switch kind {
         case .battery:
             return monitor.batteryHistory
-        case .storage:
-            return monitor.diskHistory
         default:
             return []
         }
@@ -710,10 +807,10 @@ struct MetricWidget: View {
             }
         case .storage:
             HStack {
-                caption("\(Fmt.size(monitor.diskUsed)) of \(Fmt.size(monitor.diskTotal))",
-                        animationValue: monitor.diskUsed)
+                caption("\(Fmt.size(monitor.diskTotal)) Total",
+                        animationValue: monitor.diskTotal)
                 Spacer()
-                actionButton("Clean Up") { state.open(.cleanup) }
+                actionButton("Open Storage") { state.open(.storage) }
             }
         case .battery:
             HStack {
@@ -985,7 +1082,7 @@ struct MetricWidget: View {
         case .temperature: return monitor.thermal.available ? "\(Int(monitor.thermal.cpu.rounded()))°C" : "—"
         case .cpu:         return Fmt.percent(monitor.cpuUsage)
         case .memory:      return Fmt.percent(monitor.memoryFraction)
-        case .storage:     return Fmt.size(max(0, monitor.diskTotal - monitor.diskUsed))
+        case .storage:     return "\(Fmt.size(max(0, monitor.diskTotal - monitor.diskUsed))) Free"
         case .battery:     return monitor.batteryLevel.map(Fmt.percent) ?? "AC"
         case .network:     return network.displayName
         }

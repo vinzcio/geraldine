@@ -16,8 +16,38 @@ enum MenuBarTimelineRendering {
     }
 }
 
+enum MenuBarPanelPlacement {
+    static let preferredWidth: CGFloat = 640
+    static let edgeInset: CGFloat = 10
+    static let minimumHeight: CGFloat = 360
+    static let initialHeight: CGFloat = 700
+
+    static func frame(in visibleFrame: NSRect, contentHeight: CGFloat) -> NSRect {
+        let width = min(preferredWidth, max(1, visibleFrame.width - edgeInset * 2))
+        let maximumHeight = max(1, visibleFrame.height - edgeInset * 2)
+        let height = min(max(contentHeight, minimumHeight), maximumHeight)
+        return NSRect(
+            x: visibleFrame.maxX - width - edgeInset,
+            y: visibleFrame.maxY - height - edgeInset,
+            width: width,
+            height: height
+        )
+    }
+}
+
+private final class MenuBarPanel: NSPanel {
+    var dismissAction: (() -> Void)?
+
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+
+    override func cancelOperation(_ sender: Any?) {
+        dismissAction?()
+    }
+}
+
 @MainActor
-final class MenuBarController: NSObject, NSPopoverDelegate {
+final class MenuBarController: NSObject, NSWindowDelegate {
     private let state: AppState
     private var statusItem: NSStatusItem?
     private var monitorSink: AnyCancellable?
@@ -55,13 +85,37 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     private var statusAnimFromImage: NSImage?
     private var statusAnimToImage: NSImage?
 
-    private lazy var popover: NSPopover = {
-        let popover = NSPopover()
-        popover.behavior = .transient
-        popover.contentSize = NSSize(width: 320, height: 480)
-        popover.delegate = self
-        popover.contentViewController = NSHostingController(
-            rootView: MenuBarView()
+    private var panelContentHeight = MenuBarPanelPlacement.initialHeight
+
+    private lazy var panel: MenuBarPanel = {
+        let frame = NSRect(
+            x: 0,
+            y: 0,
+            width: MenuBarPanelPlacement.preferredWidth,
+            height: MenuBarPanelPlacement.initialHeight
+        )
+        let panel = MenuBarPanel(
+            contentRect: frame,
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.level = .statusBar
+        panel.isFloatingPanel = true
+        panel.hidesOnDeactivate = false
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.isMovable = false
+        panel.isMovableByWindowBackground = false
+        panel.animationBehavior = .utilityWindow
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
+        panel.delegate = self
+        panel.dismissAction = { [weak self] in self?.hidePanel() }
+        panel.contentViewController = NSHostingController(
+            rootView: MenuBarView(onContentHeightChange: { [weak self] height in
+                self?.panelContentHeightDidChange(height)
+            })
                 .environmentObject(state)
                 .environmentObject(state.monitor)
                 .environmentObject(state.network)
@@ -70,7 +124,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
                 .environmentObject(state.keepAwake)
                 .environmentObject(state.calendar)
         )
-        return popover
+        return panel
     }()
 
     init(state: AppState) {
@@ -99,8 +153,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         if state.appShape.showsMenuBar {
             ensureStatusItem()
         } else {
-            state.setMenuBarPopoverVisible(false)
-            popover.close()
+            hidePanel()
             if let statusItem {
                 NSStatusBar.system.removeStatusItem(statusItem)
                 self.statusItem = nil
@@ -123,12 +176,21 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         guard let button = item.button else { return }
 
         button.target = self
-        button.action = #selector(togglePopover(_:))
+        button.action = #selector(togglePanel(_:))
         button.toolTip = "Geraldine"
         button.imageScaling = .scaleNone
         button.imagePosition = .imageOnly
 
         renderStatusItem()
+
+        #if DEBUG
+        if CommandLine.arguments.contains("--show-menu-panel") {
+            DispatchQueue.main.async { [weak self, weak button] in
+                guard let self, let button else { return }
+                self.showPanel(from: button)
+            }
+        }
+        #endif
 
         // Keep sampling/charts at the monitor's cadence, but only redraw the visible
         // menu-bar image about every two seconds. Layout changes stay immediate
@@ -141,29 +203,57 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
             .sink { [weak self] _ in Task { @MainActor in self?.renderStatusItem() } }
     }
 
-    @objc private func togglePopover(_ sender: NSStatusBarButton) {
-        if popover.isShown {
-            state.setMenuBarPopoverVisible(false)
-            popover.performClose(sender)
+    @objc private func togglePanel(_ sender: NSStatusBarButton) {
+        if panel.isVisible {
+            hidePanel()
         } else {
-            // Refresh the on-demand panels right before the popover appears.
-            state.network.refreshWiFi()
-            state.devices.refresh()
-            state.setMenuBarPopoverVisible(true)
-            popover.show(relativeTo: popoverAnchorRect(for: sender), of: sender, preferredEdge: .minY)
-            sender.highlight(true)
-            popover.contentViewController?.view.window?.makeKey()
-            if !popover.isShown { state.setMenuBarPopoverVisible(false) }
+            showPanel(from: sender)
         }
     }
 
-    func popoverDidShow(_ notification: Notification) {
+    private func showPanel(from sender: NSStatusBarButton) {
+        // Refresh the on-demand panels right before the menu-bar surface appears.
+        state.network.refreshWiFi()
+        state.devices.refresh()
         state.setMenuBarPopoverVisible(true)
+        positionPanel(on: sender.window?.screen ?? NSScreen.main)
+        sender.highlight(true)
+        panel.makeKeyAndOrderFront(nil)
+        if !panel.isVisible { hidePanel() }
     }
 
-    func popoverDidClose(_ notification: Notification) {
+    private func positionPanel(on screen: NSScreen?) {
+        guard let visibleFrame = screen?.visibleFrame ?? NSScreen.main?.visibleFrame else { return }
+        panel.setFrame(
+            MenuBarPanelPlacement.frame(in: visibleFrame, contentHeight: panelContentHeight),
+            display: true
+        )
+    }
+
+    private func panelContentHeightDidChange(_ height: CGFloat) {
+        guard height.isFinite, height > 0 else { return }
+        panelContentHeight = height
+        guard panel.isVisible else { return }
+        positionPanel(on: panel.screen ?? statusItem?.button?.window?.screen)
+    }
+
+    private func hidePanel() {
+        guard panel.isVisible || state.menuBarPopoverVisible else { return }
+        panel.orderOut(nil)
         state.setMenuBarPopoverVisible(false)
         statusItem?.button?.highlight(false)
+    }
+
+    func windowDidResignKey(_ notification: Notification) {
+        guard notification.object as? NSWindow === panel, panel.isVisible else { return }
+        // A click on the status item resigns the panel before AppKit delivers the
+        // button action. Defer one turn so togglePanel can close it instead of seeing
+        // an already-hidden panel and immediately reopening it. Ordinary outside
+        // clicks still dismiss once their event finishes.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.panel.isVisible, !self.panel.isKeyWindow else { return }
+            self.hidePanel()
+        }
     }
 
     // MARK: - Status item rendering
@@ -411,23 +501,6 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
             statusItem?.length = width
         }
         button.image = image
-    }
-
-    private func popoverAnchorRect(for button: NSStatusBarButton) -> NSRect {
-        let bounds = button.bounds
-        guard bounds.width > 1, bounds.height > 1 else {
-            return NSRect(x: 0, y: 0,
-                          width: max(statusItem?.length ?? 24, 24),
-                          height: NSStatusBar.system.thickness)
-        }
-
-        // Anchor to the rendered status image instead of the button's full bounds.
-        // On recent macOS releases AppKit can report an oversized status-button frame,
-        // which makes a popover appear far from the actual menu-bar item.
-        if let imageRect = button.cell?.imageRect(forBounds: bounds), imageRect.width > 1 {
-            return NSRect(x: imageRect.midX - 0.5, y: bounds.minY, width: 1, height: bounds.height)
-        }
-        return bounds
     }
 
     private func accessibilityValue(for plan: StatusPlan) -> String {

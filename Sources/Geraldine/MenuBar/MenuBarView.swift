@@ -3,11 +3,18 @@ import SwiftUI
 struct MenuBarView: View {
     @EnvironmentObject var state: AppState
     @EnvironmentObject var monitor: SystemMonitor
+    let onContentHeightChange: (CGFloat) -> Void
     @State private var freeingMemory = false
     @State private var contentHeight: CGFloat = 520
 
-    /// Leave room above the bottom of the screen so a tall popover scrolls instead of clipping.
-    private var maxHeight: CGFloat { (NSScreen.main?.visibleFrame.height ?? 860) - 24 }
+    init(onContentHeightChange: @escaping (CGFloat) -> Void = { _ in }) {
+        self.onContentHeightChange = onContentHeightChange
+    }
+
+    /// Leave a small breathing edge around the right-side panel on shorter displays.
+    private var maxHeight: CGFloat {
+        (NSScreen.main?.visibleFrame.height ?? 860) - MenuBarPanelPlacement.edgeInset * 2
+    }
 
     private var health: (label: String, color: Color) {
         if monitor.diskFraction > 0.9 || monitor.memoryFraction > 0.9 { return ("Needs Attention", Theme.warn) }
@@ -24,8 +31,21 @@ struct MenuBarView: View {
         }
         .scrollIndicators(.automatic)
         .scrollBounceBehavior(.basedOnSize)
-        .frame(width: 320, height: min(contentHeight, maxHeight))
-        .onPreferenceChange(MenuHeightKey.self) { contentHeight = $0 }
+        .frame(width: MenuBarPanelPlacement.preferredWidth,
+               height: min(contentHeight, maxHeight))
+        .adaptiveMaterialBackground(
+            .regular,
+            in: RoundedRectangle(cornerRadius: Theme.Radius.raised, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: Theme.Radius.raised, style: .continuous)
+                .strokeBorder(Theme.separator, lineWidth: 1)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.raised, style: .continuous))
+        .onPreferenceChange(MenuHeightKey.self) { height in
+            contentHeight = height
+            onContentHeightChange(min(height, maxHeight))
+        }
         .geraldineSurfaceActive(state.menuBarPopoverVisible)
     }
 
@@ -37,17 +57,21 @@ struct MenuBarView: View {
             PopoverRevealGroup(index: 1, isVisible: state.menuBarPopoverVisible) {
                 VStack(alignment: .leading, spacing: 12) {
                     WidgetGrid()
-                    DevicesCard()
+                    HStack(alignment: .top, spacing: 12) {
+                        DevicesCard()
+                            .frame(maxWidth: .infinity)
+                        recommendation
+                            .frame(maxWidth: .infinity)
+                    }
                 }
             }
             PopoverRevealGroup(index: 2, isVisible: state.menuBarPopoverVisible) {
                 VStack(alignment: .leading, spacing: 12) {
-                    recommendation
                     Divider()
-                    menuRow("Run Smart Care", "checkmark.seal.fill") { state.open(.smartCare) }
-                    HStack {
+                    HStack(spacing: 8) {
+                        menuRow("Run Smart Care", "checkmark.seal.fill") { state.open(.smartCare) }
                         menuRow("Settings", "gearshape") { state.open(.settings) }
-                        Spacer()
+                        Spacer(minLength: 4)
                         Button { NSApp.terminate(nil) } label: {
                             Label("Quit", systemImage: "power").font(.callout)
                         }
@@ -56,8 +80,8 @@ struct MenuBarView: View {
                 }
             }
         }
-        .padding(14)
-        .frame(width: 320)
+        .padding(16)
+        .frame(width: MenuBarPanelPlacement.preferredWidth)
     }
 
     private var header: some View {
