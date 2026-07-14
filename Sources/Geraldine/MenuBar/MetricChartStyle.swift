@@ -33,10 +33,13 @@ enum MetricChartStyle {
         }
     }
 
-    /// A rendered point may stand in for several raw samples on long windows. Allow
-    /// that expected spacing while still breaking genuinely missing periods.
+    /// Slow histories are sampled once per minute. Gap detection happens before
+    /// rendering reduction, so it should follow that source cadence rather than the
+    /// chart's eventual point spacing.
     static func gapThreshold(window: TimeInterval, maximumPointCount: Int) -> TimeInterval {
-        let renderedSpacing = window / Double(max(maximumPointCount - 1, 1))
-        return max(SystemMonitor.chartSampleGapThreshold, renderedSpacing * 2.5)
+        _ = window
+        _ = maximumPointCount
+        return max(SystemMonitor.chartSampleGapThreshold,
+                   SystemMonitor.longHistorySampleInterval * 2.5)
     }
 }

@@ -3,7 +3,9 @@ import SwiftUI
 @MainActor
 final class BatteryViewModel: ObservableObject {
     @Published var detail = BatteryDetail()
-    @Published var history: [ChargeSample] = []
+    @Published private(set) var history: [ChargeSample] = []
+    @Published private(set) var liveHistory: [ChargeSample] = []
+    @Published private(set) var chartHistory: [ChargeSample] = []
     @Published var consumers: [EnergyConsumer] = []
     @Published var loadedHistory = false
     @Published var sampling = false
@@ -68,15 +70,28 @@ final class BatteryViewModel: ObservableObject {
                   !Task.isCancelled,
                   self.lifecycleID == lifecycleID else { return }
             self.history = h
+            self.rebuildChartHistory()
             self.loadedHistory = true
             self.lastHistoryLoad = Date()
             self.historyTask = nil
         }
     }
 
-    /// pmset history is a point-in-time snapshot; without periodic reloads the chart
-    /// bridges a flat line from the last sample to now once the app has been open a
-    /// while. `loadedHistory` stays set, so only the very first fetch shows a spinner.
+    /// Keeps readings observed while this process is running separate from the pmset
+    /// snapshot. Persistence belongs to the monitor history store; this small buffer
+    /// only lets the standalone Battery page connect genuinely observed live points.
+    func recordLiveReading(level: Double, onAC: Bool, at date: Date = Date()) {
+        guard level.isFinite else { return }
+        let sample = ChargeSample(date: date, level: min(max(level, 0), 1), onAC: onAC)
+        let cutoff = date.addingTimeInterval(-HistoryRange.tenDays.seconds)
+        liveHistory = BatteryHistoryPolicy.merge(pmset: [], live: liveHistory + [sample])
+            .filter { $0.date >= cutoff }
+        rebuildChartHistory()
+    }
+
+    /// pmset history is a point-in-time snapshot. Reload periodically so new system
+    /// events arrive while this page remains open. `loadedHistory` stays set, so only
+    /// the first fetch shows a spinner.
     private func reloadHistoryIfStale() {
         guard let lastHistoryLoad, Date().timeIntervalSince(lastHistoryLoad) >= 300 else { return }
         loadHistory()
@@ -104,5 +119,9 @@ final class BatteryViewModel: ObservableObject {
         historyTask?.cancel(); historyTask = nil
         consumerTask?.cancel(); consumerTask = nil
         sampling = false
+    }
+
+    private func rebuildChartHistory() {
+        chartHistory = BatteryHistoryPolicy.merge(pmset: history, live: liveHistory)
     }
 }

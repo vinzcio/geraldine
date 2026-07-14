@@ -7,14 +7,28 @@ struct NetworkSample: Codable, Equatable, Identifiable, TimelineSample {
     var timestamp: TimeInterval
     var down: Double
     var up: Double
+    var sessionID: UUID?
 
     var id: TimeInterval { timestamp }
     var date: Date { Date(timeIntervalSinceReferenceDate: timestamp) }
 
-    init(timestamp: TimeInterval, down: Double, up: Double) {
+    init(timestamp: TimeInterval, down: Double, up: Double, sessionID: UUID? = nil) {
         self.timestamp = timestamp
         self.down = Self.rate(down)
         self.up = Self.rate(up)
+        self.sessionID = sessionID
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case timestamp, down, up, sessionID
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        timestamp = try container.decode(TimeInterval.self, forKey: .timestamp)
+        down = Self.rate(try container.decode(Double.self, forKey: .down))
+        up = Self.rate(try container.decode(Double.self, forKey: .up))
+        sessionID = try container.decodeIfPresent(UUID.self, forKey: .sessionID)
     }
 
     private static func rate(_ value: Double) -> Double {
@@ -27,6 +41,10 @@ struct NetworkSample: Codable, Equatable, Identifiable, TimelineSample {
 final class SystemMonitor: ObservableObject {
     nonisolated static let liveHistoryWindow: TimeInterval = 5 * 60
     nonisolated static let longHistoryWindow: TimeInterval = 24 * 60 * 60
+    nonisolated static let longHistorySampleInterval: TimeInterval = 60
+    nonisolated static let checkpointInterval: TimeInterval = 12
+    nonisolated static let maximumLiveHistorySamples = 600
+    nonisolated static let maximumLongHistorySamples = 1_500
     nonisolated static let chartSampleGapThreshold: TimeInterval = 4
 
     @Published var cpuUsage: Double = 0          // 0…1
@@ -57,19 +75,34 @@ final class SystemMonitor: ObservableObject {
     @Published var networkHistory: [NetworkSample] = []
     @Published var thermalHistory: [MetricSample] = []
     @Published var thermal: Thermal.Reading = .empty
-    private let networkHistoryKey = "geraldine.networkHistory.v1"
+    private let legacyNetworkHistoryKey = "geraldine.networkHistory.v1"
     private let defaults: UserDefaults
+    private let historyStore: any MonitorHistoryStoring
+    private let now: () -> Date
+    private let sessionID = UUID()
 
     private var timer: Timer?
     private var prevCPU: host_cpu_load_info?
     private var prevNet: (rx: UInt64, tx: UInt64, time: TimeInterval)?
     private var thermalInFlight = false
+    private var historyDirty = false
+    private var lastCheckpointAt: TimeInterval
+    private var legacyNetworkMigrationPending = false
 
-    init(defaults: UserDefaults = .standard) {
+    init(
+        defaults: UserDefaults = .standard,
+        historyStore: any MonitorHistoryStoring = MonitorHistoryStore(),
+        now: @escaping () -> Date = Date.init,
+        performInitialRefresh: Bool = true
+    ) {
         self.defaults = defaults
+        self.historyStore = historyStore
+        self.now = now
+        let launchTime = now().timeIntervalSinceReferenceDate
+        lastCheckpointAt = launchTime
         memoryTotal = Double(ProcessInfo.processInfo.physicalMemory)
-        networkHistory = Self.loadNetworkHistory(defaults: defaults, key: networkHistoryKey, now: Date())
-        refresh()
+        restoreHistory(now: launchTime)
+        if performInitialRefresh { refresh() }
     }
 
     func start(interval: TimeInterval = 1) {
@@ -83,12 +116,34 @@ final class SystemMonitor: ObservableObject {
 
     func stop() { timer?.invalidate(); timer = nil }
 
+    func flushHistory() {
+        guard historyDirty else { return }
+        let timestamp = now().timeIntervalSinceReferenceDate
+        lastCheckpointAt = timestamp
+        saveHistory(at: timestamp)
+    }
+
+    private func saveHistory(at timestamp: TimeInterval) {
+        do {
+            try historyStore.save(historySnapshot(savedAt: timestamp))
+            historyDirty = false
+            if legacyNetworkMigrationPending {
+                defaults.removeObject(forKey: legacyNetworkHistoryKey)
+                legacyNetworkMigrationPending = false
+            }
+        } catch {
+            // History persistence must never prevent monitoring or app termination.
+            historyDirty = true
+        }
+    }
+
     var memoryFraction: Double { memoryTotal > 0 ? memoryUsed / memoryTotal : 0 }
     var diskFraction: Double { diskTotal > 0 ? diskUsed / diskTotal : 0 }
 
     func refresh() {
-        let timestamp = Date().timeIntervalSinceReferenceDate
-        cpuUsage = sampleCPU()
+        let timestamp = now().timeIntervalSinceReferenceDate
+        let sampledCPU = sampleCPU()
+        if let sampledCPU { cpuUsage = sampledCPU }
         let mem = Self.sampleMemory()
         memoryUsed = mem.used
         if mem.total > 0 { memoryTotal = mem.total }
@@ -105,22 +160,33 @@ final class SystemMonitor: ObservableObject {
             netDown = networkSample.down; netUp = networkSample.up
         }
 
-        let batteryValue = batteryLevel ?? batteryHistory.last?.value ?? 1
-        Self.appendMetricSample(&cpuHistory, value: cpuUsage, timestamp: timestamp,
-                                retaining: Self.liveHistoryWindow)
-        Self.appendMetricSample(&memHistory, value: memoryFraction, timestamp: timestamp,
-                                retaining: Self.liveHistoryWindow)
-        Self.appendMetricSample(&batteryHistory, value: batteryValue, timestamp: timestamp,
-                                retaining: Self.longHistoryWindow)
-        Self.appendMetricSample(&diskHistory, value: diskFraction, timestamp: timestamp,
-                                retaining: Self.longHistoryWindow)
+        historyDirty = pruneHistories(now: timestamp) || historyDirty
+        if let sampledCPU {
+            historyDirty = Self.appendMetricSample(
+                &cpuHistory, value: sampledCPU, timestamp: timestamp,
+                retaining: Self.liveHistoryWindow, sessionID: sessionID
+            ) || historyDirty
+        }
+        historyDirty = Self.appendMetricSample(
+            &memHistory, value: memoryFraction, timestamp: timestamp,
+            retaining: Self.liveHistoryWindow, sessionID: sessionID
+        ) || historyDirty
+        historyDirty = Self.appendMetricSample(
+            &batteryHistory, value: hasBattery ? batteryLevel : nil, timestamp: timestamp,
+            retaining: Self.longHistoryWindow,
+            minimumInterval: Self.longHistorySampleInterval,
+            sessionID: sessionID
+        ) || historyDirty
+        historyDirty = Self.appendMetricSample(
+            &diskHistory, value: diskTotal > 0 ? diskFraction : nil, timestamp: timestamp,
+            retaining: Self.longHistoryWindow,
+            minimumInterval: Self.longHistorySampleInterval,
+            sessionID: sessionID
+        ) || historyDirty
         if let networkSample {
             appendNetworkSample(networkSample)
-        } else {
-            if pruneNetworkHistory(now: Date()) {
-                saveNetworkHistory()
-            }
         }
+        checkpointIfNeeded(now: timestamp)
 
         // Thermal sampling does ~130 synchronous IOKit/SMC round-trips (~70–100ms).
         // Running it inline blocks the main run loop once per second and starves the
@@ -140,19 +206,45 @@ final class SystemMonitor: ObservableObject {
         thermalInFlight = false
         thermal = reading
         if reading.available {
-            Self.appendMetricSample(&thermalHistory, value: reading.cpu,
-                                    timestamp: Date().timeIntervalSinceReferenceDate,
-                                    retaining: Self.liveHistoryWindow)
-        } else {
-            thermalHistory.removeAll()
+            let timestamp = now().timeIntervalSinceReferenceDate
+            historyDirty = Self.appendMetricSample(
+                &thermalHistory,
+                value: reading.cpu,
+                timestamp: timestamp,
+                retaining: Self.liveHistoryWindow,
+                sessionID: sessionID
+            ) || historyDirty
+            checkpointIfNeeded(now: timestamp)
         }
     }
 
-    private static func appendMetricSample(_ history: inout [MetricSample], value: Double,
-                                           timestamp: TimeInterval, retaining window: TimeInterval) {
-        history.append(MetricSample(timestamp: timestamp, value: value))
+    @discardableResult
+    nonisolated static func appendMetricSample(
+        _ history: inout [MetricSample],
+        value: Double?,
+        timestamp: TimeInterval,
+        retaining window: TimeInterval,
+        minimumInterval: TimeInterval = 0,
+        sessionID: UUID
+    ) -> Bool {
+        guard let value, value.isFinite, timestamp.isFinite else { return false }
         let cutoff = timestamp - window
+        let originalCount = history.count
         history.removeAll { $0.timestamp < cutoff }
+        if minimumInterval > 0,
+           let last = history.last,
+           last.sessionID == sessionID,
+           timestamp - last.timestamp < minimumInterval {
+            return history.count != originalCount
+        }
+        history.append(MetricSample(timestamp: timestamp, value: value, sessionID: sessionID))
+        let maximumCount = minimumInterval > 0
+            ? Self.maximumLongHistorySamples
+            : Self.maximumLiveHistorySamples
+        if history.count > maximumCount {
+            history.removeFirst(history.count - maximumCount)
+        }
+        return true
     }
 
     // MARK: - Uptime & load
@@ -181,7 +273,7 @@ final class SystemMonitor: ObservableObject {
 
     // MARK: - CPU
 
-    private func sampleCPU() -> Double {
+    private func sampleCPU() -> Double? {
         var info = host_cpu_load_info()
         var count = mach_msg_type_number_t(MemoryLayout<host_cpu_load_info>.stride / MemoryLayout<integer_t>.stride)
         let kr = withUnsafeMutablePointer(to: &info) { ptr in
@@ -189,16 +281,16 @@ final class SystemMonitor: ObservableObject {
                 host_statistics(mach_host_self(), HOST_CPU_LOAD_INFO, $0, &count)
             }
         }
-        guard kr == KERN_SUCCESS else { return cpuUsage }
+        guard kr == KERN_SUCCESS else { return nil }
         defer { prevCPU = info }
-        guard let p = prevCPU else { return 0 }
+        guard let p = prevCPU else { return nil }
         let user = Double(info.cpu_ticks.0 &- p.cpu_ticks.0)
         let system = Double(info.cpu_ticks.1 &- p.cpu_ticks.1)
         let idle = Double(info.cpu_ticks.2 &- p.cpu_ticks.2)
         let nice = Double(info.cpu_ticks.3 &- p.cpu_ticks.3)
         let busy = user + system + nice
         let total = busy + idle
-        return total > 0 ? max(0, min(1, busy / total)) : 0
+        return total > 0 ? max(0, min(1, busy / total)) : nil
     }
 
     // MARK: - Memory
@@ -330,51 +422,94 @@ final class SystemMonitor: ObservableObject {
             }
             ptr = p.pointee.ifa_next
         }
-        let now = Date().timeIntervalSinceReferenceDate
-        defer { prevNet = (rx, tx, now) }
-        guard let prev = prevNet, now > prev.time else { return nil }
-        let dt = now - prev.time
+        let timestamp = now().timeIntervalSinceReferenceDate
+        defer { prevNet = (rx, tx, timestamp) }
+        guard let prev = prevNet, timestamp > prev.time else { return nil }
+        let dt = timestamp - prev.time
         // Guard against counter resets / interface changes: if a cumulative counter
         // appears to decrease, report 0 rather than letting unsigned wraparound (&-)
         // produce a gigantic bogus rate.
         let down = rx >= prev.rx ? Double(rx - prev.rx) / dt : 0
         let up = tx >= prev.tx ? Double(tx - prev.tx) / dt : 0
-        return NetworkSample(timestamp: now, down: down, up: up)
+        return NetworkSample(timestamp: timestamp, down: down, up: up, sessionID: sessionID)
     }
 
     private func appendNetworkSample(_ sample: NetworkSample) {
         networkHistory.append(sample)
-        _ = pruneNetworkHistory(now: sample.date)
-        saveNetworkHistory()
+        if networkHistory.count > Self.maximumLiveHistorySamples {
+            networkHistory.removeFirst(networkHistory.count - Self.maximumLiveHistorySamples)
+        }
+        historyDirty = true
     }
 
-    @discardableResult
-    private func pruneNetworkHistory(now: Date) -> Bool {
-        let cutoff = now.timeIntervalSinceReferenceDate - Self.liveHistoryWindow
-        let originalCount = networkHistory.count
-        networkHistory.removeAll { $0.timestamp < cutoff }
-        return networkHistory.count != originalCount
+    private func pruneHistories(now timestamp: TimeInterval) -> Bool {
+        var changed = false
+        changed = Self.prune(&cpuHistory, cutoff: timestamp - Self.liveHistoryWindow) || changed
+        changed = Self.prune(&memHistory, cutoff: timestamp - Self.liveHistoryWindow) || changed
+        changed = Self.prune(&thermalHistory, cutoff: timestamp - Self.liveHistoryWindow) || changed
+        changed = Self.prune(&networkHistory, cutoff: timestamp - Self.liveHistoryWindow) || changed
+        changed = Self.prune(&batteryHistory, cutoff: timestamp - Self.longHistoryWindow) || changed
+        changed = Self.prune(&diskHistory, cutoff: timestamp - Self.longHistoryWindow) || changed
+        return changed
     }
 
-    private func saveNetworkHistory() {
-        if networkHistory.isEmpty {
-            defaults.removeObject(forKey: networkHistoryKey)
+    private static func prune<S: TimelineSample>(_ history: inout [S], cutoff: TimeInterval) -> Bool {
+        let originalCount = history.count
+        history.removeAll { $0.timestamp < cutoff }
+        return history.count != originalCount
+    }
+
+    func checkpointIfNeeded(now timestamp: TimeInterval) {
+        guard historyDirty, timestamp - lastCheckpointAt >= Self.checkpointInterval else { return }
+        // Advance the attempt clock even when the write fails. The history remains
+        // dirty, but a broken or temporarily unavailable disk cannot turn the
+        // one-second monitor cadence into one synchronous write attempt per tick.
+        lastCheckpointAt = timestamp
+        saveHistory(at: timestamp)
+    }
+
+    private func restoreHistory(now timestamp: TimeInterval) {
+        if let saved = historyStore.load() {
+            apply(saved.normalized(now: timestamp))
             return
         }
-        if let data = try? JSONEncoder().encode(networkHistory) {
-            defaults.set(data, forKey: networkHistoryKey)
+
+        guard let data = defaults.data(forKey: legacyNetworkHistoryKey),
+              let legacy = try? JSONDecoder().decode([NetworkSample].self, from: data) else {
+            return
+        }
+        var migrated = MonitorHistorySnapshot.empty(savedAt: timestamp)
+        migrated.network = legacy
+        migrated = migrated.normalized(now: timestamp)
+        apply(migrated)
+        legacyNetworkMigrationPending = true
+        do {
+            try historyStore.save(migrated)
+            defaults.removeObject(forKey: legacyNetworkHistoryKey)
+            legacyNetworkMigrationPending = false
+        } catch {
+            historyDirty = true
         }
     }
 
-    private static func loadNetworkHistory(defaults: UserDefaults, key: String, now: Date) -> [NetworkSample] {
-        guard let data = defaults.data(forKey: key),
-              let samples = try? JSONDecoder().decode([NetworkSample].self, from: data) else {
-            return []
-        }
+    private func apply(_ snapshot: MonitorHistorySnapshot) {
+        cpuHistory = snapshot.cpu
+        memHistory = snapshot.memory
+        batteryHistory = snapshot.battery
+        diskHistory = snapshot.disk
+        networkHistory = snapshot.network
+        thermalHistory = snapshot.thermal
+    }
 
-        let cutoff = now.timeIntervalSinceReferenceDate - liveHistoryWindow
-        return samples
-            .filter { $0.timestamp >= cutoff && $0.timestamp <= now.timeIntervalSinceReferenceDate }
-            .sorted { $0.timestamp < $1.timestamp }
+    private func historySnapshot(savedAt timestamp: TimeInterval) -> MonitorHistorySnapshot {
+        MonitorHistorySnapshot(
+            savedAt: timestamp,
+            cpu: cpuHistory,
+            memory: memHistory,
+            battery: batteryHistory,
+            disk: diskHistory,
+            network: networkHistory,
+            thermal: thermalHistory
+        ).normalized(now: timestamp)
     }
 }

@@ -5,12 +5,81 @@ import IOKit.ps
 // MARK: - Models
 
 /// A single battery-charge reading reconstructed from the system power log.
-struct ChargeSample: Identifiable, Sendable {
+struct ChargeSample: Equatable, Identifiable, Sendable {
     var date: Date
     var level: Double   // 0…1
     var onAC: Bool       // drawing from the adapter for the interval starting here
 
     var id: Date { date }
+}
+
+/// Rendering policy for the sparse, event-based readings produced by `pmset`.
+/// Percentage and power-source events can naturally be many minutes apart, so the
+/// threshold is deliberately more forgiving than Geraldine's one-second live charts.
+/// A longer interval usually represents sleep, shutdown, or unavailable log data and
+/// must remain visibly disconnected.
+enum BatteryHistoryPolicy {
+    static let maximumContinuousGap: TimeInterval = 90 * 60
+
+    /// Combines system-log and in-process readings in chronological order. Exact
+    /// timestamp collisions are deduplicated; a live reading wins because it reflects
+    /// the newer observation source. Within one source, the last supplied value wins.
+    static func merge(pmset: [ChargeSample], live: [ChargeSample]) -> [ChargeSample] {
+        struct Candidate {
+            let sample: ChargeSample
+            let sourcePriority: Int
+            let ordinal: Int
+        }
+
+        let pmsetCandidates = pmset.enumerated().map {
+            Candidate(sample: $0.element, sourcePriority: 0, ordinal: $0.offset)
+        }
+        let liveCandidates = live.enumerated().map {
+            Candidate(sample: $0.element, sourcePriority: 1, ordinal: $0.offset)
+        }
+        let sorted = (pmsetCandidates + liveCandidates).sorted { lhs, rhs in
+            if lhs.sample.date != rhs.sample.date { return lhs.sample.date < rhs.sample.date }
+            if lhs.sourcePriority != rhs.sourcePriority { return lhs.sourcePriority < rhs.sourcePriority }
+            return lhs.ordinal < rhs.ordinal
+        }
+
+        var merged: [ChargeSample] = []
+        for candidate in sorted {
+            if merged.last?.date == candidate.sample.date {
+                merged[merged.count - 1] = candidate.sample
+            } else {
+                merged.append(candidate.sample)
+            }
+        }
+        return merged
+    }
+
+    /// Linearly scans already normalized (sorted and deduplicated) input, returning
+    /// only visible samples and splitting intervals for which the source did not report
+    /// a reading. Normalization belongs at the data-owner boundary so hover and
+    /// accessibility inspection never repeat an O(n log n) sort.
+    static func segments(
+        normalizedSamples samples: [ChargeSample],
+        start: Date,
+        end: Date,
+        gapThreshold: TimeInterval = maximumContinuousGap
+    ) -> [[ChargeSample]] {
+        var result: [[ChargeSample]] = []
+        var current: [ChargeSample] = []
+        var previousDate: Date?
+        for sample in samples {
+            if sample.date < start { continue }
+            if sample.date > end { break }
+            if let previousDate, sample.date.timeIntervalSince(previousDate) > gapThreshold {
+                result.append(current)
+                current.removeAll(keepingCapacity: true)
+            }
+            current.append(sample)
+            previousDate = sample.date
+        }
+        if !current.isEmpty { result.append(current) }
+        return result
+    }
 }
 
 /// One app's energy impact, mirroring Activity Monitor's "Energy" tab.
@@ -86,7 +155,7 @@ enum BatteryInfo {
                                         level: min(1, max(0, Double(pct) / 100)),
                                         onAC: source.uppercased() == "AC"))
         }
-        return samples.sorted { $0.date < $1.date }
+        return BatteryHistoryPolicy.merge(pmset: samples, live: [])
     }
 
     private static let timeRegex = try? NSRegularExpression(

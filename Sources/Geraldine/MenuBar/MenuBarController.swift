@@ -3,6 +3,19 @@ import Combine
 import QuartzCore
 import SwiftUI
 
+enum MenuBarTimelineRendering {
+    static func segments<S: TimelineSample>(
+        samples: [S],
+        timeline: TimelineWindow,
+        gapThreshold: TimeInterval,
+        maximumPointCount: Int?
+    ) -> [[S]] {
+        timeline.segments(samples, gapThreshold: gapThreshold).map { segment in
+            timeline.downsample(segment, maximumCount: maximumPointCount)
+        }
+    }
+}
+
 @MainActor
 final class MenuBarController: NSObject, NSPopoverDelegate {
     private let state: AppState
@@ -13,6 +26,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     private var cancellables = Set<AnyCancellable>()
     private let menuBarRefreshInterval: RunLoop.SchedulerTimeType.Stride = .seconds(2)
     private let menuBarSparklineLimit = 60
+    private let menuBarMetricWindow: TimeInterval = 60
     private let statusItemHorizontalPadding: CGFloat = 8
     private let statusAnimationDuration: TimeInterval = 0.24
     private let statusCrossfadeDuration: TimeInterval = 0.14
@@ -159,17 +173,39 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     // approach used by menu-bar monitors — it sizes and displays reliably, where a
     // hosted custom view can fail to be adopted into the menu bar.
 
+    private struct StatusTimelineSample: TimelineSample {
+        var timestamp: TimeInterval
+        var value: Double
+        var sessionID: UUID?
+
+        init(_ sample: MetricSample) {
+            timestamp = sample.timestamp
+            value = sample.value
+            sessionID = sample.sessionID
+        }
+
+        init(_ sample: NetworkSample) {
+            timestamp = sample.timestamp
+            value = sample.down + sample.up
+            sessionID = sample.sessionID
+        }
+    }
+
     private struct StatusPlan {
         var kind: MetricKind
-        var series: [Double]?     // sparkline values (nil → use glyph)
-        var networkSamples: [NetworkSample]? = nil
+        var samples: [StatusTimelineSample]? = nil
+        var fallbackSeries: [Double]? = nil
+        var timelineDuration: TimeInterval = 60
+        var timelineMaximumCount: Int? = nil
         var glyph: String?        // SF Symbol name for slow metrics
         var label: String
         var widthSample: String   // widest value this metric can show; fixes the item width
         var color: NSColor        // the value (number) color
         var animationValue: Double?
         var gradient: [NSColor]? = nil   // vertical gradient for the sparkline; nil → derive from color
+        var areaGradient: [NSColor]? = nil
         var domain: ClosedRange<Double>? = nil
+        var zeroBasedDynamicDomain = false
         var valueColor: ((Double) -> NSColor)? = nil
     }
 
@@ -242,11 +278,28 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         switch state.layout.menuBarKind(hasBattery: m.hasBattery) {
         case .temperature:
             guard m.thermal.available else {
-                return StatusPlan(kind: .temperature, series: thermalUnavailableWaveform, glyph: nil,
-                                  label: "", widthSample: "", color: .secondaryLabelColor,
-                                  animationValue: nil, domain: 0...1)
+                let retainedSamples = m.thermalHistory.map(StatusTimelineSample.init)
+                return StatusPlan(
+                    kind: .temperature,
+                    samples: retainedSamples.isEmpty ? nil : retainedSamples,
+                    fallbackSeries: retainedSamples.isEmpty ? thermalUnavailableWaveform : nil,
+                    timelineDuration: menuBarMetricWindow,
+                    timelineMaximumCount: menuBarSparklineLimit,
+                    glyph: nil,
+                    label: "N/A",
+                    widthSample: "888°",
+                    color: .secondaryLabelColor,
+                    animationValue: nil,
+                    gradient: retainedSamples.isEmpty ? nil : Thermal.scaleColors.map { NSColor($0) },
+                    domain: retainedSamples.isEmpty ? 0...1 : Thermal.chartDomain,
+                    valueColor: retainedSamples.isEmpty ? nil : { NSColor(Thermal.chartColor($0)) }
+                )
             }
-            return StatusPlan(kind: .temperature, series: m.thermalHistory.map(\.value), glyph: nil,
+            return StatusPlan(kind: .temperature,
+                              samples: m.thermalHistory.map(StatusTimelineSample.init),
+                              timelineDuration: menuBarMetricWindow,
+                              timelineMaximumCount: menuBarSparklineLimit,
+                              glyph: nil,
                               label: "\(Int(m.thermal.cpu.rounded()))°", widthSample: "888°",
                               color: NSColor(Thermal.chartColor(m.thermal.cpu)),
                               animationValue: m.thermal.cpu,
@@ -254,32 +307,48 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
                               domain: Thermal.chartDomain,
                               valueColor: { NSColor(Thermal.chartColor($0)) })
         case .cpu:
-            return StatusPlan(kind: .cpu, series: m.cpuHistory.map(\.value), glyph: nil,
+            return StatusPlan(kind: .cpu,
+                              samples: m.cpuHistory.map(StatusTimelineSample.init),
+                              timelineDuration: menuBarMetricWindow,
+                              timelineMaximumCount: menuBarSparklineLimit,
+                              glyph: nil,
                               label: Fmt.percent(m.cpuUsage), widthSample: "100%",
                               color: NSColor(Theme.Chart.status(for: m.cpuUsage)),
                               animationValue: m.cpuUsage * 100,
                               gradient: MetricChartStyle.gradient(for: .cpu)?.map { NSColor($0) },
                               domain: MetricChartStyle.normalizedDomain)
         case .memory:
-            return StatusPlan(kind: .memory, series: m.memHistory.map(\.value), glyph: nil,
+            return StatusPlan(kind: .memory,
+                              samples: m.memHistory.map(StatusTimelineSample.init),
+                              timelineDuration: menuBarMetricWindow,
+                              timelineMaximumCount: menuBarSparklineLimit,
+                              glyph: nil,
                               label: Fmt.percent(m.memoryFraction), widthSample: "100%",
                               color: NSColor(Theme.Chart.status(for: m.memoryFraction)),
                               animationValue: m.memoryFraction * 100,
                               gradient: MetricChartStyle.gradient(for: .memory)?.map { NSColor($0) },
                               domain: MetricChartStyle.normalizedDomain)
         case .network:
-            return StatusPlan(kind: .network, series: nil, networkSamples: m.networkHistory, glyph: nil,
+            let color = NSColor(Theme.Chart.blue)
+            return StatusPlan(kind: .network,
+                              samples: m.networkHistory.map(StatusTimelineSample.init),
+                              timelineDuration: SystemMonitor.liveHistoryWindow,
+                              timelineMaximumCount: nil,
+                              glyph: nil,
                               label: "↓\(Fmt.fixedScaled(m.netDown))", widthSample: "↓8888.88M",
-                              color: NSColor(Theme.Chart.blue),
-                              animationValue: m.netDown)
+                              color: color,
+                              animationValue: m.netDown,
+                              gradient: [color.withAlphaComponent(0.68), color],
+                              areaGradient: [color.withAlphaComponent(0.24), color.withAlphaComponent(0.03)],
+                              zeroBasedDynamicDomain: true)
         case .battery:
-            return StatusPlan(kind: .battery, series: nil, glyph: batteryIcon, label: m.batteryLevel.map(Fmt.percent) ?? "AC",
+            return StatusPlan(kind: .battery, glyph: batteryIcon, label: m.batteryLevel.map(Fmt.percent) ?? "AC",
                               widthSample: "100%",
                               color: NSColor(Theme.Chart.batteryLevel(m.batteryLevel)),
                               animationValue: m.batteryLevel.map { $0 * 100 })
         case .storage:
             let free = max(0, m.diskTotal - m.diskUsed)
-            return StatusPlan(kind: .storage, series: nil, glyph: "internaldrive",
+            return StatusPlan(kind: .storage, glyph: "internaldrive",
                               label: Fmt.fixedScaled(max(0, m.diskTotal - m.diskUsed)), widthSample: "8888.88G",
                               color: NSColor(Theme.Chart.mint),
                               animationValue: free)
@@ -600,7 +669,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         let samplePrefixWidth = textWidth(sampleParts.prefix, attrs: attrs)
         let sampleSuffixWidth = textWidth(sampleParts.suffix, attrs: attrs)
         let valueWidth = samplePrefixWidth + runningNumberWidth + sampleSuffixWidth
-        let hasSparkline = plan.series != nil || plan.networkSamples != nil
+        let hasSparkline = plan.samples != nil || plan.fallbackSeries != nil
         let leadingWidth: CGFloat = hasSparkline ? 22 : (plan.glyph != nil ? 14 : 0)
         let gap: CGFloat = (leadingWidth > 0 && valueWidth > 0) ? 4 : 0
         let width = max(12, leadingWidth + gap + valueWidth)
@@ -646,10 +715,18 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     }
 
     private func drawStatusLeading(_ plan: StatusPlan, geometry: StatusGeometry) {
-        if let samples = plan.networkSamples {
-            drawNetworkSparkline(samples, in: NSRect(x: 0, y: 1, width: geometry.leadingWidth, height: geometry.height - 2),
-                                 baseColor: plan.color)
-        } else if let series = plan.series {
+        let rect = NSRect(x: 0, y: 1, width: geometry.leadingWidth, height: geometry.height - 2)
+        if let samples = plan.samples {
+            drawTimelineSparkline(samples, in: rect,
+                                  duration: plan.timelineDuration,
+                                  maximumCount: plan.timelineMaximumCount,
+                                  gradient: plan.gradient,
+                                  areaGradient: plan.areaGradient,
+                                  baseColor: plan.color,
+                                  domain: plan.domain,
+                                  zeroBasedDynamicDomain: plan.zeroBasedDynamicDomain,
+                                  valueColor: plan.valueColor)
+        } else if let series = plan.fallbackSeries {
             drawSparkline(trimmed(series), in: NSRect(x: 0, y: 1, width: geometry.leadingWidth, height: geometry.height - 2),
                           gradient: plan.gradient, baseColor: plan.color,
                           domain: plan.domain, valueColor: plan.valueColor)
@@ -858,33 +935,61 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         }
     }
 
-    private func drawNetworkSparkline(_ samples: [NetworkSample], in rect: NSRect, baseColor: NSColor) {
-        guard samples.count >= 2, let ctx = NSGraphicsContext.current?.cgContext else { return }
+    /// Draws every live status-item chart against elapsed time. Metric histories keep
+    /// their compact 60-second window; network keeps its existing five-minute window.
+    /// `TimelineWindow.segments` also honors monitor-session boundaries, so persisted
+    /// history never connects across an app restart even when the restart is quick.
+    private func drawTimelineSparkline(_ samples: [StatusTimelineSample], in rect: NSRect,
+                                       duration: TimeInterval, maximumCount: Int?,
+                                       gradient: [NSColor]?, areaGradient: [NSColor]?,
+                                       baseColor: NSColor, domain: ClosedRange<Double>?,
+                                       zeroBasedDynamicDomain: Bool,
+                                       valueColor: ((Double) -> NSColor)?) {
+        guard !samples.isEmpty, let ctx = NSGraphicsContext.current?.cgContext else { return }
 
-        let now = Date().timeIntervalSinceReferenceDate
-        let window = SystemMonitor.liveHistoryWindow
-        let start = now - window
-        let visible = samples.filter { $0.timestamp >= start && $0.timestamp <= now }
-        guard visible.count >= 2 else { return }
+        let timeline = TimelineWindow(end: Date().timeIntervalSinceReferenceDate, duration: duration)
+        let visible = timeline.visible(samples)
+        guard !visible.isEmpty else { return }
 
-        let maxValue = max(visible.map { $0.down + $0.up }.max() ?? 0, 1)
-        func point(_ sample: NetworkSample) -> CGPoint {
-            let x = min(max((sample.timestamp - start) / max(window, 0.001), 0), 1)
-            let y = min(max((sample.down + sample.up) / maxValue, 0), 1)
-            return CGPoint(x: rect.minX + rect.width * CGFloat(x),
-                           y: rect.minY + rect.height * CGFloat(y))
+        let dLo: Double
+        let dSpan: Double
+        if let domain {
+            dLo = domain.lowerBound
+            dSpan = max(domain.upperBound - domain.lowerBound, 0.0001)
+        } else if zeroBasedDynamicDomain {
+            dLo = 0
+            dSpan = max(visible.map(\.value).max() ?? 0, 1)
+        } else {
+            let lo = visible.map(\.value).min() ?? 0
+            let hi = visible.map(\.value).max() ?? 1
+            let pad = max((hi - lo) * 0.18, 0.0001)
+            dLo = lo - pad
+            dSpan = max((hi + pad) - dLo, 0.0001)
+        }
+
+        func point(_ sample: StatusTimelineSample) -> CGPoint {
+            let normalized = min(max((sample.value - dLo) / dSpan, 0), 1)
+            return CGPoint(x: rect.minX + rect.width * CGFloat(timeline.fraction(for: sample.timestamp)),
+                           y: rect.minY + rect.height * CGFloat(normalized))
         }
 
         let line = CGMutablePath()
         let area = CGMutablePath()
-        var current: [CGPoint] = []
-        var previous: NetworkSample?
+        let segments = MenuBarTimelineRendering.segments(
+            samples: visible,
+            timeline: timeline,
+            gapThreshold: SystemMonitor.chartSampleGapThreshold,
+            maximumPointCount: maximumCount
+        )
+        guard !segments.isEmpty else { return }
 
-        func appendCurrentSegment() {
-            guard current.count >= 2, let first = current.first, let last = current.last else { return }
+        let lineSegments = segments.filter { $0.count >= 2 }
+        for segment in lineSegments {
+            let points = segment.map(point)
+            guard let first = points.first, let last = points.last else { continue }
             line.move(to: first)
             area.move(to: CGPoint(x: first.x, y: rect.minY))
-            for point in current {
+            for point in points {
                 line.addLine(to: point)
                 area.addLine(to: point)
             }
@@ -892,19 +997,9 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
             area.closeSubpath()
         }
 
-        for sample in visible {
-            if let previous, sample.timestamp - previous.timestamp > SystemMonitor.chartSampleGapThreshold {
-                appendCurrentSegment()
-                current.removeAll(keepingCapacity: true)
-            }
-            current.append(point(sample))
-            previous = sample
-        }
-        appendCurrentSegment()
-        guard !line.isEmpty else { return }
-
-        let lineColors = [baseColor.withAlphaComponent(0.68), baseColor]
-        let areaColors = [baseColor.withAlphaComponent(0.24), baseColor.withAlphaComponent(0.03)]
+        let lineColors = gradient ?? [baseColor, baseColor]
+        let areaColors = areaGradient ?? gradient?.map { $0.withAlphaComponent(0.22) }
+            ?? [baseColor.withAlphaComponent(0.32), baseColor.withAlphaComponent(0.03)]
         let top = CGPoint(x: rect.midX, y: rect.maxY), bottom = CGPoint(x: rect.midX, y: rect.minY)
         let opts: CGGradientDrawingOptions = [.drawsBeforeStartLocation, .drawsAfterEndLocation]
 
@@ -913,13 +1008,38 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
             ctx.drawLinearGradient(g, start: top, end: bottom, options: opts)
             ctx.restoreGState()
         }
-        if let g = makeGradient(lineColors) {
+        if let valueColor {
+            ctx.saveGState()
+            ctx.setLineWidth(1.5); ctx.setLineCap(.round); ctx.setLineJoin(.round)
+            for segment in lineSegments {
+                for index in 1..<segment.count {
+                    let path = CGMutablePath()
+                    path.move(to: point(segment[index - 1]))
+                    path.addLine(to: point(segment[index]))
+                    ctx.addPath(path)
+                    ctx.setStrokeColor(valueColor(max(segment[index - 1].value, segment[index].value)).cgColor)
+                    ctx.strokePath()
+                }
+            }
+            ctx.restoreGState()
+        } else if let g = makeGradient(lineColors) {
             ctx.saveGState()
             ctx.addPath(line)
             ctx.setLineWidth(1.5); ctx.setLineCap(.round); ctx.setLineJoin(.round)
             ctx.replacePathWithStrokedPath(); ctx.clip()
             ctx.drawLinearGradient(g, start: top, end: bottom, options: opts)
             ctx.restoreGState()
+        }
+
+        // A fresh monitor session starts with one point. Keep that real observation
+        // visible as a dot while waiting for the next sample rather than silently
+        // presenting the previous session's line as the current one.
+        for segment in segments where segment.count == 1 {
+            let sample = segment[0]
+            let center = point(sample)
+            let dotColor = valueColor?(sample.value) ?? baseColor
+            ctx.setFillColor(dotColor.cgColor)
+            ctx.fillEllipse(in: CGRect(x: center.x - 1.5, y: center.y - 1.5, width: 3, height: 3))
         }
     }
 

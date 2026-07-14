@@ -4,18 +4,32 @@ import Foundation
 /// horizontal position represents elapsed time rather than the number of samples kept.
 protocol TimelineSample {
     var timestamp: TimeInterval { get }
+    var sessionID: UUID? { get }
 }
 
 struct MetricSample: Codable, Equatable, Identifiable, TimelineSample {
     var timestamp: TimeInterval
     var value: Double
+    var sessionID: UUID?
 
     var id: TimeInterval { timestamp }
     var date: Date { Date(timeIntervalSinceReferenceDate: timestamp) }
 
-    init(timestamp: TimeInterval, value: Double) {
+    init(timestamp: TimeInterval, value: Double, sessionID: UUID? = nil) {
         self.timestamp = timestamp
         self.value = value.isFinite ? value : 0
+        self.sessionID = sessionID
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case timestamp, value, sessionID
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        timestamp = try container.decode(TimeInterval.self, forKey: .timestamp)
+        value = try container.decode(Double.self, forKey: .value)
+        sessionID = try container.decodeIfPresent(UUID.self, forKey: .sessionID)
     }
 }
 
@@ -51,15 +65,17 @@ struct TimelineWindow: Equatable {
 
         var result: [[S]] = []
         var current: [S] = []
-        var previousTimestamp: TimeInterval?
+        var previousSample: S?
 
         for sample in visibleSamples {
-            if let previousTimestamp, sample.timestamp - previousTimestamp > gapThreshold {
+            if let previousSample,
+               (sample.timestamp - previousSample.timestamp > gapThreshold
+                || sample.sessionID != previousSample.sessionID) {
                 if !current.isEmpty { result.append(current) }
                 current.removeAll(keepingCapacity: true)
             }
             current.append(sample)
-            previousTimestamp = sample.timestamp
+            previousSample = sample
         }
         if !current.isEmpty { result.append(current) }
         return result

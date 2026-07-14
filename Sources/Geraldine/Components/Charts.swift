@@ -31,6 +31,22 @@ private enum ChartAccessibility {
     }()
 }
 
+/// Prepares timeline data without allowing point reduction to erase a real
+/// collection gap. Each continuous raw run is reduced independently, preserving
+/// the samples on both sides of every gap.
+enum TimelineChartRendering {
+    static func segments<S: TimelineSample>(
+        samples: [S],
+        timeline: TimelineWindow,
+        gapThreshold: TimeInterval,
+        maximumPointCount: Int?
+    ) -> [[S]] {
+        timeline.segments(samples, gapThreshold: gapThreshold).map { segment in
+            timeline.downsample(segment, maximumCount: maximumPointCount)
+        }
+    }
+}
+
 /// Filled single-series sparkline on a fixed time domain. Values retain their actual
 /// timestamps, so partial history enters at the right edge and scrolls left over time.
 struct TimelineSparkGraph: View {
@@ -195,12 +211,21 @@ struct TimelineSparkGraph: View {
         timeline.visible(samples)
     }
 
+    private var sampledSegments: [[MetricSample]] {
+        TimelineChartRendering.segments(
+            samples: visibleSamples,
+            timeline: timeline,
+            gapThreshold: gapThreshold,
+            maximumPointCount: maximumPointCount
+        )
+    }
+
     private var renderedSamples: [MetricSample] {
-        timeline.downsample(visibleSamples, maximumCount: maximumPointCount)
+        sampledSegments.flatMap { $0 }
     }
 
     private var renderedSegments: [[MetricSample]] {
-        timeline.segments(renderedSamples, gapThreshold: gapThreshold).filter { $0.count >= 2 }
+        sampledSegments
     }
 
     private func point(_ sample: MetricSample, in size: CGSize) -> CGPoint {
@@ -217,46 +242,56 @@ struct TimelineSparkGraph: View {
             let samples = segments[index]
             let points = samples.map { point($0, in: size) }
             let isLatestSegment = index == segments.indices.last
-            SparkPath.area(underSegment: points, baselineY: size.height).fill(areaShading)
-            if let valueColor {
-                ForEach(1..<samples.count, id: \.self) { sampleIndex in
-                    let shading = AnyShapeStyle(
-                        valueColor(max(samples[sampleIndex - 1].value, samples[sampleIndex].value))
-                    )
-                    if isLatestSegment, sampleIndex == samples.count - 1 {
-                        ChartLatestSegment(
-                            from: points[sampleIndex - 1],
-                            to: points[sampleIndex],
-                            shading: shading
-                        )
-                        .id(samples[sampleIndex].timestamp)
-                    } else {
-                        Path { p in
-                            p.move(to: points[sampleIndex - 1])
-                            p.addLine(to: points[sampleIndex])
-                        }
-                        .stroke(shading,
-                                style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
-                    }
+            if samples.count == 1, let sample = samples.first, let point = points.first {
+                if isLatestSegment {
+                    ChartEndpoint(point: point, tint: valueColor?(sample.value) ?? tint)
+                        .id(sample.timestamp)
+                } else {
+                    ChartSamplePoint(point: point, tint: valueColor?(sample.value) ?? tint)
+                        .id(sample.timestamp)
                 }
-            } else if isLatestSegment, points.count >= 2 {
-                if points.count > 2 {
-                    SparkPath.line(through: Array(points.dropLast()))
-                        .stroke(lineShading,
-                                style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
-                }
-                ChartLatestSegment(from: points[points.count - 2],
-                                   to: points[points.count - 1],
-                                   shading: lineShading)
-                    .id(samples.last?.timestamp)
             } else {
-                SparkPath.line(through: points)
-                    .stroke(lineShading, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
-            }
+                SparkPath.area(underSegment: points, baselineY: size.height).fill(areaShading)
+                if let valueColor {
+                    ForEach(1..<samples.count, id: \.self) { sampleIndex in
+                        let shading = AnyShapeStyle(
+                            valueColor(max(samples[sampleIndex - 1].value, samples[sampleIndex].value))
+                        )
+                        if isLatestSegment, sampleIndex == samples.count - 1 {
+                            ChartLatestSegment(
+                                from: points[sampleIndex - 1],
+                                to: points[sampleIndex],
+                                shading: shading
+                            )
+                            .id(samples[sampleIndex].timestamp)
+                        } else {
+                            Path { p in
+                                p.move(to: points[sampleIndex - 1])
+                                p.addLine(to: points[sampleIndex])
+                            }
+                            .stroke(shading,
+                                    style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                        }
+                    }
+                } else if isLatestSegment, points.count >= 2 {
+                    if points.count > 2 {
+                        SparkPath.line(through: Array(points.dropLast()))
+                            .stroke(lineShading,
+                                    style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                    }
+                    ChartLatestSegment(from: points[points.count - 2],
+                                       to: points[points.count - 1],
+                                       shading: lineShading)
+                        .id(samples.last?.timestamp)
+                } else {
+                    SparkPath.line(through: points)
+                        .stroke(lineShading, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                }
 
-            if index == segments.indices.last, let last = samples.last {
-                ChartEndpoint(point: point(last, in: size), tint: valueColor?(last.value) ?? tint)
-                    .id(last.timestamp)
+                if isLatestSegment, let last = samples.last {
+                    ChartEndpoint(point: point(last, in: size), tint: valueColor?(last.value) ?? tint)
+                        .id(last.timestamp)
+                }
             }
         }
     }
@@ -412,8 +447,12 @@ struct NetworkTimelineGraph: View {
     }
 
     private var segments: [[NetworkSample]] {
-        timeline.segments(visibleSamples, gapThreshold: gapThreshold)
-            .filter { $0.count >= 2 }
+        TimelineChartRendering.segments(
+            samples: visibleSamples,
+            timeline: timeline,
+            gapThreshold: gapThreshold,
+            maximumPointCount: nil
+        )
     }
 
     @ViewBuilder
@@ -423,27 +462,37 @@ struct NetworkTimelineGraph: View {
             let samples = segments[index]
             let points = samples.map { point($0, value: $0[keyPath: value], in: size) }
             let isLatestSegment = index == segments.indices.last
-            SparkPath.area(underSegment: points, baselineY: size.height)
-                .fill(LinearGradient(colors: [tint.opacity(0.22), tint.opacity(0.02)],
-                                     startPoint: .top, endPoint: .bottom))
-            if isLatestSegment, points.count >= 2 {
-                if points.count > 2 {
-                    SparkPath.line(through: Array(points.dropLast()))
+            if samples.count == 1, let point = points.first {
+                if isLatestSegment {
+                    ChartEndpoint(point: point, tint: tint)
+                        .id(samples[0].timestamp)
+                } else {
+                    ChartSamplePoint(point: point, tint: tint)
+                        .id(samples[0].timestamp)
+                }
+            } else {
+                SparkPath.area(underSegment: points, baselineY: size.height)
+                    .fill(LinearGradient(colors: [tint.opacity(0.22), tint.opacity(0.02)],
+                                         startPoint: .top, endPoint: .bottom))
+                if isLatestSegment, points.count >= 2 {
+                    if points.count > 2 {
+                        SparkPath.line(through: Array(points.dropLast()))
+                            .stroke(tint.gradient,
+                                    style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                    }
+                    ChartLatestSegment(from: points[points.count - 2],
+                                       to: points[points.count - 1],
+                                       shading: AnyShapeStyle(tint.gradient))
+                        .id(samples.last?.timestamp)
+                } else {
+                    SparkPath.line(through: points)
                         .stroke(tint.gradient,
                                 style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
                 }
-                ChartLatestSegment(from: points[points.count - 2],
-                                   to: points[points.count - 1],
-                                   shading: AnyShapeStyle(tint.gradient))
-                    .id(samples.last?.timestamp)
-            } else {
-                SparkPath.line(through: points)
-                    .stroke(tint.gradient,
-                            style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
-            }
-            if isLatestSegment, let last = points.last {
-                ChartEndpoint(point: last, tint: tint)
-                    .id(samples.last?.timestamp)
+                if isLatestSegment, let last = points.last {
+                    ChartEndpoint(point: last, tint: tint)
+                        .id(samples.last?.timestamp)
+                }
             }
         }
     }
@@ -488,6 +537,19 @@ private struct ChartPlotField: View {
             }
         }
         .accessibilityHidden(true)
+    }
+}
+
+private struct ChartSamplePoint: View {
+    let point: CGPoint
+    let tint: Color
+
+    var body: some View {
+        Circle()
+            .fill(tint)
+            .frame(width: 4, height: 4)
+            .position(point)
+            .accessibilityHidden(true)
     }
 }
 

@@ -15,6 +15,9 @@ struct BatteryView: View {
     private var level: Double { knownLevel ?? 0 }
     private var hardwareName: String { state.hardware.displayName }
     private var hasInternalBattery: Bool { monitor.hasBattery || vm.detail.hasBattery }
+    private var chargeHistory: [ChargeSample] {
+        vm.chartHistory
+    }
 
     var body: some View {
         ModulePage(
@@ -35,10 +38,31 @@ struct BatteryView: View {
                 healthCard
             }
         }
-        .onAppear { if surfaceActive { vm.start() } }
+        .onAppear {
+            guard surfaceActive else { return }
+            vm.start()
+            recordCurrentBatteryReading()
+        }
         .onDisappear { vm.stop() }
         .onChange(of: surfaceActive) { _, isActive in
-            isActive ? vm.start() : vm.stop()
+            if isActive {
+                vm.start()
+                recordCurrentBatteryReading()
+            } else {
+                vm.stop()
+            }
+        }
+        .onChange(of: monitor.batteryHistory.last?.timestamp) { _, _ in
+            guard surfaceActive, let sample = monitor.batteryHistory.last else { return }
+            vm.recordLiveReading(
+                level: sample.value,
+                onAC: monitor.batteryOnAC,
+                at: sample.date
+            )
+        }
+        .onChange(of: monitor.batteryOnAC) { _, _ in
+            guard surfaceActive else { return }
+            recordCurrentBatteryReading()
         }
     }
 
@@ -128,15 +152,15 @@ struct BatteryView: View {
 
             if !vm.loadedHistory {
                 placeholder { BrandSpinner(tint: tint, icon: "battery.100", size: 48) }
-            } else if vm.history.isEmpty {
+            } else if chargeHistory.isEmpty && monitor.batteryLevel == nil {
                 placeholder {
                     Text("No battery history available yet.")
                         .font(.callout).foregroundStyle(.secondary)
                 }
             } else {
-                ChargeHistoryChart(samples: vm.history, range: range, tint: Theme.Chart.green,
+                ChargeHistoryChart(samples: chargeHistory, range: range, tint: Theme.Chart.green,
                                    currentLevel: monitor.batteryLevel,
-                                   currentOnAC: monitor.batteryCharging || vm.detail.externalConnected)
+                                   currentOnAC: monitor.batteryOnAC)
                     .frame(height: 168)
                     .id(range)
                     .transition(GeraldineMotion.stateTransition(reduceMotion: reduceMotion))
@@ -162,6 +186,14 @@ struct BatteryView: View {
             RoundedRectangle(cornerRadius: 3).fill(color).frame(width: 12, height: 12)
             Text(label)
         }
+    }
+
+    private func recordCurrentBatteryReading() {
+        guard let level = monitor.batteryLevel else { return }
+        vm.recordLiveReading(
+            level: level,
+            onAC: monitor.batteryOnAC
+        )
     }
 
     // MARK: Consumers
@@ -364,7 +396,7 @@ struct ChargeHistoryChart: View {
             let end = Date()
             let start = end.addingTimeInterval(-range.seconds)
             let span = max(1, end.timeIntervalSince(start))
-            let pts = plotPoints(start: start, end: end)
+            let segments = plotSegments(start: start, end: end)
 
             func x(_ date: Date) -> CGFloat {
                 CGFloat(min(max(date.timeIntervalSince(start) / span, 0), 1)) * plotW
@@ -389,34 +421,50 @@ struct ChargeHistoryChart: View {
                          at: CGPoint(x: plotW + 6, y: gy), anchor: .leading)
             }
 
-            guard pts.count >= 2 else { return }
+            for points in segments where points.count >= 2 {
+                // Shading is limited to intervals supported by adjacent readings;
+                // it never spans a sleep, shutdown, or missing-log gap.
+                for i in 0..<(points.count - 1) where points[i].onAC {
+                    let rect = CGRect(x: x(points[i].date), y: 0,
+                                      width: max(0.5, x(points[i + 1].date) - x(points[i].date)),
+                                      height: plotH)
+                    ctx.fill(Path(rect), with: .color(tint.opacity(0.16)))
+                }
 
-            // Shaded windows where the Mac was on AC / charging.
-            for i in 0..<(pts.count - 1) where pts[i].onAC {
-                let rect = CGRect(x: x(pts[i].date), y: 0,
-                                  width: max(0.5, x(pts[i + 1].date) - x(pts[i].date)), height: plotH)
-                ctx.fill(Path(rect), with: .color(tint.opacity(0.16)))
+                var area = Path()
+                area.move(to: CGPoint(x: x(points[0].date), y: plotH))
+                for point in points {
+                    area.addLine(to: CGPoint(x: x(point.date), y: y(point.level)))
+                }
+                area.addLine(to: CGPoint(x: x(points[points.count - 1].date), y: plotH))
+                area.closeSubpath()
+                ctx.fill(area, with: .linearGradient(
+                    Gradient(colors: [tint.opacity(0.38), tint.opacity(0.04)]),
+                    startPoint: CGPoint(x: 0, y: 0), endPoint: CGPoint(x: 0, y: plotH)))
+
+                var line = Path()
+                for (index, point) in points.enumerated() {
+                    let chartPoint = CGPoint(x: x(point.date), y: y(point.level))
+                    index == 0 ? line.move(to: chartPoint) : line.addLine(to: chartPoint)
+                }
+                ctx.stroke(
+                    line,
+                    with: .color(tint),
+                    style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round)
+                )
             }
 
-            // Area under the level curve.
-            var area = Path()
-            area.move(to: CGPoint(x: x(pts[0].date), y: plotH))
-            for p in pts { area.addLine(to: CGPoint(x: x(p.date), y: y(p.level))) }
-            area.addLine(to: CGPoint(x: x(pts[pts.count - 1].date), y: plotH))
-            area.closeSubpath()
-            ctx.fill(area, with: .linearGradient(
-                Gradient(colors: [tint.opacity(0.38), tint.opacity(0.04)]),
-                startPoint: CGPoint(x: 0, y: 0), endPoint: CGPoint(x: 0, y: plotH)))
-
-            // Level line.
-            var line = Path()
-            for (i, p) in pts.enumerated() {
-                let pt = CGPoint(x: x(p.date), y: y(p.level))
-                i == 0 ? line.move(to: pt) : line.addLine(to: pt)
+            // Isolated, valid readings remain visible without implying a measured
+            // interval on either side.
+            for points in segments where points.count == 1 {
+                let point = CGPoint(x: x(points[0].date), y: y(points[0].level))
+                ctx.fill(
+                    Path(ellipseIn: CGRect(x: point.x - 2, y: point.y - 2, width: 4, height: 4)),
+                    with: .color(tint)
+                )
             }
-            ctx.stroke(line, with: .color(tint), style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
 
-            if let last = pts.last, endpointReveal > 0 {
+            if let last = segments.last?.last, endpointReveal > 0 {
                 let point = CGPoint(x: x(last.date), y: y(last.level))
                 let haloRadius = 7 * endpointReveal
                 ctx.fill(Path(ellipseIn: CGRect(x: point.x - haloRadius,
@@ -531,7 +579,7 @@ struct ChargeHistoryChart: View {
         let plotWidth = max(1, size.width - rightAxis)
         let end = Date()
         let start = end.addingTimeInterval(-range.seconds)
-        let points = plotPoints(start: start, end: end)
+        let points = plotSegments(start: start, end: end).flatMap { $0 }
         guard !points.isEmpty else { return nil }
         let fraction = Double(min(max(location.x / plotWidth, 0), 1))
         let target = start.addingTimeInterval(range.seconds * fraction)
@@ -580,7 +628,7 @@ struct ChargeHistoryChart: View {
 
     private var accessibilitySamples: [ChargeSample] {
         let end = Date()
-        return plotPoints(start: end.addingTimeInterval(-range.seconds), end: end)
+        return plotSegments(start: end.addingTimeInterval(-range.seconds), end: end).flatMap { $0 }
     }
 
     private func adjustAccessibilitySelection(_ direction: AccessibilityAdjustmentDirection) {
@@ -616,23 +664,28 @@ struct ChargeHistoryChart: View {
         }
     }
 
-    /// Window-clipped samples, anchored at both edges so the curve spans the full width.
-    private func plotPoints(start: Date, end: Date) -> [ChargeSample] {
-        let within = samples.filter { $0.date >= start && $0.date <= end }
-        var pts: [ChargeSample] = []
-        let prior = samples.last { $0.date < start }
-        // Only extend a real earlier sample to the left edge; without one the curve
-        // starts at the first true sample rather than inventing flat history before it.
-        if let prior, let first = within.first, first.date > start {
-            pts.append(ChargeSample(date: start, level: prior.level, onAC: prior.onAC))
-        } else if within.isEmpty, let prior {
-            pts.append(ChargeSample(date: start, level: prior.level, onAC: prior.onAC))
+    /// Uses only measured points. The current reading is a real endpoint, but it
+    /// remains a separate dot when the last source event is too old to support a line.
+    private func plotSegments(start: Date, end: Date) -> [[ChargeSample]] {
+        var visible: [ChargeSample] = []
+        for sample in samples {
+            if sample.date < start { continue }
+            if sample.date > end { break }
+            visible.append(sample)
         }
-        pts.append(contentsOf: within)
-        if let lastLevel = currentLevel ?? pts.last?.level {
-            pts.append(ChargeSample(date: end, level: lastLevel, onAC: currentOnAC))
+        if let currentLevel {
+            let current = ChargeSample(date: end, level: currentLevel, onAC: currentOnAC)
+            if visible.last?.date == end {
+                visible[visible.count - 1] = current
+            } else {
+                visible.append(current)
+            }
         }
-        return pts
+        return BatteryHistoryPolicy.segments(
+            normalizedSamples: visible,
+            start: start,
+            end: end
+        )
     }
 
     private func axisTicks(start: Date, end: Date) -> [(date: Date, label: String)] {

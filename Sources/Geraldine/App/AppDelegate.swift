@@ -46,6 +46,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         keyboardTransportHUD?.stop()
+        AppState.shared.monitor.stop()
+        AppState.shared.monitor.flushHistory()
         AppState.shared.keepAwake.shutdown()
         AppState.shared.powerTools.stop()
     }
