@@ -1,5 +1,38 @@
 import Foundation
 
+enum NetworkRateUnit: String, CaseIterable {
+    case bytesPerSecond
+    case bitsPerSecond
+
+    var compactLabel: String {
+        switch self {
+        case .bytesPerSecond: "B/s"
+        case .bitsPerSecond: "bps"
+        }
+    }
+
+    var accessibilityLabel: String {
+        switch self {
+        case .bytesPerSecond: "bytes per second"
+        case .bitsPerSecond: "bits per second"
+        }
+    }
+
+    var toggled: Self {
+        switch self {
+        case .bytesPerSecond: .bitsPerSecond
+        case .bitsPerSecond: .bytesPerSecond
+        }
+    }
+
+    func displayValue(for bytesPerSecond: Double) -> Double {
+        switch self {
+        case .bytesPerSecond: bytesPerSecond
+        case .bitsPerSecond: bytesPerSecond * 8
+        }
+    }
+}
+
 enum Fmt {
     static let bytes: ByteCountFormatter = {
         let f = ByteCountFormatter()
@@ -22,14 +55,14 @@ enum Fmt {
         bytes.string(fromByteCount: Int64(clamping: value))
     }
 
-    static func rate(_ bytesPerSec: Double) -> String {
-        let parts = rateParts(bytesPerSec)
-        return "\(rateNumber(parts.value, unitIndex: parts.unitIndex)) \(parts.unit)/s"
+    static func rate(_ bytesPerSec: Double, unit: NetworkRateUnit = .bytesPerSecond) -> String {
+        let parts = rateParts(bytesPerSec, unit: unit)
+        return "\(rateNumber(parts.value, unitIndex: parts.unitIndex)) \(parts.unit)"
     }
 
-    static func compactRate(_ bytesPerSec: Double) -> String {
-        let parts = rateParts(bytesPerSec)
-        return "\(compactRateNumber(parts.value, unitIndex: parts.unitIndex))\(parts.compactUnit)/s"
+    static func compactRate(_ bytesPerSec: Double, unit: NetworkRateUnit = .bytesPerSecond) -> String {
+        let parts = rateParts(bytesPerSec, unit: unit)
+        return "\(compactRateNumber(parts.value, unitIndex: parts.unitIndex))\(parts.unit)"
     }
 
     static func percent(_ fraction: Double) -> String {
@@ -58,9 +91,17 @@ enum Fmt {
         }
     }
 
-    private static func rateParts(_ value: Double) -> (value: Double, unit: String, compactUnit: String, unitIndex: Int) {
-        let units = [("B", "B"), ("KB", "K"), ("MB", "M"), ("GB", "G"), ("TB", "T")]
-        var scaled = value.isFinite ? max(0, min(value, 1e18)) : 0
+    private static func rateParts(_ bytesPerSecond: Double, unit: NetworkRateUnit) -> (value: Double, unit: String, unitIndex: Int) {
+        let units: [String]
+        switch unit {
+        case .bytesPerSecond:
+            units = ["B/s", "KB/s", "MB/s", "GB/s", "TB/s"]
+        case .bitsPerSecond:
+            units = ["bps", "Kbps", "Mbps", "Gbps", "Tbps"]
+        }
+
+        let converted = unit.displayValue(for: bytesPerSecond)
+        var scaled = converted.isFinite ? max(0, min(converted, 1e18)) : 0
         var index = 0
 
         while scaled >= 999.5, index < units.count - 1 {
@@ -68,7 +109,7 @@ enum Fmt {
             index += 1
         }
 
-        return (scaled, units[index].0, units[index].1, index)
+        return (scaled, units[index], index)
     }
 
     private static func rateNumber(_ value: Double, unitIndex: Int) -> String {

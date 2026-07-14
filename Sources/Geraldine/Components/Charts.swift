@@ -279,6 +279,7 @@ struct NetworkTimelineGraph: View {
     var upReference: Double? = nil
     var gapThreshold: TimeInterval = SystemMonitor.chartSampleGapThreshold
     var showsInspection = false
+    var rateUnit: NetworkRateUnit = .bytesPerSecond
 
     @ViewBuilder
     var body: some View {
@@ -322,7 +323,8 @@ struct NetworkTimelineGraph: View {
                         timeline: timeline,
                         downTint: downTint,
                         upTint: upTint,
-                        accessibilitySample: selectedAccessibilitySample
+                        accessibilitySample: selectedAccessibilitySample,
+                        rateUnit: rateUnit
                     )
                 }
             }
@@ -341,7 +343,7 @@ struct NetworkTimelineGraph: View {
         guard !visibleSamples.isEmpty else { return "Collecting history" }
         let index = min(max(accessibilityIndex ?? (visibleSamples.count - 1), 0), visibleSamples.count - 1)
         let sample = visibleSamples[index]
-        return "Download \(Fmt.compactRate(sample.down)), upload \(Fmt.compactRate(sample.up)) at \(ChartAccessibility.timeFormatter.string(from: sample.date)), sample \(index + 1) of \(visibleSamples.count)"
+        return "Download \(Fmt.compactRate(sample.down, unit: rateUnit)), upload \(Fmt.compactRate(sample.up, unit: rateUnit)) at \(ChartAccessibility.timeFormatter.string(from: sample.date)), sample \(index + 1) of \(visibleSamples.count)"
     }
 
     private func adjustAccessibilitySelection(_ direction: AccessibilityAdjustmentDirection) {
@@ -630,6 +632,7 @@ private struct NetworkInspectionOverlay: View {
     let downTint: Color
     let upTint: Color
     let accessibilitySample: NetworkSample?
+    let rateUnit: NetworkRateUnit
 
     @State private var location: CGPoint?
 
@@ -645,9 +648,9 @@ private struct NetworkInspectionOverlay: View {
                     .stroke(Theme.focusRing.opacity(0.45), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
 
                     VStack(alignment: .leading, spacing: 2) {
-                        Label(Fmt.compactRate(sample.down), systemImage: "arrow.down")
+                        Label(Fmt.compactRate(sample.down, unit: rateUnit), systemImage: "arrow.down")
                             .foregroundStyle(downTint)
-                        Label(Fmt.compactRate(sample.up), systemImage: "arrow.up")
+                        Label(Fmt.compactRate(sample.up, unit: rateUnit), systemImage: "arrow.up")
                             .foregroundStyle(upTint)
                         Text(Date(timeIntervalSinceReferenceDate: sample.timestamp), style: .time)
                             .foregroundStyle(.secondary)

@@ -520,13 +520,14 @@ struct MetricWidget: View {
     @EnvironmentObject var network: NetworkMonitor
     @Environment(\.widgetCustomizationActive) private var customizationActive
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AppStorage("networkRateUnit") private var networkRateUnitRawValue = NetworkRateUnit.bytesPerSecond.rawValue
     @State private var freeing = false
 
     private var isSmall: Bool { size == .small }
     private var networkRateFontSize: CGFloat { isSmall ? 11 : 12 }
     private var networkRateIconWidth: CGFloat { isSmall ? 8 : 10 }
     private var networkRateSpacing: CGFloat { isSmall ? 2 : 5 }
-    private var networkRateTextWidth: CGFloat { isSmall ? 45 : 56 }
+    private var networkRateTextWidth: CGFloat { isSmall ? 48 : 56 }
 
     var body: some View {
         Group {
@@ -735,7 +736,11 @@ struct MetricWidget: View {
         if isSmall {
             VStack(alignment: .leading, spacing: 6) {
                 networkHeader
-                networkName(size: 14)
+                HStack(spacing: 5) {
+                    networkName(size: 14)
+                    Spacer(minLength: 4)
+                    networkRateUnitToggle
+                }
                 Spacer(minLength: 0)
                 HStack(spacing: 4) {
                     rate("arrow.down", monitor.netDown, Theme.accent2)
@@ -748,9 +753,12 @@ struct MetricWidget: View {
                 HStack(alignment: .firstTextBaseline) {
                     networkName(size: 16)
                     Spacer()
+                    networkRateUnitToggle
                     securityPill
                 }
-                NetworkTrafficChart(samples: monitor.networkHistory, stats: networkStats)
+                NetworkTrafficChart(samples: monitor.networkHistory,
+                                    stats: networkStats,
+                                    rateUnit: networkRateUnit)
                 HStack(spacing: 8) {
                     if let link = network.linkRateMbps {
                         caption("\(Int(link.rounded())) Mbps Link", animationValue: link)
@@ -765,6 +773,27 @@ struct MetricWidget: View {
     private var networkStats: NetworkThroughputStats {
         NetworkThroughputStats(samples: monitor.networkHistory,
                                currentDown: monitor.netDown, currentUp: monitor.netUp)
+    }
+
+    private var networkRateUnit: NetworkRateUnit {
+        NetworkRateUnit(rawValue: networkRateUnitRawValue) ?? .bytesPerSecond
+    }
+
+    private var networkRateUnitToggle: some View {
+        Button {
+            withAnimation(GeraldineMotion.animation(.quick, reduceMotion: reduceMotion)) {
+                networkRateUnitRawValue = networkRateUnit.toggled.rawValue
+            }
+        } label: {
+            Text(networkRateUnit.compactLabel)
+                .font(.system(size: 9.5, weight: .semibold).monospaced())
+                .frame(minWidth: 22)
+        }
+        .buttonStyle(.quiet(Theme.accent2))
+        .help("Switch to \(networkRateUnit.toggled.accessibilityLabel)")
+        .accessibilityLabel("Network rate unit")
+        .accessibilityValue(networkRateUnit.accessibilityLabel)
+        .accessibilityHint("Switch to \(networkRateUnit.toggled.accessibilityLabel)")
     }
 
     private var networkHeader: some View {
@@ -837,14 +866,16 @@ struct MetricWidget: View {
                 .font(.caption2.weight(.bold))
                 .foregroundStyle(tint)
                 .frame(width: networkRateIconWidth)
-            AnimatedNumberText(Fmt.compactRate(value), value: animationValue)
+            AnimatedNumberText(Fmt.compactRate(value, unit: networkRateUnit),
+                               value: networkRateUnit.displayValue(for: animationValue))
                 .font(.system(size: networkRateFontSize, weight: .semibold).monospacedDigit())
                 .lineLimit(1)
+                .minimumScaleFactor(isSmall ? 0.82 : 0.9)
                 .frame(width: networkRateTextWidth, alignment: .leading)
         }
         .fixedSize(horizontal: true, vertical: false)
         .layoutPriority(2)
-        .help(Fmt.rate(value))
+        .help(Fmt.rate(value, unit: networkRateUnit))
     }
 
     @ViewBuilder private var speedControl: some View {

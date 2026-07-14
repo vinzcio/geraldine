@@ -37,6 +37,7 @@ struct NetworkTrafficChart: View {
     let stats: NetworkThroughputStats
     var chartHeight: CGFloat = 60
     var showsInspection = false
+    var rateUnit: NetworkRateUnit = .bytesPerSecond
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -47,16 +48,18 @@ struct NetworkTrafficChart: View {
                                  upTint: Theme.Chart.purple,
                                  downReference: stats.averageDown,
                                  upReference: stats.averageUp,
-                                 showsInspection: showsInspection)
+                                 showsInspection: showsInspection,
+                                 rateUnit: rateUnit)
                 .frame(height: chartHeight)
                 .accessibilityLabel("Network throughput history")
-            NetworkThroughputStatsTable(stats: stats)
+            NetworkThroughputStatsTable(stats: stats, rateUnit: rateUnit)
         }
     }
 }
 
 private struct NetworkThroughputStatsTable: View {
     let stats: NetworkThroughputStats
+    let rateUnit: NetworkRateUnit
 
     private let labelWidth: CGFloat = 54
     private let valueWidth: CGFloat = 58
@@ -119,7 +122,8 @@ private struct NetworkThroughputStatsTable: View {
 
     @ViewBuilder private func statValue(_ value: Double?, tint: Color) -> some View {
         if let value {
-            AnimatedNumberText(Fmt.compactRate(value), value: value)
+            AnimatedNumberText(Fmt.compactRate(value, unit: rateUnit),
+                               value: rateUnit.displayValue(for: value))
                 .font(.system(size: 10, weight: .semibold).monospacedDigit())
                 .foregroundStyle(tint)
                 .minimumScaleFactor(0.76)
@@ -134,16 +138,16 @@ private struct NetworkThroughputStatsTable: View {
 
     private var accessibilityValue: String {
         guard stats.hasSamples else {
-            return "Current download \(Fmt.rate(stats.currentDown)), current upload \(Fmt.rate(stats.currentUp)), collecting history for averages and peaks"
+            return "Current download \(Fmt.rate(stats.currentDown, unit: rateUnit)), current upload \(Fmt.rate(stats.currentUp, unit: rateUnit)), collecting history for averages and peaks"
         }
 
         return [
-            "Current download \(Fmt.rate(stats.currentDown))",
-            "current upload \(Fmt.rate(stats.currentUp))",
-            "average download \(Fmt.rate(stats.averageDown))",
-            "average upload \(Fmt.rate(stats.averageUp))",
-            "peak download \(Fmt.rate(stats.peakDown))",
-            "peak upload \(Fmt.rate(stats.peakUp))"
+            "Current download \(Fmt.rate(stats.currentDown, unit: rateUnit))",
+            "current upload \(Fmt.rate(stats.currentUp, unit: rateUnit))",
+            "average download \(Fmt.rate(stats.averageDown, unit: rateUnit))",
+            "average upload \(Fmt.rate(stats.averageUp, unit: rateUnit))",
+            "peak download \(Fmt.rate(stats.peakDown, unit: rateUnit))",
+            "peak upload \(Fmt.rate(stats.peakUp, unit: rateUnit))"
         ].joined(separator: ", ")
     }
 }
