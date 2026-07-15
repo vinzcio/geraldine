@@ -581,6 +581,68 @@ extension View {
     }
 }
 
+private struct NetworkRateUnitSlider: View {
+    let unit: NetworkRateUnit
+    let isCompact: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var trackWidth: CGFloat { isCompact ? 58 : 64 }
+    private let trackHeight: CGFloat = 24
+    private let inset: CGFloat = 2
+    private var segmentWidth: CGFloat { (trackWidth - inset * 2) / 2 }
+
+    var body: some View {
+        ZStack(alignment: .leading) {
+            Capsule()
+                .fill(Color.primary.opacity(0.075))
+
+            Capsule()
+                .fill(Theme.accent2)
+                .frame(width: segmentWidth, height: trackHeight - inset * 2)
+                .offset(x: inset + (unit == .bitsPerSecond ? segmentWidth : 0))
+                .shadow(color: Theme.accent2.opacity(0.22), radius: 3, y: 1)
+
+            HStack(spacing: 0) {
+                label(for: .bytesPerSecond)
+                label(for: .bitsPerSecond)
+            }
+            .padding(.horizontal, inset)
+        }
+        .frame(width: trackWidth, height: trackHeight)
+        .contentShape(Capsule())
+        .animation(GeraldineMotion.animation(.quick, reduceMotion: reduceMotion),
+                   value: unit)
+    }
+
+    private func label(for candidate: NetworkRateUnit) -> some View {
+        Text(candidate.compactLabel)
+            .font(.system(size: 9, weight: unit == candidate ? .semibold : .medium).monospaced())
+            .foregroundStyle(unit == candidate ? Theme.canvas : Color.secondary)
+            .frame(width: segmentWidth, height: trackHeight)
+    }
+}
+
+private struct NetworkRateUnitSliderButtonStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.isFocused) private var isFocused
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .overlay {
+                Capsule()
+                    .strokeBorder(isFocused ? Theme.focusRing : .clear, lineWidth: 2)
+            }
+            .minimumHitArea()
+            .scaleEffect(configuration.isPressed && !reduceMotion ? GeraldineMotion.pressScale : 1)
+            .brightness(configuration.isPressed ? -0.04 : 0)
+            .contentShape(Capsule())
+            .focusEffectDisabled()
+            .animation(GeraldineMotion.animation(.quick, reduceMotion: reduceMotion),
+                       value: configuration.isPressed)
+            .pointingHandCursor()
+    }
+}
+
 // MARK: - Widget
 
 /// One resizable, draggable metric tile. Small = compact readout; large = adds a chart.
@@ -874,21 +936,31 @@ struct MetricWidget: View {
         NetworkRateUnit(rawValue: networkRateUnitRawValue) ?? .bytesPerSecond
     }
 
+    private var networkRateUnitIsBits: Binding<Bool> {
+        Binding {
+            networkRateUnit == .bitsPerSecond
+        } set: { isBitsPerSecond in
+            withAnimation(GeraldineMotion.animation(.quick, reduceMotion: reduceMotion)) {
+                networkRateUnitRawValue = isBitsPerSecond
+                    ? NetworkRateUnit.bitsPerSecond.rawValue
+                    : NetworkRateUnit.bytesPerSecond.rawValue
+            }
+        }
+    }
+
     private var networkRateUnitToggle: some View {
         Button {
-            withAnimation(GeraldineMotion.animation(.quick, reduceMotion: reduceMotion)) {
-                networkRateUnitRawValue = networkRateUnit.toggled.rawValue
-            }
+            networkRateUnitIsBits.wrappedValue.toggle()
         } label: {
-            Text(networkRateUnit.compactLabel)
-                .font(.system(size: 9.5, weight: .semibold).monospaced())
-                .frame(minWidth: 22)
+            NetworkRateUnitSlider(unit: networkRateUnit, isCompact: isSmall)
         }
-        .buttonStyle(.quiet(Theme.accent2))
-        .help("Switch to \(networkRateUnit.toggled.accessibilityLabel)")
-        .accessibilityLabel("Network rate unit")
-        .accessibilityValue(networkRateUnit.accessibilityLabel)
-        .accessibilityHint("Switch to \(networkRateUnit.toggled.accessibilityLabel)")
+        .buttonStyle(NetworkRateUnitSliderButtonStyle())
+        .help("Show network rates in \(networkRateUnit.toggled.accessibilityLabel)")
+        .accessibilityRepresentation {
+            Toggle("Network rate unit", isOn: networkRateUnitIsBits)
+                .accessibilityValue(networkRateUnit.accessibilityLabel)
+                .accessibilityHint("Switch between bytes and bits per second")
+        }
     }
 
     private var networkHeader: some View {
