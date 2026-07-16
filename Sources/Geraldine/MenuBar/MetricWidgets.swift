@@ -11,191 +11,192 @@ extension EnvironmentValues {
     }
 }
 
-@MainActor
-private final class WidgetDragCoordinator: ObservableObject {
-    @Published var dragged: WidgetKind?
-    @Published var target: WidgetKind?
+// MARK: - Grid geometry
 
-    func begin(_ kind: WidgetKind) {
-        dragged = kind
+/// One source of truth for the popover grid. Both the `Layout` that places tiles and the
+/// drag logic that retargets them read frames from here, so they can never disagree about
+/// where a tile settles.
+enum WidgetGridMetrics {
+    static let spacing: CGFloat = 8
+    /// One grid unit: every small (1×1) and medium (2×1) tile is exactly this tall,
+    /// so rows always line up with no ragged heights.
+    static let unitHeight: CGFloat = 132
+    /// Below this width the grid falls back to two columns (small = half row).
+    static let compactBreakpoint: CGFloat = 520
+    static let spaceName = "geraldine.widgetGrid"
+
+    struct Entry {
+        let id: String
+        /// Logical columns on the wide grid: 1 (small), 2 (medium), or 4 (full width).
+        let span: Int
+        /// Consulted only for full-width tiles, which take the height their content needs.
+        let naturalHeight: CGFloat
     }
 
-    func setTarget(_ kind: WidgetKind, active: Bool) {
-        if active {
-            target = kind
-        } else if target == kind {
-            target = nil
+    struct Slot {
+        let id: String
+        let frame: CGRect
+    }
+
+    static func columns(for width: CGFloat) -> Int {
+        width >= compactBreakpoint ? 4 : 2
+    }
+
+    /// Packs entries in order onto the grid — unit-height rows for small/medium tiles,
+    /// natural height for full-width rows. Returns one slot per entry, in entry order.
+    static func slots(for entries: [Entry], width: CGFloat) -> [Slot] {
+        let columns = columns(for: width)
+        let track = max(0, (width - spacing * CGFloat(columns - 1)) / CGFloat(columns))
+        var slots: [Slot] = []
+        var row: [(entry: Entry, start: Int, span: Int)] = []
+        var used = 0
+        var y: CGFloat = 0
+
+        func flush() {
+            guard !row.isEmpty else { return }
+            let natural = row.filter { $0.entry.span >= 4 }.map(\.entry.naturalHeight).max()
+            let height = natural.map { max(unitHeight, $0) } ?? unitHeight
+            for cell in row {
+                let x = CGFloat(cell.start) * (track + spacing)
+                let cellWidth = track * CGFloat(cell.span) + spacing * CGFloat(cell.span - 1)
+                slots.append(Slot(id: cell.entry.id,
+                                  frame: CGRect(x: x, y: y, width: cellWidth, height: height)))
+            }
+            y += height + spacing
+            row = []
+            used = 0
         }
+
+        for entry in entries {
+            let span = columns == 4 ? min(entry.span, 4) : (entry.span == 1 ? 1 : 2)
+            if used + span > columns { flush() }
+            row.append((entry, used, span))
+            used += span
+            if used == columns { flush() }
+        }
+        flush()
+        return slots
     }
 
-    func end() {
-        dragged = nil
-        target = nil
+    static func height(of slots: [Slot]) -> CGFloat {
+        slots.map(\.frame.maxY).max() ?? 0
     }
 }
 
-private struct WidgetFullWidthKey: LayoutValueKey {
-    static let defaultValue = false
+private struct WidgetSpanKey: LayoutValueKey {
+    static let defaultValue = 1
 }
 
-/// Stable-ID packing without synthetic row identities. Each widget remains the
-/// same subview while neighboring tiles reflow between half and full-width rows.
-private struct WidgetPackingLayout: Layout {
-    var spacing: CGFloat = 8
-    private let wideLayoutBreakpoint: CGFloat = 520
-
+/// Places each widget at the frame `WidgetGridMetrics` computes for it. Subviews keep a
+/// stable identity across reorders, so array mutations reflow with the driving animation.
+struct WidgetPackingLayout: Layout {
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         let width = proposal.width ?? 292
-        if width >= wideLayoutBreakpoint {
-            return wideSizeThatFits(width: width, subviews: subviews)
-        }
-        let rows = measuredRows(width: width, subviews: subviews)
-        let height = rows.reduce(0) { $0 + $1.height } + spacing * CGFloat(max(0, rows.count - 1))
-        return CGSize(width: width, height: height)
+        return CGSize(width: width,
+                      height: WidgetGridMetrics.height(of: slots(width: width, subviews: subviews)))
     }
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize,
                        subviews: Subviews, cache: inout ()) {
-        if bounds.width >= wideLayoutBreakpoint {
-            placeWideSubviews(in: bounds, subviews: subviews)
-            return
-        }
-        let rows = measuredRows(width: bounds.width, subviews: subviews)
-        var y = bounds.minY
-        for row in rows {
-            for cell in row.cells {
-                let x = bounds.minX + (cell.column == 0 ? 0 : cell.width + spacing)
-                cell.subview.place(
-                    at: CGPoint(x: x, y: y),
-                    anchor: .topLeading,
-                    proposal: ProposedViewSize(width: cell.width, height: row.height)
-                )
-            }
-            y += row.height + spacing
+        for (subview, slot) in zip(subviews, slots(width: bounds.width, subviews: subviews)) {
+            subview.place(
+                at: CGPoint(x: bounds.minX + slot.frame.minX, y: bounds.minY + slot.frame.minY),
+                anchor: .topLeading,
+                proposal: ProposedViewSize(width: slot.frame.width, height: slot.frame.height)
+            )
         }
     }
 
-    private struct Cell {
-        let subview: LayoutSubview
-        let width: CGFloat
-        let column: Int
-    }
-
-    private struct Row {
-        let cells: [Cell]
-        let height: CGFloat
-    }
-
-    private func wideSizeThatFits(width: CGFloat, subviews: Subviews) -> CGSize {
-        let rows = measuredWideRows(width: width, subviews: subviews)
-        let height = rows.reduce(0) { $0 + $1.height }
-            + spacing * CGFloat(max(0, rows.count - 1))
-        return CGSize(width: width, height: height)
-    }
-
-    private func placeWideSubviews(in bounds: CGRect, subviews: Subviews) {
-        let rows = measuredWideRows(width: bounds.width, subviews: subviews)
-        var y = bounds.minY
-        for row in rows {
-            for cell in row.cells {
-                cell.subview.place(
-                    at: CGPoint(x: bounds.minX + cell.x, y: y),
-                    anchor: .topLeading,
-                    proposal: ProposedViewSize(width: cell.width, height: cell.height)
-                )
-            }
-            y += row.height + spacing
+    private func slots(width: CGFloat, subviews: Subviews) -> [WidgetGridMetrics.Slot] {
+        // Placement zips positionally, so the packing ids are unused here.
+        let entries = subviews.map { subview in
+            let span = subview[WidgetSpanKey.self]
+            let naturalHeight = span >= 4
+                ? subview.sizeThatFits(ProposedViewSize(width: width, height: nil)).height
+                : WidgetGridMetrics.unitHeight
+            return WidgetGridMetrics.Entry(id: "", span: span, naturalHeight: naturalHeight)
         }
+        return WidgetGridMetrics.slots(for: entries, width: width)
+    }
+}
+
+// MARK: - Drag state
+
+/// The cursor position of an in-flight drag, split into its own object so its 120 Hz
+/// updates re-render only the floating tile — never the grid, the tiles, or their
+/// frame recorders.
+@MainActor
+private final class WidgetDragPointer: ObservableObject {
+    /// Floating-tile center target in grid space. Tracked 1:1 while dragging (never
+    /// animated); animated once by the settle spring.
+    @Published var location: CGPoint = .zero
+}
+
+/// Live state for an iOS-Home-Screen-style reorder drag: the picked-up tile renders as a
+/// floating copy above the grid while an invisible hole keeps its place in the flow, and
+/// the other tiles spring around the hole as it retargets.
+@MainActor
+private final class WidgetDragState: ObservableObject {
+    struct Active {
+        var kind: WidgetKind
+        /// Cursor − tile center at pickup, so the tile stays under the grab point.
+        var grabOffset: CGSize
+        var size: CGSize
     }
 
-    private struct WideCell {
-        let subview: LayoutSubview
-        let x: CGFloat
-        let width: CGFloat
-        let height: CGFloat
+    @Published var active: Active?
+    @Published var isSettling = false
+
+    /// High-frequency cursor tracking, deliberately outside this object's publisher.
+    let pointer = WidgetDragPointer()
+
+    /// Measured tile frames in grid space. Deliberately not `@Published`: they change on
+    /// every layout pass, and publishing them would feed rendering back into itself.
+    var liveFrames: [WidgetKind: CGRect] = [:]
+    /// Content heights captured while no drag is in flight, so hit-testing full-width
+    /// tiles never reads a mid-animation frame.
+    var settledHeights: [WidgetKind: CGFloat] = [:]
+    var gridWidth: CGFloat = 292
+
+    var isDragging: Bool { active != nil }
+
+    func reset() {
+        active = nil
+        isSettling = false
     }
+}
 
-    private struct WideRow {
-        let cells: [WideCell]
-        let height: CGFloat
-    }
+/// Reports a tile's frame (in grid space) into the drag state on every layout pass.
+private struct WidgetFrameRecorder: View {
+    @EnvironmentObject private var drag: WidgetDragState
+    let kind: WidgetKind
 
-    /// Four tracks preserve the original small-tile density while letting rich widgets
-    /// share a row: small = one track, large/calendar = two tracks.
-    private func measuredWideRows(width: CGFloat, subviews: Subviews) -> [WideRow] {
-        let trackCount = 4
-        let trackWidth = max(0, (width - spacing * CGFloat(trackCount - 1)) / CGFloat(trackCount))
-        var rows: [WideRow] = []
-        var cells: [WideCell] = []
-        var usedTracks = 0
-
-        func appendRow() {
-            guard !cells.isEmpty else { return }
-            rows.append(WideRow(cells: cells, height: cells.map(\.height).max() ?? 0))
-            cells = []
-            usedTracks = 0
+    var body: some View {
+        GeometryReader { proxy in
+            let frame = proxy.frame(in: .named(WidgetGridMetrics.spaceName))
+            Color.clear
+                .onChange(of: frame, initial: true) { _, newFrame in
+                    drag.liveFrames[kind] = newFrame
+                    if !drag.isDragging {
+                        drag.settledHeights[kind] = newFrame.height
+                    }
+                }
         }
-
-        for subview in subviews {
-            let span = subview[WidgetFullWidthKey.self] ? 2 : 1
-            if usedTracks + span > trackCount { appendRow() }
-            let cellWidth = trackWidth * CGFloat(span) + spacing * CGFloat(span - 1)
-            let height = subview.sizeThatFits(
-                ProposedViewSize(width: cellWidth, height: nil)
-            ).height
-            let x = CGFloat(usedTracks) * (trackWidth + spacing)
-            cells.append(WideCell(subview: subview, x: x, width: cellWidth, height: height))
-            usedTracks += span
-            if usedTracks == trackCount { appendRow() }
-        }
-        appendRow()
-        return rows
-    }
-
-    private func measuredRows(width: CGFloat, subviews: Subviews) -> [Row] {
-        let halfWidth = max(0, (width - spacing) / 2)
-        var rows: [Row] = []
-        var index = subviews.startIndex
-
-        while index < subviews.endIndex {
-            let first = subviews[index]
-            if first[WidgetFullWidthKey.self] {
-                let height = first.sizeThatFits(ProposedViewSize(width: width, height: nil)).height
-                let cell = Cell(subview: first, width: width, column: 0)
-                rows.append(Row(cells: [cell], height: height))
-                index = subviews.index(after: index)
-                continue
-            }
-
-            let firstHeight = first.sizeThatFits(ProposedViewSize(width: halfWidth, height: nil)).height
-            let firstCell = Cell(subview: first, width: halfWidth, column: 0)
-            let next = subviews.index(after: index)
-            if next < subviews.endIndex, !subviews[next][WidgetFullWidthKey.self] {
-                let second = subviews[next]
-                let secondHeight = second.sizeThatFits(ProposedViewSize(width: halfWidth, height: nil)).height
-                let secondCell = Cell(subview: second, width: halfWidth, column: 1)
-                rows.append(Row(cells: [firstCell, secondCell], height: max(firstHeight, secondHeight)))
-                index = subviews.index(after: next)
-            } else {
-                rows.append(Row(cells: [firstCell], height: firstHeight))
-                index = next
-            }
-        }
-        return rows
     }
 }
 
 // MARK: - Grid
 
-/// Uses the original iOS-style rows at compact widths. In the wider right-edge panel,
-/// four tracks let rich cards share rows while small cards keep their compact density.
+/// The popover's widget dashboard: a uniform four-column grid of 1×1, 2×1, and full-width
+/// tiles, with iOS-style drag-to-reorder and per-tile resizing while editing.
 struct WidgetGrid: View {
     @EnvironmentObject var layout: WidgetLayoutStore
     @EnvironmentObject private var monitor: SystemMonitor
     @EnvironmentObject private var calendar: CalendarSettingsStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.geraldineSurfaceActive) private var surfaceActive
     @State private var customizing = false
-    @StateObject private var dragCoordinator = WidgetDragCoordinator()
+    @StateObject private var drag = WidgetDragState()
 
     var body: some View {
         VStack(spacing: 8) {
@@ -203,12 +204,33 @@ struct WidgetGrid: View {
             if customizing { customizationPanel }
             widgetRows
         }
-        .animation(GeraldineMotion.animation(.gentleSpring, reduceMotion: reduceMotion), value: visibleItems)
         .environment(\.widgetCustomizationActive, customizing)
-        .environmentObject(dragCoordinator)
+        .environmentObject(drag)
         .onChange(of: customizing) { _, isCustomizing in
-            if !isCustomizing { dragCoordinator.end() }
+            if !isCustomizing { endDragIfNeeded() }
         }
+        // The popover panel is orderOut-hidden, not torn down, so onDisappear never fires
+        // on close — surfaceActive is the reliable "panel closed" signal. A DragGesture
+        // cancelled that way (e.g. Escape) calls neither onChanged nor onEnded.
+        .onChange(of: surfaceActive) { _, isActive in
+            if !isActive { endDragIfNeeded() }
+        }
+        // If the dragged tile itself vanishes (widget hidden from another window, battery
+        // removed), its gesture dies without onEnded; clear the stuck drag.
+        .onChange(of: visibleItems) { _, items in
+            if let active = drag.active, !items.contains(where: { $0.kind == active.kind }) {
+                endDragIfNeeded()
+            }
+        }
+        .onDisappear { endDragIfNeeded() }
+    }
+
+    /// A drag can end without `onEnded` (Escape, the popover closing, leaving edit mode).
+    /// Drop the floating tile in place and keep whatever order the drag reached.
+    private func endDragIfNeeded() {
+        guard drag.isDragging else { return }
+        drag.reset()
+        layout.persistNow()
     }
 
     @ViewBuilder private func widget(for item: WidgetItem) -> some View {
@@ -237,49 +259,48 @@ struct WidgetGrid: View {
             .padding(10)
             .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: Theme.Radius.badge, style: .continuous))
         } else {
-            VStack(spacing: Theme.Spacing.xs) {
-                WidgetPackingLayout(spacing: 8) {
-                    ForEach(visibleItems) { item in
-                        widget(for: item)
-                            .frame(maxWidth: .infinity)
-                            .layoutValue(key: WidgetFullWidthKey.self, value: isFullWidth(item))
-                            .widgetDragAppearance(item.kind)
-                    }
+            WidgetPackingLayout {
+                ForEach(visibleItems) { item in
+                    widget(for: item)
+                        .layoutValue(key: WidgetSpanKey.self, value: item.size.span)
+                        .widgetTileChrome(item)
                 }
-                if customizing { WidgetEndDropSlot() }
             }
+            // Scoped to the tiles only: the floating tile lives in the overlay ABOVE this
+            // modifier so reorders never spring-animate its cursor-tracking position.
+            .animation(GeraldineMotion.animation(.gentleSpring, reduceMotion: reduceMotion),
+                       value: visibleItems)
+            .background(GeometryReader { proxy in
+                Color.clear.onChange(of: proxy.size.width, initial: true) { _, width in
+                    drag.gridWidth = width
+                }
+            })
+            .coordinateSpace(name: WidgetGridMetrics.spaceName)
+            .overlay(alignment: .topLeading) { floatingTile }
+        }
+    }
+
+    @ViewBuilder private var floatingTile: some View {
+        if let active = drag.active,
+           let item = visibleItems.first(where: { $0.kind == active.kind }) {
+            FloatingWidgetTile(drag: drag, pointer: drag.pointer, item: item) { widget(for: $0) }
         }
     }
 
     private var customizationToolbar: some View {
-        HStack(spacing: 6) {
-            Button {
-                withAnimation(GeraldineMotion.animation(.standard, reduceMotion: reduceMotion)) {
-                    customizing.toggle()
-                }
-            } label: {
-                HStack(spacing: 5) {
-                    ContextualSymbol(
-                        inactive: "slider.horizontal.3",
-                        active: "checkmark",
-                        isActive: customizing,
-                        tint: customizing ? Theme.accent : Color(nsColor: .secondaryLabelColor),
-                        size: 11
-                    )
-                    Text(customizing ? "Done" : "Customize")
-                }
-                    .font(.caption2.weight(.semibold))
-                    .padding(.horizontal, 9)
-                    .frame(minHeight: Theme.Layout.minimumHitArea)
-                    .foregroundStyle(customizing ? Theme.accent : .secondary)
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(customizing ? "Edit Widgets" : "At a Glance")
+                    .font(.rounded(13, .semibold))
+                    .foregroundStyle(.primary)
+                Text(customizing
+                     ? "Drag tiles to reorder. Tap the arrows to resize."
+                     : "Live system signals and controls.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
-            .buttonStyle(.geraldineSelection(Theme.accent,
-                                              isSelected: customizing,
-                                              cornerRadius: Theme.Radius.pill,
-                                              showsSelectionRail: false))
-            .help(customizing ? "Finish customizing widgets" : "Customize menu bar widgets")
 
-            Spacer(minLength: 4)
+            Spacer(minLength: 8)
 
             if customizing {
                 Button {
@@ -293,6 +314,32 @@ struct WidgetGrid: View {
                 .buttonStyle(.quiet(Theme.accent))
                 .help("Reset widget layout")
             }
+
+            Button {
+                withAnimation(GeraldineMotion.animation(.standard, reduceMotion: reduceMotion)) {
+                    customizing.toggle()
+                }
+            } label: {
+                HStack(spacing: 5) {
+                    ContextualSymbol(
+                        inactive: "slider.horizontal.3",
+                        active: "checkmark",
+                        isActive: customizing,
+                        tint: customizing ? Theme.accent : Color(nsColor: .secondaryLabelColor),
+                        size: 11
+                    )
+                    Text(customizing ? "Done" : "Edit")
+                }
+                    .font(.caption2.weight(.semibold))
+                    .padding(.horizontal, 9)
+                    .frame(minHeight: Theme.Layout.minimumHitArea)
+                    .foregroundStyle(customizing ? Theme.accent : .secondary)
+            }
+            .buttonStyle(.geraldineSelection(Theme.accent,
+                                              isSelected: customizing,
+                                              cornerRadius: Theme.Radius.pill,
+                                              showsSelectionRail: false))
+            .help(customizing ? "Finish editing widgets" : "Edit menu bar widgets")
         }
     }
 
@@ -332,252 +379,270 @@ struct WidgetGrid: View {
         .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: Theme.Radius.badge, style: .continuous))
     }
 
-    /// Whether the kind/setting is currently shown in the popover.
-    private func isVisible(_ item: WidgetItem) -> Bool {
-        guard item.isShown else { return false }
-        return isCustomizable(item)
-    }
-
     private func isCustomizable(_ item: WidgetItem) -> Bool {
-        switch item.kind {
-        case .metric(let metric): return metric.isAvailable(hasBattery: monitor.hasBattery)
-        case .keepAwake:          return true
-        case .calendar:           return calendar.appearsInPopover
-        }
+        WidgetLayoutStore.isEligible(item.kind, hasBattery: monitor.hasBattery,
+                                     calendarInPopover: calendar.appearsInPopover)
     }
 
-    /// A tile spans the whole row when it's large, or when it can't be shrunk at all.
-    private func isFullWidth(_ item: WidgetItem) -> Bool {
-        item.size == .large || !item.kind.canResize
-    }
-
-    /// Flow the ordered items into rows: a full-width item takes its own row; smalls pair up.
+    /// Keep user ordering intact; the packing layout chooses the compact or wide row geometry.
     private var visibleItems: [WidgetItem] {
-        layout.items.filter(isVisible)
+        layout.visibleItems(hasBattery: monitor.hasBattery,
+                            calendarInPopover: calendar.appearsInPopover)
     }
 }
 
-// MARK: - Shared widget chrome
+// MARK: - Tile chrome (edit mode, drag, resize)
 
-/// Drag-to-reorder handle + size toggle, shared by every widget tile so Keep Awake
-/// behaves exactly like the metric widgets.
-struct WidgetControls: View {
-    @EnvironmentObject var layout: WidgetLayoutStore
+/// Everything a tile gains from living in the grid: frame reporting, edit-mode chrome
+/// (inert content + resize badge), the reorder drag gesture, and the hole appearance
+/// while its floating copy is being dragged.
+private struct WidgetTileChrome: ViewModifier {
+    @EnvironmentObject private var layout: WidgetLayoutStore
     @EnvironmentObject private var monitor: SystemMonitor
     @EnvironmentObject private var calendar: CalendarSettingsStore
-    @EnvironmentObject private var dragCoordinator: WidgetDragCoordinator
-    @Environment(\.widgetCustomizationActive) private var customizationActive
+    @EnvironmentObject private var drag: WidgetDragState
+    @Environment(\.widgetCustomizationActive) private var customizing
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    let kind: WidgetKind
-    let size: WidgetSize
+    let item: WidgetItem
 
-    var body: some View {
-        HStack(spacing: 0) {
-            if customizationActive {
-                Image(systemName: "line.3.horizontal")
-                    .font(.system(size: 11, weight: .semibold))
+    func body(content: Content) -> some View {
+        let isHole = drag.active?.kind == item.kind
+        content
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .allowsHitTesting(!customizing)
+            .opacity(isHole ? 0 : 1)
+            .overlay { if isHole { holePlaceholder } }
+            .overlay(alignment: .topTrailing) {
+                if customizing && !isHole { resizeBadge }
+            }
+            .background { WidgetFrameRecorder(kind: item.kind) }
+            .contentShape(Rectangle())
+            .gesture(dragGesture, including: customizing ? .all : .subviews)
+            .accessibilityElement(children: customizing ? .ignore : .contain)
+            .accessibilityLabel(customizing
+                                ? "\(item.kind.title(hasBattery: monitor.hasBattery)) widget, \(item.size.label)"
+                                : "")
+            .accessibilityHint(customizing ? "Use actions to move or resize." : "")
+            .accessibilityActions {
+                if customizing {
+                    Button("Move Earlier") { moveEarlier() }
+                    Button("Move Later") { moveLater() }
+                    if item.kind.canResize {
+                        Button("Resize to \(item.size.next.label)") { cycleSize() }
+                    }
+                }
+            }
+    }
+
+    private var holePlaceholder: some View {
+        RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
+            .fill(Theme.surfaceMuted)
+            .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
+                .strokeBorder(Theme.separator, lineWidth: 1))
+    }
+
+    @ViewBuilder private var resizeBadge: some View {
+        if item.kind.canResize {
+            Button(action: cycleSize) {
+                Image(systemName: item.size == .large
+                      ? "arrow.down.right.and.arrow.up.left"
+                      : "arrow.up.left.and.arrow.down.right")
+                    .font(.system(size: 9, weight: .semibold))
                     .foregroundStyle(Theme.accent)
                     .frame(width: 22, height: 22)
-                    .background(Theme.accent.opacity(0.12), in: Circle())
+                    .background(Theme.accent.opacity(0.14), in: Circle())
                     .overlay(Circle().strokeBorder(Theme.accent.opacity(0.30), lineWidth: 1))
-                    .frame(width: Theme.Layout.minimumHitArea, height: Theme.Layout.minimumHitArea)
-                    .contentShape(Rectangle())
-                    .help("Drag to reorder")
-                    .draggable(kind.id) {
-                        dragPreview
-                            .onAppear { dragCoordinator.begin(kind) }
-                            .onDisappear { dragCoordinator.end() }
-                    }
-                    .accessibilityElement()
-                    .accessibilityAddTraits(.isButton)
-                    .accessibilityLabel("Reorder \(kind.title(hasBattery: monitor.hasBattery))")
-                    .accessibilityHint("Drag, or use Move Earlier and Move Later actions.")
-                    .accessibilityAction(named: Text("Move Earlier")) {
-                        withAnimation(GeraldineMotion.animation(.gentleSpring, reduceMotion: reduceMotion)) {
-                            moveEarlier()
-                        }
-                    }
-                    .accessibilityAction(named: Text("Move Later")) {
-                        withAnimation(GeraldineMotion.animation(.gentleSpring, reduceMotion: reduceMotion)) {
-                            moveLater()
-                        }
-                    }
-                    .transition(.opacity.combined(with: .scale(scale: GeraldineMotion.iconSwapScale)))
             }
+            .buttonStyle(.quiet(Theme.accent))
+            .minimumHitArea()
+            .help("Resize to \(item.size.next.label)")
+            .accessibilityLabel("Resize \(item.kind.title(hasBattery: monitor.hasBattery)) to \(item.size.next.label)")
+            .transition(.opacity.combined(with: .scale(scale: GeraldineMotion.iconSwapScale)))
+        }
+    }
 
-            if kind.canResize {
-                Button {
-                    withAnimation(GeraldineMotion.animation(.gentleSpring, reduceMotion: reduceMotion)) {
-                        layout.toggleSize(kind)
-                    }
-                } label: {
-                    ContextualSymbol(
-                        inactive: "arrow.up.left.and.arrow.down.right",
-                        active: "arrow.down.right.and.arrow.up.left",
-                        isActive: size == .large,
-                        tint: customizationActive ? Theme.accent : Color(nsColor: .secondaryLabelColor),
-                        size: 10
+    private func cycleSize() {
+        withAnimation(GeraldineMotion.animation(.gentleSpring, reduceMotion: reduceMotion)) {
+            layout.cycleSize(item.kind)
+        }
+    }
+
+    // MARK: Reorder drag
+
+    private var dragGesture: some Gesture {
+        DragGesture(minimumDistance: 4, coordinateSpace: .named(WidgetGridMetrics.spaceName))
+            .onChanged { value in
+                if drag.active == nil {
+                    // A quick second drag can start while the previous drop is still
+                    // settling; finalize that drop instantly instead of eating the drag.
+                    if drag.isSettling { drag.reset() }
+                    // Pick up from the settled slot, not the live frame — grabbing a tile
+                    // mid-reflow would otherwise bake an animation offset into the drag.
+                    guard let frame = settledSlots().first(where: { $0.id == item.kind.id })?.frame
+                            ?? drag.liveFrames[item.kind] else { return }
+                    drag.pointer.location = value.location
+                    drag.active = .init(
+                        kind: item.kind,
+                        grabOffset: CGSize(width: value.startLocation.x - frame.midX,
+                                           height: value.startLocation.y - frame.midY),
+                        size: frame.size
                     )
+                } else if drag.active?.kind == item.kind, !drag.isSettling {
+                    drag.pointer.location = value.location
                 }
-                .buttonStyle(.quiet(customizationActive ? Theme.accent : Color.secondary))
-                .minimumHitArea()
-                .help(size == .small ? "Expand widget" : "Shrink widget")
-                .accessibilityLabel(size == .small
-                                    ? "Expand \(kind.title(hasBattery: monitor.hasBattery))"
-                                    : "Shrink \(kind.title(hasBattery: monitor.hasBattery))")
+                retarget(cursor: value.location)
             }
-        }
-        .animation(GeraldineMotion.animation(.standard, reduceMotion: reduceMotion), value: customizationActive)
+            .onEnded { _ in settle() }
     }
 
-    @ViewBuilder private var dragPreview: some View {
-        HStack(spacing: 5) {
-            switch kind {
-            case .metric(let metric): Image(systemName: metric.icon(hasBattery: monitor.hasBattery))
-            case .keepAwake:          EyeView(isActive: false, size: 16)
-            case .calendar:           Image(systemName: "calendar")
+    /// Reorders the array live as the floating tile's center enters another tile's slot.
+    /// Hit-testing runs against the *settled* frames `WidgetGridMetrics` predicts — never
+    /// the animating ones — and a move only commits if the cursor would rest inside the
+    /// dragged tile's new slot afterwards (a fixed point), so mixed-span swaps can't
+    /// ping-pong: hovering a spot that would immediately re-trigger the reverse move
+    /// simply doesn't reorder yet.
+    private func retarget(cursor: CGPoint) {
+        guard let active = drag.active, active.kind == item.kind, !drag.isSettling else { return }
+        let center = CGPoint(x: cursor.x - active.grabOffset.width,
+                             y: cursor.y - active.grabOffset.height)
+
+        let items = visibleItems
+        let slots = settledSlots(for: items)
+        let animation = GeraldineMotion.animation(.gentleSpring, reduceMotion: reduceMotion)
+
+        if let hit = slots.first(where: { slot in
+            slot.id != active.kind.id && slot.frame.insetBy(dx: 10, dy: 10).contains(center)
+        }), let target = WidgetKind(id: hit.id) {
+            guard converges(after: moved(items, dragged: active.kind, toIndexOf: target),
+                            center: center, dragged: active.kind) else { return }
+            withAnimation(animation) {
+                layout.stageMove(active.kind, toIndexOf: target)
             }
-            Text(kind.title(hasBattery: monitor.hasBattery))
+        } else if let lastSlot = slots.last, lastSlot.id != active.kind.id,
+                  center.y > lastSlot.frame.maxY
+                    || (center.y > lastSlot.frame.minY && center.x > lastSlot.frame.maxX) {
+            withAnimation(animation) {
+                layout.stageMoveToEnd(active.kind)
+            }
         }
-        .font(.caption).padding(6)
-        .adaptiveMaterialBackground(.ultraThin, in: Capsule())
     }
 
-    private var visibleOrder: [WidgetKind] {
-        layout.items.compactMap { item in
-            guard item.isShown else { return nil }
-            switch item.kind {
-            case .metric(let metric):
-                return metric.isAvailable(hasBattery: monitor.hasBattery) ? item.kind : nil
-            case .keepAwake:
-                return item.kind
-            case .calendar:
-                return calendar.appearsInPopover ? item.kind : nil
-            }
+    /// The fixed-point test: in the candidate order, would the floating center sit inside
+    /// the dragged tile's own predicted slot?
+    private func converges(after items: [WidgetItem], center: CGPoint, dragged: WidgetKind) -> Bool {
+        settledSlots(for: items)
+            .first { $0.id == dragged.id }?
+            .frame.contains(center) ?? false
+    }
+
+    /// `stageMove(_:toIndexOf:)` simulated on a visible-items copy.
+    private func moved(_ items: [WidgetItem], dragged: WidgetKind, toIndexOf target: WidgetKind) -> [WidgetItem] {
+        guard let from = items.firstIndex(where: { $0.kind == dragged }),
+              let to = items.firstIndex(where: { $0.kind == target }),
+              from != to else { return items }
+        var updated = items
+        updated.move(fromOffsets: IndexSet(integer: from), toOffset: to > from ? to + 1 : to)
+        return updated
+    }
+
+    /// Commits the order immediately (the drop is the user's decision — never leave it
+    /// hostage to an animation completing), then springs the floating tile into the hole.
+    private func settle() {
+        guard let active = drag.active, active.kind == item.kind, !drag.isSettling else { return }
+        layout.persistNow()
+        let destination = settledSlots().first { $0.id == active.kind.id }?.frame
+            ?? drag.liveFrames[active.kind]
+            ?? .zero
+        let restingPoint = CGPoint(x: destination.midX + active.grabOffset.width,
+                                   y: destination.midY + active.grabOffset.height)
+        guard let animation = GeraldineMotion.animation(.gentleSpring, reduceMotion: reduceMotion) else {
+            drag.reset()
+            return
         }
+        withAnimation(animation) {
+            drag.isSettling = true
+            drag.pointer.location = restingPoint
+        } completion: {
+            // A new pickup may have finalized this drop early; don't clobber its state.
+            guard drag.isSettling, drag.active?.kind == active.kind else { return }
+            drag.reset()
+        }
+    }
+
+    /// Where every visible tile will sit once the current order stops animating.
+    private func settledSlots(for items: [WidgetItem]? = nil) -> [WidgetGridMetrics.Slot] {
+        let entries = (items ?? visibleItems).map { item in
+            WidgetGridMetrics.Entry(
+                id: item.kind.id,
+                span: item.size.span,
+                naturalHeight: item.size == .large
+                    ? (drag.settledHeights[item.kind] ?? WidgetGridMetrics.unitHeight)
+                    : WidgetGridMetrics.unitHeight
+            )
+        }
+        return WidgetGridMetrics.slots(for: entries, width: drag.gridWidth)
+    }
+
+    // MARK: Accessibility reorder
+
+    private var visibleItems: [WidgetItem] {
+        layout.visibleItems(hasBattery: monitor.hasBattery,
+                            calendarInPopover: calendar.appearsInPopover)
     }
 
     private func moveEarlier() {
-        guard let index = visibleOrder.firstIndex(of: kind), index > 0 else { return }
-        layout.move(kind, before: visibleOrder[index - 1])
+        let order = visibleItems.map(\.kind)
+        guard let index = order.firstIndex(of: item.kind), index > 0 else { return }
+        withAnimation(GeraldineMotion.animation(.gentleSpring, reduceMotion: reduceMotion)) {
+            layout.move(item.kind, before: order[index - 1])
+        }
     }
 
     private func moveLater() {
-        guard let index = visibleOrder.firstIndex(of: kind), index + 1 < visibleOrder.count else { return }
-        layout.move(visibleOrder[index + 1], before: kind)
-    }
-}
-
-/// Accept a dropped widget id and reorder it before `target`.
-private struct WidgetDropTarget: ViewModifier {
-    @EnvironmentObject var layout: WidgetLayoutStore
-    @EnvironmentObject private var dragCoordinator: WidgetDragCoordinator
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.widgetCustomizationActive) private var customizationActive
-    let target: WidgetKind
-
-    func body(content: Content) -> some View {
-        content
-            .dropDestination(for: String.self) { dropped, _ in
-                guard customizationActive else { return false }
-                guard let raw = dropped.first,
-                      let dragged = WidgetKind(id: raw),
-                      dragged != target else {
-                    dragCoordinator.end()
-                    return false
-                }
-                withAnimation(GeraldineMotion.animation(.gentleSpring, reduceMotion: reduceMotion)) {
-                    layout.move(dragged, before: target)
-                }
-                dragCoordinator.end()
-                return true
-            } isTargeted: { isTargeted in
-                dragCoordinator.setTarget(target, active: isTargeted && customizationActive)
-            }
-    }
-}
-
-private struct WidgetEndDropSlot: View {
-    @EnvironmentObject private var layout: WidgetLayoutStore
-    @EnvironmentObject private var dragCoordinator: WidgetDragCoordinator
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var isTargeted = false
-
-    var body: some View {
-        HStack(spacing: Theme.Spacing.xs) {
-            Capsule()
-                .fill(isTargeted ? Theme.accent : Theme.separator)
-                .frame(height: isTargeted ? 4 : 2)
-                .shadow(color: isTargeted ? Theme.accent.opacity(0.48) : .clear,
-                        radius: isTargeted ? 7 : 0)
-            if dragCoordinator.dragged != nil {
-                Text("Drop At End")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(isTargeted ? Theme.accent : .secondary)
-                    .fixedSize()
-            }
+        let order = visibleItems.map(\.kind)
+        guard let index = order.firstIndex(of: item.kind), index + 1 < order.count else { return }
+        withAnimation(GeraldineMotion.animation(.gentleSpring, reduceMotion: reduceMotion)) {
+            layout.move(order[index + 1], before: item.kind)
         }
-        .frame(maxWidth: .infinity)
-        .frame(height: Theme.Layout.minimumHitArea)
-        .contentShape(Rectangle())
-        .dropDestination(for: String.self) { dropped, _ in
-            guard let raw = dropped.first, let kind = WidgetKind(id: raw) else {
-                dragCoordinator.end()
-                return false
-            }
-            withAnimation(GeraldineMotion.animation(.gentleSpring, reduceMotion: reduceMotion)) {
-                layout.moveToEnd(kind)
-            }
-            dragCoordinator.end()
-            return true
-        } isTargeted: { targeted in
-            isTargeted = targeted
-        }
-        .accessibilityHidden(dragCoordinator.dragged == nil)
-    }
-}
-
-private struct WidgetDragAppearance: ViewModifier {
-    @EnvironmentObject private var dragCoordinator: WidgetDragCoordinator
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    let kind: WidgetKind
-
-    func body(content: Content) -> some View {
-        let isDragged = dragCoordinator.dragged == kind
-        let isTarget = dragCoordinator.target == kind && !isDragged
-        content
-            .scaleEffect(isDragged && !reduceMotion ? 1.018 : 1)
-            .offset(y: isDragged && !reduceMotion ? -3 : 0)
-            .opacity(isDragged ? 0.88 : 1)
-            .padding(.leading, isTarget && !reduceMotion ? 8 : 0)
-            .overlay {
-                RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
-                    .strokeBorder(isTarget ? Theme.accent.opacity(0.28) : .clear, lineWidth: 1)
-            }
-            .overlay(alignment: .leading) {
-                Capsule()
-                    .fill(isTarget ? Theme.accent : .clear)
-                    .frame(width: 4)
-                    .padding(.vertical, Theme.Spacing.xs)
-                    .offset(x: isTarget ? -2 : 0)
-                    .shadow(color: isTarget ? Theme.accent.opacity(0.55) : .clear,
-                            radius: isTarget ? 7 : 0)
-            }
-            .zIndex(isDragged ? 2 : (isTarget ? 1 : 0))
-            .animation(GeraldineMotion.animation(.gentleSpring, reduceMotion: reduceMotion),
-                       value: dragCoordinator.dragged)
-            .animation(GeraldineMotion.animation(.quick, reduceMotion: reduceMotion),
-                       value: dragCoordinator.target)
     }
 }
 
 extension View {
-    func widgetDropTarget(_ target: WidgetKind) -> some View {
-        modifier(WidgetDropTarget(target: target))
+    fileprivate func widgetTileChrome(_ item: WidgetItem) -> some View {
+        modifier(WidgetTileChrome(item: item))
     }
+}
 
-    fileprivate func widgetDragAppearance(_ kind: WidgetKind) -> some View {
-        modifier(WidgetDragAppearance(kind: kind))
+/// The lifted copy of a dragged widget: follows the cursor 1:1, scales up with a shadow
+/// on pickup, and springs into the hole on release. Observes the pointer object directly
+/// so 120 Hz cursor updates re-render only this view, and carries no implicit animation —
+/// the lift and settle transactions drive all motion.
+private struct FloatingWidgetTile<Content: View>: View {
+    @ObservedObject var drag: WidgetDragState
+    @ObservedObject var pointer: WidgetDragPointer
+    let item: WidgetItem
+    @ViewBuilder let content: (WidgetItem) -> Content
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var lifted = false
+
+    var body: some View {
+        if let active = drag.active {
+            let raised = lifted && !drag.isSettling
+            content(item)
+                .frame(width: active.size.width, height: active.size.height)
+                .scaleEffect(raised && !reduceMotion ? 1.04 : 1)
+                .shadow(color: .black.opacity(raised ? 0.28 : 0.10),
+                        radius: raised ? 18 : 8,
+                        y: raised ? 10 : 4)
+                .position(x: pointer.location.x - active.grabOffset.width,
+                          y: pointer.location.y - active.grabOffset.height)
+                .allowsHitTesting(false)
+                .onAppear {
+                    withAnimation(GeraldineMotion.animation(.quick, reduceMotion: reduceMotion)) {
+                        lifted = true
+                    }
+                }
+        }
     }
 }
 
@@ -645,7 +710,8 @@ private struct NetworkRateUnitSliderButtonStyle: ButtonStyle {
 
 // MARK: - Widget
 
-/// One resizable, draggable metric tile. Small = compact readout; large = adds a chart.
+/// One resizable, draggable metric tile. Small = compact readout; medium = adds a chart
+/// or summary at the shared unit height; large = full-width with a taller chart.
 struct MetricWidget: View {
     let kind: MetricKind
     let size: WidgetSize
@@ -667,18 +733,14 @@ struct MetricWidget: View {
         Group {
             if kind == .network { networkBody } else { standardBody }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .frame(height: isSmall ? 120 : nil, alignment: .topLeading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .padding(10)
         .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
             .strokeBorder(customizationActive ? Theme.accent.opacity(0.24) : .clear, lineWidth: 1))
-        .widgetDropTarget(.metric(kind))
     }
 
     // MARK: Shared chrome
-
-    private var controls: some View { WidgetControls(kind: .metric(kind), size: size) }
 
     private func headerRow(@ViewBuilder trailing: () -> some View) -> some View {
         HStack(spacing: 5) {
@@ -686,7 +748,6 @@ struct MetricWidget: View {
             Text(kind.title(hasBattery: monitor.hasBattery)).font(.caption.weight(.medium)).foregroundStyle(.secondary).lineLimit(1)
             Spacer(minLength: 4)
             trailing()
-            controls
         }
     }
 
@@ -720,12 +781,13 @@ struct MetricWidget: View {
     @ViewBuilder private var standardBody: some View {
         VStack(alignment: .leading, spacing: isSmall ? 6 : 8) {
             headerRow {
-                if !isSmall {
+                // Hidden while editing so the value never sits under the resize badge.
+                if !isSmall && !customizationActive {
                     animatedValueText(size: 15, weight: .semibold)
                         .foregroundStyle(kind == .temperature ? tint : .primary)
                 }
             }
-            if isSmall { standardSmall } else { standardLarge }
+            if isSmall { standardSmall } else { standardExpanded }
         }
     }
 
@@ -762,12 +824,16 @@ struct MetricWidget: View {
         }
     }
 
-    @ViewBuilder private var standardLarge: some View {
+    /// Medium fills the shared unit height with a flexible chart; large (full width) gets
+    /// a taller fixed chart and takes the height it needs.
+    @ViewBuilder private var standardExpanded: some View {
         if kind == .storage {
             storageCapacitySummary
-                .frame(height: 66)
+                .frame(maxHeight: .infinity)
+        } else if size == .large {
+            chart.frame(height: 148)
         } else {
-            chart.frame(height: 66)
+            chart.frame(maxHeight: .infinity)
         }
         largeFooter
     }
@@ -890,7 +956,8 @@ struct MetricWidget: View {
     // MARK: Network widget
 
     @ViewBuilder private var networkBody: some View {
-        if isSmall {
+        switch size {
+        case .small:
             VStack(alignment: .leading, spacing: 6) {
                 networkHeader
                 HStack(spacing: 5) {
@@ -904,17 +971,25 @@ struct MetricWidget: View {
                     rate("arrow.up", monitor.netUp, Theme.accent)
                 }
             }
-        } else {
-            VStack(alignment: .leading, spacing: 8) {
-                networkHeader
-                HStack(alignment: .firstTextBaseline) {
-                    networkName(size: 16)
-                    Spacer()
-                    networkRateUnitToggle
-                    securityPill
+        case .medium:
+            // No chart at the unit height — name, security, live rates, and the speed
+            // test spread out instead, like an iOS medium widget.
+            VStack(alignment: .leading, spacing: 6) {
+                networkTitleRows
+                Spacer(minLength: 0)
+                HStack(spacing: 8) {
+                    rate("arrow.down", monitor.netDown, Theme.accent2)
+                    rate("arrow.up", monitor.netUp, Theme.accent)
+                    Spacer(minLength: 6)
+                    speedControl
                 }
+            }
+        case .large:
+            VStack(alignment: .leading, spacing: 8) {
+                networkTitleRows
                 NetworkTrafficChart(samples: monitor.networkHistory,
                                     stats: networkStats,
+                                    chartHeight: 104,
                                     rateUnit: networkRateUnit)
                 HStack(spacing: 8) {
                     if let link = network.linkRateMbps {
@@ -924,6 +999,18 @@ struct MetricWidget: View {
                     speedControl
                 }
             }
+        }
+    }
+
+    /// Header + name/toggle/security rows shared by the medium and large layouts, so the
+    /// widget doesn't jump as it cycles between them.
+    @ViewBuilder private var networkTitleRows: some View {
+        networkHeader
+        HStack(alignment: .firstTextBaseline) {
+            networkName(size: 16)
+            Spacer()
+            networkRateUnitToggle
+            securityPill
         }
     }
 
@@ -969,8 +1056,8 @@ struct MetricWidget: View {
                 .foregroundStyle(network.online ? Theme.accent2 : Theme.warn)
             Text(network.connection.label).font(.caption.weight(.medium)).foregroundStyle(.secondary).lineLimit(1)
             Spacer(minLength: 4)
-            signalGlyph
-            controls
+            // Hidden while editing so the glyph never sits under the resize badge.
+            if !customizationActive { signalGlyph }
         }
     }
 

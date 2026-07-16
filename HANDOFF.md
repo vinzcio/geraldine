@@ -1,7 +1,14 @@
 # Geraldine — Menu Bar Work Handoff
 
-**Last updated:** 2026-07-14
-**Status:** Active development consolidated onto `main`; tests, structured review, installed-app verification, and repository cleanup are the closeout gates. The June menu-bar adoption investigation in §6 is retained as historical troubleshooting context, not an unverified current blocker.
+**Last updated:** 2026-07-16
+**Status:** Current work is consolidated on `main`. The June menu-bar adoption investigation in §6 is retained as historical troubleshooting context, not an unverified current blocker.
+
+## Current closeout snapshot — 2026-07-16
+
+- Power Tools can close a Mission Control window with a two-finger click. The implementation uses the accessibility window beneath the transformed Mission Control thumbnail and has focused transform tests.
+- The menu-bar dashboard now uses a four-column iOS-style grid with small, medium, and full-width widget sizes. Editing, resizing, live drag reordering, persistence migration, accessibility reorder actions, and the Keep Awake/calendar tiles all share the same grid model.
+- Keep Awake uses both the no-idle-sleep and prevent-user-idle-display-sleep assertions while active; the installed app's live state remains authoritative via `pmset -g assertions`.
+- Canonical verification is `swift test --scratch-path /tmp/geraldine-closeout-tests`, then `./build.sh install run`, signature verification, and process-path proof against `/Applications/Geraldine.app`.
 
 ## Current closeout snapshot — 2026-07-14
 
@@ -12,7 +19,7 @@
 - Shared workflow/navigation polish covers stable sidebar selection, explicit loading/empty states, accessible hit targets, and consistent status/outcome presentation across maintenance and cleanup surfaces.
 - Canonical verification remains `swift test --scratch-path /tmp/geraldine-closeout-tests` followed by `./build.sh install run`, signature/build-stamp checks, and live process-path verification against `/Applications/Geraldine.app`.
 
-This doc is a self-contained handoff so you (or a fresh Claude Code session) can resume without re-deriving everything. Read §6 first if you only have time for one section — that's the open problem.
+This doc is a self-contained handoff so a fresh development session can resume without re-deriving the project history. Section 6 is historical troubleshooting context only.
 
 ---
 
