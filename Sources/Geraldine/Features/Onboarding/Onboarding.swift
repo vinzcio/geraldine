@@ -193,7 +193,7 @@ struct WelcomeView: View {
                     icon: "externaldrive.fill",
                     tint: Theme.accent,
                     title: "Full Disk Access",
-                    detail: "Required for complete cleanup, Space Lens, large-file scans, privacy cleanup, and app leftovers.",
+                    detail: "Required for complete cleanup, large-file scans, privacy cleanup, and app leftovers.",
                     status: state.hasFullDiskAccess ? .ready : .needsSetup
                 ) {
                     if !state.hasFullDiskAccess {

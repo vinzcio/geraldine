@@ -5,7 +5,7 @@ struct RootView: View {
     @AppStorage("didOnboard") private var didOnboard = false
 
     var body: some View {
-        NavigationSplitView {
+        HStack(spacing: 0) {
             // Swallow nil writes: clicking empty sidebar space deselects the
             // List, which would drop the highlight while a module stays open.
             Sidebar(selection: Binding(
@@ -15,17 +15,18 @@ struct RootView: View {
                     state.selection = newValue
                 }
             ))
-                .navigationSplitViewColumnWidth(
-                    min: Theme.Layout.sidebarMinWidth,
-                    ideal: Theme.Layout.sidebarIdealWidth,
-                    max: Theme.Layout.sidebarMaxWidth
-                )
-        } detail: {
+            .frame(width: Theme.Layout.sidebarIdealWidth)
+            .frame(maxHeight: .infinity)
+
+            Divider()
+
             let module = state.selection ?? .dashboard
             ZStack {
                 WindowBackground(module: module)
                 DetailHost(module: module, direction: state.navigationDirection)
             }
+            .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+            .clipped()
         }
         .geraldineSurfaceActive(state.mainWindowVisible)
         .background(WindowAccessor { window in state.bind(window: window) })
@@ -40,12 +41,9 @@ struct Sidebar: View {
     @Binding var selection: Module?
 
     var body: some View {
-        // The List stays the column root so NavigationSplitView bounds it and
-        // its scrolling works; wrapping it in a VStack/GeometryReader collapses
-        // (the sidebar column proposes no definite height to a wrapper) and a
-        // bottom safeAreaInset is silently dropped on a sidebar List — both
-        // routes leave the disk footer invisible. So the footer rides along as
-        // the List's last row instead of a pinned strip.
+        // Keep the List independently bounded by the app shell. Detail screens
+        // can have large intrinsic sizes, spacers, or geometry readers without
+        // participating in the sidebar's layout or scroll position.
         List(selection: $selection) {
             BrandHeader()
                 .listRowSeparator(.hidden)
@@ -70,6 +68,7 @@ struct Sidebar: View {
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
         .background(Theme.sidebar)
+        .frame(maxHeight: .infinity)
     }
 }
 
@@ -221,7 +220,6 @@ struct DetailHost: View {
             case .cleanup:     CleanupView()
             case .uninstaller: UninstallerView()
             case .largeFiles:  LargeFilesView()
-            case .spaceLens:   SpaceLensView()
             case .loginItems:  LoginItemsView()
             case .privacy:     PrivacyView()
             case .maintenance: MaintenanceView()

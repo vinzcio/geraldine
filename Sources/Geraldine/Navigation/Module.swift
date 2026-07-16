@@ -13,7 +13,6 @@ enum Module: String, CaseIterable, Identifiable {
     case calendar
     case cleanup
     case largeFiles
-    case spaceLens
     case uninstaller
     case powerTools
     case privacy
@@ -37,7 +36,6 @@ enum Module: String, CaseIterable, Identifiable {
         case .powerTools:  return "Power Tools"
         case .cleanup:     return "Cleanup"
         case .largeFiles:  return "Large & Old Files"
-        case .spaceLens:   return "Space Lens"
         case .uninstaller: return "Uninstaller"
         case .privacy:     return "Privacy"
         case .loginItems:  return "Login Items"
@@ -60,7 +58,6 @@ enum Module: String, CaseIterable, Identifiable {
         case .powerTools:  return "bolt.horizontal.circle.fill"
         case .cleanup:     return "sparkles"
         case .largeFiles:  return "doc.text.magnifyingglass"
-        case .spaceLens:   return "circle.hexagongrid.fill"
         case .uninstaller: return "trash"
         case .privacy:     return "hand.raised.fill"
         case .loginItems:  return "power"
@@ -83,7 +80,6 @@ enum Module: String, CaseIterable, Identifiable {
         case .powerTools:  return Theme.indigo
         case .cleanup:     return Theme.accent2
         case .largeFiles:  return Theme.orange
-        case .spaceLens:   return Theme.plum
         case .uninstaller: return Theme.rose
         case .privacy:     return Theme.aqua
         case .loginItems:  return Theme.indigo
@@ -110,7 +106,6 @@ enum Module: String, CaseIterable, Identifiable {
         case .powerTools:  return "Dock, window, keyboard, and Finder controls"
         case .cleanup:     return "Clear caches, logs, and junk"
         case .largeFiles:  return "Find big and forgotten files"
-        case .spaceLens:   return "See what's using your disk"
         case .uninstaller: return "Remove apps and their leftovers"
         case .privacy:     return "Clear browsing data and traces"
         case .loginItems:  return "Manage other apps and helpers that start up"
@@ -131,7 +126,7 @@ enum Module: String, CaseIterable, Identifiable {
     var group: Group {
         switch self {
         case .dashboard, .smartCare, .activity, .storage, .battery, .keepAwake, .calendar: return .overview
-        case .cleanup, .largeFiles, .spaceLens, .uninstaller: return .clean
+        case .cleanup, .largeFiles, .uninstaller: return .clean
         case .powerTools, .privacy, .loginItems, .maintenance, .updater, .permissions, .settings: return .tune
         }
     }

@@ -243,7 +243,7 @@ final class StorageViewModel: ObservableObject {
                             color: Theme.slate,
                             chartColor: Theme.Chart.plum,
                             confidence: .derived,
-                            route: .module(.spaceLens)),
+                            route: .none),
             to: &categories
         )
         return Result(categories: categories)
@@ -276,8 +276,6 @@ struct StorageView: View {
 
                         StorageActionGrid {
                             state.open(.cleanup)
-                        } openSpaceLens: {
-                            state.open(.spaceLens)
                         }
                         .geraldineEntrance(delay: 0.06, distance: 6)
 
@@ -392,26 +390,13 @@ private struct StorageCapacityHero: View {
 
 private struct StorageActionGrid: View {
     var openCleanup: () -> Void
-    var openSpaceLens: () -> Void
 
     var body: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: Theme.Spacing.sm) { actions }
-            VStack(spacing: Theme.Spacing.sm) { actions }
-        }
-    }
-
-    @ViewBuilder private var actions: some View {
         StorageRouteButton(icon: "sparkles",
                            title: "Free Up Space",
                            detail: "Review safe cleanup candidates.",
                            tint: Module.cleanup.tint,
                            action: openCleanup)
-        StorageRouteButton(icon: Module.spaceLens.systemImage,
-                           title: "Explore Folders",
-                           detail: "See where larger folders live.",
-                           tint: Module.spaceLens.tint,
-                           action: openSpaceLens)
     }
 }
 
@@ -526,7 +511,7 @@ private struct StorageCategoryRow: View {
         case .reveal:
             return ("Reveal", "arrow.up.forward.app")
         case .module(let module):
-            return (module == .spaceLens ? "Explore" : "Open", module.systemImage)
+            return ("Open", module.systemImage)
         case .none:
             return nil
         }

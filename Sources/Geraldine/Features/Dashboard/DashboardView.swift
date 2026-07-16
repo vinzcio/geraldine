@@ -120,7 +120,7 @@ struct DashboardView: View {
     private var healthJudgement: (title: String, detail: String, icon: String, tint: Color, module: Module?) {
         if monitor.diskFraction > 0.90 {
             return ("Storage needs some breathing room",
-                    "Your disk is over 90% full. Review Cleanup or Space Lens before macOS starts feeling cramped.",
+                    "Your disk is over 90% full. Review Cleanup or Large & Old Files before macOS starts feeling cramped.",
                     "internaldrive.fill.badge.exclamationmark", Theme.warn, .cleanup)
         }
         if monitor.memoryFraction > 0.88 {
@@ -185,7 +185,7 @@ struct DashboardView: View {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 210), spacing: 12)], spacing: 12) {
                 freeRAMChip
                 actionChip(.cleanup, "Run Cleanup")
-                actionChip(.spaceLens, "Open Space Lens")
+                actionChip(.largeFiles, "Find Large Files")
                 actionChip(.uninstaller, "Uninstall An App")
             }
         }
