@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import CoreGraphics
+import Darwin
 import Foundation
 
 enum DockActiveClickBehavior: String, CaseIterable, Identifiable {
@@ -72,6 +73,7 @@ private enum PowerToolKeys {
     static let unminimizeOnActivation = "powerTools.window.unminimizeOnActivation"
     static let greenButtonFillsWindow = "powerTools.window.greenButtonFillsWindow"
     static let yellowButtonHidesApp = "powerTools.window.yellowButtonHidesApp"
+    static let missionControlTwoFingerClose = "powerTools.window.missionControlTwoFingerClose"
     static let commandQDoubleTap = "powerTools.keyboard.commandQDoubleTap"
     static let commandWDoubleTap = "powerTools.keyboard.commandWDoubleTap"
     static let finderReturnOpens = "powerTools.finder.returnOpens"
@@ -105,6 +107,9 @@ final class PowerToolsController: ObservableObject {
     @Published var yellowButtonHidesApp: Bool {
         didSet { defaults.set(yellowButtonHidesApp, forKey: PowerToolKeys.yellowButtonHidesApp); applyHooks() }
     }
+    @Published var missionControlTwoFingerClose: Bool {
+        didSet { defaults.set(missionControlTwoFingerClose, forKey: PowerToolKeys.missionControlTwoFingerClose); applyHooks() }
+    }
     @Published var commandQDoubleTap: Bool {
         didSet { defaults.set(commandQDoubleTap, forKey: PowerToolKeys.commandQDoubleTap); applyHooks() }
     }
@@ -127,6 +132,7 @@ final class PowerToolsController: ObservableObject {
     private let defaults: UserDefaults
     private let dockService = DockInteractionService()
     private let trafficLightService = TrafficLightButtonService()
+    private let missionControlCloseService = MissionControlCloseService()
     private let keyboardService = KeyboardPowerToolsService()
     private let windowService = WindowActionService()
 
@@ -141,6 +147,7 @@ final class PowerToolsController: ObservableObject {
         unminimizeOnActivation = defaults.bool(forKey: PowerToolKeys.unminimizeOnActivation)
         greenButtonFillsWindow = defaults.bool(forKey: PowerToolKeys.greenButtonFillsWindow)
         yellowButtonHidesApp = defaults.bool(forKey: PowerToolKeys.yellowButtonHidesApp)
+        missionControlTwoFingerClose = defaults.object(forKey: PowerToolKeys.missionControlTwoFingerClose) as? Bool ?? true
         commandQDoubleTap = defaults.bool(forKey: PowerToolKeys.commandQDoubleTap)
         commandWDoubleTap = defaults.bool(forKey: PowerToolKeys.commandWDoubleTap)
         finderReturnOpens = defaults.bool(forKey: PowerToolKeys.finderReturnOpens)
@@ -156,6 +163,7 @@ final class PowerToolsController: ObservableObject {
     func stop() {
         dockService.stop()
         trafficLightService.stop()
+        missionControlCloseService.stop()
         keyboardService.stop()
         windowService.stopActivationObserver()
     }
@@ -232,10 +240,138 @@ final class PowerToolsController: ObservableObject {
         let needsTrafficTap = greenButtonFillsWindow || yellowButtonHidesApp
         needsTrafficTap ? trafficLightService.start() : trafficLightService.stop()
 
+        missionControlTwoFingerClose ? missionControlCloseService.start() : missionControlCloseService.stop()
+
         let needsKeyboardTap = commandQDoubleTap || commandWDoubleTap || finderReturnOpens || finderCutPaste || finderOptionNNewFile
         needsKeyboardTap ? keyboardService.start() : keyboardService.stop()
 
         unminimizeOnActivation ? windowService.startActivationObserver() : windowService.stopActivationObserver()
+    }
+}
+
+struct MissionControlTransformMath {
+    static func contains(screenPoint: CGPoint, windowSize: CGSize, screenToWindow: CGAffineTransform) -> Bool {
+        guard windowSize.width > 0, windowSize.height > 0 else { return false }
+        let windowPoint = screenPoint.applying(screenToWindow)
+        return CGRect(origin: .zero, size: windowSize).insetBy(dx: -2, dy: -2).contains(windowPoint)
+    }
+
+    static func transformedArea(windowSize: CGSize, screenToWindow: CGAffineTransform) -> CGFloat {
+        let determinant = abs(screenToWindow.a * screenToWindow.d - screenToWindow.b * screenToWindow.c)
+        guard determinant > .ulpOfOne else { return .greatestFiniteMagnitude }
+        return windowSize.width * windowSize.height / determinant
+    }
+}
+
+private typealias SLSMainConnectionIDFunction = @convention(c) () -> Int32
+private typealias SLSGetWindowTransformFunction = @convention(c) (
+    Int32,
+    CGWindowID,
+    UnsafeMutablePointer<CGAffineTransform>
+) -> CGError
+private typealias AXUIElementGetWindowFunction = @convention(c) (
+    AXUIElement,
+    UnsafeMutablePointer<CGWindowID>
+) -> AXError
+
+private enum MissionControlWindowServer {
+    private struct Candidate {
+        let processIdentifier: pid_t
+        let windowID: CGWindowID
+        let transformedArea: CGFloat
+    }
+
+    private static let skyLightHandle = dlopen(
+        "/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight",
+        RTLD_NOW
+    )
+
+    private static let mainConnectionID: SLSMainConnectionIDFunction? = symbol(
+        named: "SLSMainConnectionID",
+        in: skyLightHandle
+    )
+
+    private static let getWindowTransform: SLSGetWindowTransformFunction? =
+        symbol(named: "SLSGetWindowTransform", in: skyLightHandle) ??
+        symbol(named: "CGSGetWindowTransform", in: skyLightHandle)
+
+    private static let getWindowID: AXUIElementGetWindowFunction? = symbol(
+        named: "_AXUIElementGetWindow",
+        in: UnsafeMutableRawPointer(bitPattern: -2)
+    )
+
+    static func window(at screenPoint: CGPoint) -> AXUIElement? {
+        guard let mainConnectionID, let getWindowTransform, let getWindowID else { return nil }
+        let connection = mainConnectionID()
+        var candidates: [Candidate] = []
+
+        let windowInfo = CGWindowListCopyWindowInfo(
+            [.optionOnScreenOnly, .excludeDesktopElements],
+            kCGNullWindowID
+        ) as? [[String: Any]] ?? []
+
+        for info in windowInfo {
+            guard let windowID = info[kCGWindowNumber as String] as? CGWindowID,
+                  let processIdentifier = info[kCGWindowOwnerPID as String] as? pid_t,
+                  processIdentifier != 0,
+                  let boundsDictionary = info[kCGWindowBounds as String] as? NSDictionary,
+                  let bounds = CGRect(dictionaryRepresentation: boundsDictionary),
+                  bounds.width > 0,
+                  bounds.height > 0 else { continue }
+
+            var screenToWindow = CGAffineTransform.identity
+            guard getWindowTransform(connection, windowID, &screenToWindow) == .success,
+                  MissionControlTransformMath.contains(
+                    screenPoint: screenPoint,
+                    windowSize: bounds.size,
+                    screenToWindow: screenToWindow
+                  ) else { continue }
+
+            candidates.append(Candidate(
+                processIdentifier: processIdentifier,
+                windowID: windowID,
+                transformedArea: MissionControlTransformMath.transformedArea(
+                    windowSize: bounds.size,
+                    screenToWindow: screenToWindow
+                )
+            ))
+        }
+
+        guard let candidate = candidates.min(by: { $0.transformedArea < $1.transformedArea }),
+              let app = NSRunningApplication(processIdentifier: candidate.processIdentifier) else {
+            return nil
+        }
+
+        return AXTools.windows(of: app).first { window in
+            var windowID: CGWindowID = 0
+            return getWindowID(window, &windowID) == .success && windowID == candidate.windowID
+        }
+    }
+
+    private static func symbol<T>(named name: String, in handle: UnsafeMutableRawPointer?) -> T? {
+        guard let handle, let rawSymbol = dlsym(handle, name) else { return nil }
+        return unsafeBitCast(rawSymbol, to: T.self)
+    }
+}
+
+final class MissionControlCloseService {
+    private lazy var tap = EventTapService(
+        mask: CGEventMask(1 << CGEventType.rightMouseDown.rawValue)
+    ) { [weak self] _, event in
+        self?.handle(event: event) ?? false
+    }
+
+    func start() { tap.start() }
+    func stop() { tap.stop() }
+
+    private func handle(event: CGEvent) -> Bool {
+        guard UserDefaults.standard.object(forKey: PowerToolKeys.missionControlTwoFingerClose) as? Bool ?? true,
+              AXTools.missionControlGroup() != nil,
+              let window = MissionControlWindowServer.window(at: event.location) else {
+            return false
+        }
+
+        return AXTools.close(window: window)
     }
 }
 
@@ -1031,6 +1167,29 @@ private enum AXTools {
             current = parent
         }
         return nil
+    }
+
+    static func missionControlGroup() -> AXUIElement? {
+        guard let dock = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock").first else {
+            return nil
+        }
+        let dockElement = AXUIElementCreateApplication(dock.processIdentifier)
+        return array(dockElement, kAXChildrenAttribute).first { child in
+            string(child, "AXIdentifier") == "mc"
+        }
+    }
+
+    static func closeButton(of window: AXUIElement) -> AXUIElement? {
+        value(window, kAXCloseButtonAttribute, as: AXUIElement.self)
+    }
+
+    @discardableResult
+    static func close(window: AXUIElement) -> Bool {
+        if let closeButton = closeButton(of: window),
+           AXUIElementPerformAction(closeButton, kAXPressAction as CFString) == .success {
+            return true
+        }
+        return AXUIElementPerformAction(window, "AXClose" as CFString) == .success
     }
 
     static func setMinimized(_ minimized: Bool, for window: AXUIElement) {

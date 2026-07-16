@@ -165,7 +165,13 @@ struct PowerToolsView: View {
             Toggle("Yellow Traffic-Light Hides The App",
                    isOn: tracking($powerTools.yellowButtonHidesApp, section: .windows))
                 .toggleStyle(.switch)
+            Toggle("Two-Finger Tap Closes A Window In Mission Control",
+                   isOn: tracking($powerTools.missionControlTwoFingerClose, section: .windows))
+                .toggleStyle(.switch)
             Text("Hold Option while clicking a traffic-light button to let macOS handle the original action.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text("Uses the trackpad’s two-finger secondary click while the Mission Control window overview is open.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
