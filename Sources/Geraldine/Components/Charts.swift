@@ -420,8 +420,8 @@ struct NetworkTimelineGraph: View {
         timeline.visible(samples)
     }
 
-    private var scale: Double {
-        let samplePeak = visibleSamples.reduce(0) { peak, sample in
+    private func scale(for samples: [NetworkSample]) -> Double {
+        let samplePeak = samples.reduce(0) { peak, sample in
             max(peak, sample.down, sample.up)
         }
         return max(samplePeak, downReference ?? 0, upReference ?? 0, 1)
@@ -429,7 +429,14 @@ struct NetworkTimelineGraph: View {
 
     @ViewBuilder
     private func content(in size: CGSize) -> some View {
-        let sampleSegments = segments
+        let visibleSamples = visibleSamples
+        let sampleSegments = TimelineChartRendering.segments(
+            samples: visibleSamples,
+            timeline: timeline,
+            gapThreshold: gapThreshold,
+            maximumPointCount: nil
+        )
+        let chartScale = scale(for: visibleSamples)
 
         if sampleSegments.isEmpty {
             CollectingHistoryState(tint: downTint)
@@ -437,10 +444,12 @@ struct NetworkTimelineGraph: View {
         } else {
             ZStack {
                 ChartPlotField(tint: downTint)
-                referenceLine(downReference, tint: downTint, in: size)
-                referenceLine(upReference, tint: upTint, in: size)
-                series(segments: sampleSegments, value: \.down, tint: downTint, in: size)
-                series(segments: sampleSegments, value: \.up, tint: upTint, in: size)
+                referenceLine(downReference, scale: chartScale, tint: downTint, in: size)
+                referenceLine(upReference, scale: chartScale, tint: upTint, in: size)
+                series(segments: sampleSegments, value: \.down, scale: chartScale,
+                       tint: downTint, in: size)
+                series(segments: sampleSegments, value: \.up, scale: chartScale,
+                       tint: upTint, in: size)
             }
             .transition(.opacity)
         }
@@ -457,10 +466,10 @@ struct NetworkTimelineGraph: View {
 
     @ViewBuilder
     private func series(segments: [[NetworkSample]], value: KeyPath<NetworkSample, Double>,
-                        tint: Color, in size: CGSize) -> some View {
+                        scale: Double, tint: Color, in size: CGSize) -> some View {
         ForEach(segments.indices, id: \.self) { index in
             let samples = segments[index]
-            let points = samples.map { point($0, value: $0[keyPath: value], in: size) }
+            let points = samples.map { point($0, value: $0[keyPath: value], scale: scale, in: size) }
             let isLatestSegment = index == segments.indices.last
             if samples.count == 1, let point = points.first {
                 if isLatestSegment {
@@ -498,7 +507,7 @@ struct NetworkTimelineGraph: View {
     }
 
     @ViewBuilder
-    private func referenceLine(_ value: Double?, tint: Color, in size: CGSize) -> some View {
+    private func referenceLine(_ value: Double?, scale: Double, tint: Color, in size: CGSize) -> some View {
         if let value, value.isFinite, value > 0 {
             let y = size.height * (1 - CGFloat(min(max(value / scale, 0), 1)))
             Path { p in
@@ -510,7 +519,7 @@ struct NetworkTimelineGraph: View {
         }
     }
 
-    private func point(_ sample: NetworkSample, value: Double, in size: CGSize) -> CGPoint {
+    private func point(_ sample: NetworkSample, value: Double, scale: Double, in size: CGSize) -> CGPoint {
         let x = timeline.fraction(for: sample.timestamp)
         let y = min(max(value / scale, 0), 1)
         return CGPoint(x: size.width * CGFloat(x),

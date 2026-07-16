@@ -158,7 +158,7 @@ struct PermissionsView: View {
             requirement: .required,
             status: state.hasFullDiskAccess ? .ready : .needsSetup,
             summary: "Required for complete cleanup and disk insight.",
-            impact: "Cleanup, Privacy cleanup, Space Lens, Large & Old Files, and Uninstaller leftover scans can miss protected folders without it.",
+            impact: "Cleanup, Privacy cleanup, Large & Old Files, and Uninstaller leftover scans can miss protected folders without it.",
             note: state.hasFullDiskAccess ? nil : "If it still shows as off right after you allow it, quit and reopen Geraldine, then recheck.",
             returnTone: tone(for: .fullDisk)
         ) {
