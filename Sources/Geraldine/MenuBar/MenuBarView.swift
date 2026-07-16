@@ -3,6 +3,7 @@ import SwiftUI
 struct MenuBarView: View {
     @EnvironmentObject var state: AppState
     @EnvironmentObject var monitor: SystemMonitor
+    @EnvironmentObject private var devices: DeviceMonitor
     let onContentHeightChange: (CGFloat) -> Void
     @State private var freeingMemory = false
     @State private var contentHeight: CGFloat = 520
@@ -17,9 +18,25 @@ struct MenuBarView: View {
     }
 
     private var health: (label: String, color: Color) {
-        if monitor.diskFraction > 0.9 || monitor.memoryFraction > 0.9 { return ("Needs Attention", Theme.warn) }
+        if hasAttentionRecommendation { return ("Needs Attention", Theme.warn) }
         if (monitor.batteryLevel ?? 1) < 0.15 && !monitor.batteryCharging { return ("Battery Low", Theme.warn) }
         return ("Looking Good", Theme.good)
+    }
+
+    /// Derived from the recommendation itself so the "Needs Attention" label can never
+    /// disagree with whether a recommendation card actually renders.
+    private var hasAttentionRecommendation: Bool {
+        attentionRecommendation() != nil
+    }
+
+    private var shouldShowDevices: Bool {
+        // Preserve the card while its inventory is loading, but do not leave an
+        // empty completed scan competing with the dashboard's primary signals.
+        devices.scanning || !devices.devices.isEmpty
+    }
+
+    private var hasSupportingContent: Bool {
+        hasAttentionRecommendation || shouldShowDevices
     }
 
     var body: some View {
@@ -50,34 +67,20 @@ struct MenuBarView: View {
     }
 
     private var content: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 16) {
             PopoverRevealGroup(index: 0, isVisible: state.menuBarPopoverVisible) {
                 header
             }
             PopoverRevealGroup(index: 1, isVisible: state.menuBarPopoverVisible) {
-                VStack(alignment: .leading, spacing: 12) {
-                    WidgetGrid()
-                    HStack(alignment: .top, spacing: 12) {
-                        DevicesCard()
-                            .frame(maxWidth: .infinity)
-                        recommendation
-                            .frame(maxWidth: .infinity)
-                    }
+                WidgetGrid()
+            }
+            if hasSupportingContent {
+                PopoverRevealGroup(index: 2, isVisible: state.menuBarPopoverVisible) {
+                    supportingContent
                 }
             }
-            PopoverRevealGroup(index: 2, isVisible: state.menuBarPopoverVisible) {
-                VStack(alignment: .leading, spacing: 12) {
-                    Divider()
-                    HStack(spacing: 8) {
-                        menuRow("Run Smart Care", "checkmark.seal.fill") { state.open(.smartCare) }
-                        menuRow("Settings", "gearshape") { state.open(.settings) }
-                        Spacer(minLength: 4)
-                        Button { NSApp.terminate(nil) } label: {
-                            Label("Quit", systemImage: "power").font(.callout)
-                        }
-                        .buttonStyle(.quiet(Theme.bad))
-                    }
-                }
+            PopoverRevealGroup(index: hasSupportingContent ? 3 : 2, isVisible: state.menuBarPopoverVisible) {
+                footer
             }
         }
         .padding(16)
@@ -107,38 +110,50 @@ struct MenuBarView: View {
         }
     }
 
-    // MARK: recommendation
+    // MARK: Supporting status
+
+    @ViewBuilder private var supportingContent: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if hasAttentionRecommendation {
+                recommendation
+            }
+            if shouldShowDevices {
+                DevicesCard()
+            }
+        }
+    }
 
     @ViewBuilder private var recommendation: some View {
-        let rec = recommend()
-        let busy = rec.freesMemory && freeingMemory
-        Button(action: rec.action) {
-            HStack(spacing: 10) {
-                Group {
-                    if busy {
-                        ProgressView().controlSize(.mini)
-                    } else {
-                        Image(systemName: rec.icon).foregroundStyle(rec.tint)
+        if let rec = attentionRecommendation() {
+            let busy = rec.freesMemory && freeingMemory
+            Button(action: rec.action) {
+                HStack(spacing: 10) {
+                    Group {
+                        if busy {
+                            ProgressView().controlSize(.mini)
+                        } else {
+                            Image(systemName: rec.icon).foregroundStyle(rec.tint)
+                        }
                     }
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(rec.title).font(.caption.weight(.semibold)).foregroundStyle(.primary)
+                        Text(busy ? "Freeing Up Memory…" : rec.subtitle).font(.caption2).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    if rec.actionable { Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary) }
                 }
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(rec.title).font(.caption.weight(.semibold)).foregroundStyle(.primary)
-                    Text(busy ? "Freeing Up Memory…" : rec.subtitle).font(.caption2).foregroundStyle(.secondary)
-                }
-                Spacer()
-                if rec.actionable { Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary) }
+                .geraldineAnimation(.standard, value: freeingMemory)
             }
-            .geraldineAnimation(.standard, value: freeingMemory)
+            .buttonStyle(.actionableCard(padding: 10,
+                                         tier: .tinted(rec.tint),
+                                         cornerRadius: Theme.Radius.control))
+            .disabled(busy)
         }
-        .buttonStyle(.actionableCard(padding: 10,
-                                     tier: .tinted(rec.tint),
-                                     cornerRadius: Theme.Radius.control))
-        .disabled(busy)
     }
 
     private struct Rec { var title: String; var subtitle: String; var icon: String; var tint: Color; var actionable: Bool; var freesMemory: Bool = false; var action: () -> Void }
 
-    private func recommend() -> Rec {
+    private func attentionRecommendation() -> Rec? {
         if monitor.diskFraction > 0.88 {
             return Rec(title: "You're Low On Disk Space", subtitle: "Run Cleanup To Free Some Up",
                        icon: "internaldrive.fill", tint: Theme.warn, actionable: true) { state.open(.cleanup) }
@@ -147,8 +162,7 @@ struct MenuBarView: View {
             return Rec(title: "Memory Is Running High", subtitle: "Free Up Inactive Memory",
                        icon: "memorychip", tint: Theme.warn, actionable: true, freesMemory: true, action: freeMemory)
         }
-        return Rec(title: "Your Mac Looks Healthy", subtitle: "Run A Smart Care Check Anytime",
-                   icon: "checkmark.seal.fill", tint: Theme.good, actionable: true) { state.open(.smartCare) }
+        return nil
     }
 
     private func freeMemory() {
@@ -158,6 +172,21 @@ struct MenuBarView: View {
             _ = await MemoryActions.freeUpRAM()
             monitor.refresh()
             freeingMemory = false
+        }
+    }
+
+    private var footer: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Divider()
+            HStack(spacing: 8) {
+                menuRow("Run Smart Care", "checkmark.seal.fill") { state.open(.smartCare) }
+                menuRow("Settings", "gearshape") { state.open(.settings) }
+                Spacer(minLength: 4)
+                Button { NSApp.terminate(nil) } label: {
+                    Label("Quit", systemImage: "power").font(.callout)
+                }
+                .buttonStyle(.quiet(Theme.bad))
+            }
         }
     }
 

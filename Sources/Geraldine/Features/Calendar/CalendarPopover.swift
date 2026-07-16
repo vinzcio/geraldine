@@ -7,8 +7,8 @@ private func clockAnchor() -> Date {
     Calendar.current.dateInterval(of: .minute, for: Date())?.start ?? Date()
 }
 
-/// The calendar as a draggable, reorderable popover widget — same chrome, drag handle,
-/// and drop behavior as the metric tiles, but always full-width. Holds today's date +
+/// The calendar as a draggable, reorderable popover widget — same grid chrome as the
+/// metric tiles, but always full-width. Holds today's date +
 /// live time, a navigable month grid, and (folded in, not a separate widget) the world
 /// clocks with a time-travel slider. Driven by `CalendarSettingsStore`.
 struct CalendarWidget: View {
@@ -46,7 +46,7 @@ struct CalendarWidget: View {
                 WorldClocksSection()
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .padding(10)
         .background(Theme.surfaceMuted,
                     in: RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
@@ -54,7 +54,6 @@ struct CalendarWidget: View {
             RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
                 .strokeBorder(Theme.separator, lineWidth: 1)
         }
-        .widgetDropTarget(.calendar)
         .onChange(of: reduceMotion) { _, isReduced in
             if isReduced { finishMonthTransition() }
         }
@@ -66,7 +65,6 @@ struct CalendarWidget: View {
             Image(systemName: "calendar").font(.caption).foregroundStyle(Theme.accent)
             Text("Calendar & Clocks").font(.caption.weight(.medium)).foregroundStyle(.secondary)
             Spacer(minLength: 4)
-            WidgetControls(kind: .calendar, size: .large)
         }
     }
 

@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// The Keep Awake control as a draggable, resizable tile. Idle and active are two distinct
-/// layouts: idle picks a duration and starts; active leads with a countdown halo, then stop / extend.
+/// layouts per size: idle picks a duration and starts; active leads with the countdown.
 /// The eye and the Start/Stop button arm or end a session —
 /// choosing a duration never starts one. Lives in the same grid as the metric widgets but never
 /// drives the menu-bar status item (see `menuBarKind`).
@@ -13,28 +13,39 @@ struct KeepAwakeWidget: View {
     @Environment(\.geraldineSurfaceActive) private var surfaceActive
     @Namespace private var eyeNamespace
 
-    private var isSmall: Bool { size == .small }
     private var active: Bool { keepAwake.isActive }
     private var stateTint: Color { active ? Theme.bad : Module.keepAwake.tint }
     private var lastError: String? { active ? nil : keepAwake.lastError }
     private var motionReduced: Bool { reduceMotion || !surfaceActive }
 
-    /// The top row must clear the drag/resize controls floating in the top-trailing corner.
-    private var controlsReserve: CGFloat {
-        customizationActive ? 86 : 46
+    var body: some View {
+        Group {
+            switch size {
+            case .small:  stateSwitcher(idle: { smallIdle }, active: { smallActive })
+            case .medium: stateSwitcher(idle: { mediumIdle }, active: { expandedActive(compact: true) })
+            case .large:  stateSwitcher(idle: { largeIdle }, active: { expandedActive(compact: false) })
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(10)
+        .background { tileBackground }
     }
 
-    var body: some View {
-        Group { if isSmall { small } else { large } }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .frame(height: isSmall ? 120 : nil, alignment: .topLeading)
-            .padding(10)
-            .background { tileBackground }
-            .overlay(alignment: .topTrailing) {
-                WidgetControls(kind: .keepAwake, size: size)
-                    .padding(10)
+    /// The idle/active cross-fade every size shares.
+    private func stateSwitcher<Idle: View, Active: View>(
+        @ViewBuilder idle: () -> Idle,
+        @ViewBuilder active activeLayout: () -> Active
+    ) -> some View {
+        ZStack(alignment: .topLeading) {
+            if active {
+                activeLayout()
+                    .transition(GeraldineMotion.stateTransition(reduceMotion: motionReduced))
+            } else {
+                idle()
+                    .transition(GeraldineMotion.stateTransition(reduceMotion: motionReduced))
             }
-            .widgetDropTarget(.keepAwake)
+        }
+        .animation(GeraldineMotion.animation(.standard, reduceMotion: motionReduced), value: active)
     }
 
     private var tileBackground: some View {
@@ -52,19 +63,6 @@ struct KeepAwakeWidget: View {
     }
 
     // MARK: - Small tile
-
-    @ViewBuilder private var small: some View {
-        ZStack(alignment: .topLeading) {
-            if active {
-                smallActive
-                    .transition(GeraldineMotion.stateTransition(reduceMotion: motionReduced))
-            } else {
-                smallIdle
-                    .transition(GeraldineMotion.stateTransition(reduceMotion: motionReduced))
-            }
-        }
-        .animation(GeraldineMotion.animation(.standard, reduceMotion: motionReduced), value: active)
-    }
 
     private var smallIdle: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -84,7 +82,8 @@ struct KeepAwakeWidget: View {
             header(eyeSize: 26, title: "Awake", subtitle: nil,
                    tint: stateTint, eyeIsSource: false)
             remainingHeadline(size: 21)
-            if hasEnd { StatBar(fraction: progress, tint: Theme.Chart.red, height: 4) }
+            // Drains like the countdown halo: the bar shows time *remaining*.
+            if hasEnd { StatBar(fraction: 1 - progress, tint: Theme.Chart.red, height: 4) }
             Spacer(minLength: 0)
             // The idle-activity menu replaces the end-time line here (the
             // countdown headline already carries the time): the small active
@@ -98,20 +97,43 @@ struct KeepAwakeWidget: View {
         }
     }
 
-    // MARK: - Large tile
+    // MARK: - Medium tile (2×1, shared unit height)
 
-    @ViewBuilder private var large: some View {
-        ZStack(alignment: .topLeading) {
-            if active {
-                largeActive
-                    .transition(GeraldineMotion.stateTransition(reduceMotion: motionReduced))
-            } else {
-                largeIdle
-                    .transition(GeraldineMotion.stateTransition(reduceMotion: motionReduced))
+    private var mediumIdle: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            header(eyeSize: 36, title: "Keep Awake", subtitle: "Your Mac Sleeps Normally",
+                   eyeIsSource: true)
+            if let lastError { errorLabel(lastError, lineLimit: 1) }
+            Spacer(minLength: 0)
+            HStack(spacing: 6) {
+                durationPill
+                idleActivityMenuPill
+                Spacer(minLength: 4)
+                actionButton(compact: false)
             }
         }
-        .animation(GeraldineMotion.animation(.standard, reduceMotion: motionReduced), value: active)
     }
+
+    /// The active session layout the medium and large tiles share: countdown hero,
+    /// a remaining-time bar that drains like the halo, then idle/extend/stop controls.
+    private func expandedActive(compact: Bool) -> some View {
+        VStack(alignment: .leading, spacing: compact ? 8 : 10) {
+            activeCountdownHero
+            if hasEnd { StatBar(fraction: 1 - progress, tint: Theme.Chart.red, height: compact ? 4 : 5) }
+            Spacer(minLength: 0)
+            HStack(spacing: 6) {
+                idleActivityMenuPill
+                if hasEnd {
+                    extendChip("+30m", 30 * 60)
+                    extendChip("+1h", 60 * 60)
+                }
+                Spacer(minLength: 0)
+                actionButton(compact: compact)
+            }
+        }
+    }
+
+    // MARK: - Large tile (full width)
 
     private var largeIdle: some View {
         VStack(alignment: .leading, spacing: 11) {
@@ -129,21 +151,6 @@ struct KeepAwakeWidget: View {
                 Spacer(minLength: 0)
             }
             if let lastError { errorLabel(lastError, lineLimit: 2) }
-        }
-    }
-
-    private var largeActive: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            activeCountdownHero
-            HStack(spacing: 6) {
-                idleActivityMenuPill
-                if hasEnd {
-                    extendChip("+30m", 30 * 60)
-                    extendChip("+1h", 60 * 60)
-                }
-                Spacer(minLength: 0)
-                actionButton(compact: false)
-            }
         }
     }
 
@@ -179,7 +186,6 @@ struct KeepAwakeWidget: View {
 
             Spacer(minLength: 0)
         }
-        .padding(.trailing, controlsReserve)
     }
 
     private var countdownHalo: some View {
@@ -217,7 +223,6 @@ struct KeepAwakeWidget: View {
             }
             Spacer(minLength: 0)
         }
-        .padding(.trailing, controlsReserve)
     }
 
     @ViewBuilder private func remainingHeadline(size: CGFloat) -> some View {

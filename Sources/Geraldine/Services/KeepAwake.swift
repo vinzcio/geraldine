@@ -446,7 +446,8 @@ final class KeepAwakeController: ObservableObject {
 
         if allowDisplaySleep {
             releaseAssertion(&displayAssertion)
-        } else if !holdAssertion(type: kIOPMAssertionTypeNoDisplaySleep as CFString, storage: &displayAssertion) {
+        } else if !holdAssertion(type: kIOPMAssertionTypePreventUserIdleDisplaySleep as CFString,
+                                 storage: &displayAssertion) {
             deactivateAfterAssertionFailure("Could not prevent display sleep.")
         }
     }
