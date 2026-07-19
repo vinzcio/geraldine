@@ -19,7 +19,9 @@ struct MenuBarView: View {
 
     private var health: (label: String, color: Color) {
         if hasAttentionRecommendation { return ("Needs Attention", Theme.warn) }
-        if (monitor.batteryLevel ?? 1) < 0.15 && !monitor.batteryCharging { return ("Battery Low", Theme.warn) }
+        if (monitor.batteryLevel ?? 1) <= MetricAttentionPolicy.lowBattery && !monitor.batteryCharging {
+            return ("Battery Low", Theme.warn)
+        }
         return ("Looking Good", Theme.good)
     }
 
@@ -97,7 +99,7 @@ struct MenuBarView: View {
                     if monitor.thermal.available {
                         AnimatedNumberText("· \(Int(monitor.thermal.cpu.rounded()))°C", value: monitor.thermal.cpu)
                             .font(.caption2)
-                            .foregroundStyle(Thermal.color(monitor.thermal.cpu))
+                            .foregroundStyle(Thermal.readoutColor(monitor.thermal.cpu))
                     }
                 }
             }
@@ -154,11 +156,11 @@ struct MenuBarView: View {
     private struct Rec { var title: String; var subtitle: String; var icon: String; var tint: Color; var actionable: Bool; var freesMemory: Bool = false; var action: () -> Void }
 
     private func attentionRecommendation() -> Rec? {
-        if monitor.diskFraction > 0.88 {
+        if monitor.diskFraction > MetricAttentionPolicy.storageUsage {
             return Rec(title: "You're Low On Disk Space", subtitle: "Run Cleanup To Free Some Up",
                        icon: "internaldrive.fill", tint: Theme.warn, actionable: true) { state.open(.cleanup) }
         }
-        if monitor.memoryFraction > 0.85 {
+        if monitor.memoryFraction > MetricAttentionPolicy.memoryUsage {
             return Rec(title: "Memory Is Running High", subtitle: "Free Up Inactive Memory",
                        icon: "memorychip", tint: Theme.warn, actionable: true, freesMemory: true, action: freeMemory)
         }

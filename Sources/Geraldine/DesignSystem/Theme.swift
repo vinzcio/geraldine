@@ -114,11 +114,7 @@ enum Theme {
         static let silver = adaptive("GeraldineChartSilver", light: ns(0.62, 0.66, 0.74), dark: ns(0.72, 0.76, 0.84))
 
         static func status(for usage: Double) -> Color {
-            switch usage {
-            case ..<0.6: green
-            case ..<0.85: amber
-            default: red
-            }
+            MetricPresentationPolicy.usageChartColor(usage)
         }
 
         static func health(for score: Int) -> Color {
@@ -130,13 +126,13 @@ enum Theme {
         }
 
         static func batteryLevel(_ level: Double?) -> Color {
-            (level ?? 1) < 0.2 ? red : green
+            MetricPresentationPolicy.batteryChartColor(level: level)
         }
 
         static func batteryHealth(_ health: Double?) -> Color {
-            guard let health else { return green }
-            if health >= 0.8 { return green }
-            return health >= 0.6 ? amber : red
+            MetricPresentationPolicy.chartColor(
+                for: MetricPresentationPolicy.batteryHealthState(health)
+            )
         }
     }
 
@@ -167,11 +163,7 @@ enum Theme {
 
     /// Green → amber → red based on a 0…1 usage value.
     static func status(for usage: Double) -> Color {
-        switch usage {
-        case ..<0.6: good
-        case ..<0.85: warn
-        default: bad
-        }
+        MetricPresentationPolicy.usageSemanticColor(usage)
     }
 
     // MARK: Layout tokens

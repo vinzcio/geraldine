@@ -67,11 +67,11 @@ private struct NetworkThroughputStatsTable: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             headerRow
-            statRow("arrow.down", "Down", iconTint: Theme.Chart.blue, textTint: Theme.accent2,
+            statRow("arrow.down", "Down", iconTint: Theme.Chart.blue, textTint: Theme.Chart.blue,
                     now: stats.currentDown,
                     average: stats.hasSamples ? stats.averageDown : nil,
                     peak: stats.hasSamples ? stats.peakDown : nil)
-            statRow("arrow.up", "Up", iconTint: Theme.Chart.purple, textTint: Theme.accent,
+            statRow("arrow.up", "Up", iconTint: Theme.Chart.purple, textTint: Theme.Chart.purple,
                     now: stats.currentUp,
                     average: stats.hasSamples ? stats.averageUp : nil,
                     peak: stats.hasSamples ? stats.peakUp : nil)
@@ -115,7 +115,7 @@ private struct NetworkThroughputStatsTable: View {
             .frame(width: labelWidth, alignment: .leading)
 
             statValue(now, tint: textTint)
-            statValue(average, tint: textTint.opacity(0.88))
+            statValue(average, tint: textTint)
             statValue(peak, tint: textTint)
         }
     }

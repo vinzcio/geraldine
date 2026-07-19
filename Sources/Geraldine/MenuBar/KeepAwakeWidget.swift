@@ -14,7 +14,7 @@ struct KeepAwakeWidget: View {
     @Namespace private var eyeNamespace
 
     private var active: Bool { keepAwake.isActive }
-    private var stateTint: Color { active ? Theme.bad : Module.keepAwake.tint }
+    private var stateTint: Color { active ? Theme.Chart.red : Module.keepAwake.tint }
     private var lastError: String? { active ? nil : keepAwake.lastError }
     private var motionReduced: Bool { reduceMotion || !surfaceActive }
 
@@ -230,7 +230,7 @@ struct KeepAwakeWidget: View {
             HStack(alignment: .firstTextBaseline, spacing: 5) {
                 AnimatedNumberText(remainingString, value: keepAwake.remaining ?? 0)
                     .font(.rounded(size, .bold))
-                    .foregroundStyle(Theme.bad)
+                    .foregroundStyle(countdownTint)
                 Text("left")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -238,7 +238,7 @@ struct KeepAwakeWidget: View {
         } else {
             Text("No Time Limit")
                 .font(.rounded(size * 0.62, .semibold))
-                .foregroundStyle(Theme.bad)
+                .foregroundStyle(countdownTint)
         }
     }
 
@@ -513,10 +513,7 @@ struct KeepAwakeWidget: View {
         return hasEnd ? keepAwake.endTimeLine : "Active Until You Stop It"
     }
 
-    private var countdownTint: Color {
-        guard hasEnd, let remaining = keepAwake.remaining else { return Theme.bad }
-        return remaining <= 5 * 60 ? Theme.warn : Theme.bad
-    }
+    private var countdownTint: Color { Theme.Chart.red }
 
     private var startHint: String {
         keepAwake.defaultDuration == .indefinitely ? "No Time Limit" : "For \(keepAwake.defaultDuration.label)"

@@ -4,6 +4,7 @@ struct DashboardView: View {
     @EnvironmentObject var state: AppState
     @EnvironmentObject var monitor: SystemMonitor
     @State private var showFreeRAM = false
+    @AppStorage("networkRateUnit") private var networkRateUnitRawValue = NetworkRateUnit.bytesPerSecond.rawValue
 
     private var greeting: String {
         let h = Calendar.current.component(.hour, from: Date())
@@ -35,7 +36,8 @@ struct DashboardView: View {
                          valueAnimationValue: monitor.cpuUsage * 100,
                          caption: "In Use",
                          fraction: monitor.cpuUsage,
-                         tint: Theme.Chart.status(for: monitor.cpuUsage))
+                         tint: Theme.Chart.status(for: monitor.cpuUsage),
+                         valueTint: MetricPresentationPolicy.usageReadoutColor(monitor.cpuUsage))
 
                 StatTile(icon: "memorychip", title: "Memory",
                          value: Fmt.percent(monitor.memoryFraction),
@@ -43,7 +45,8 @@ struct DashboardView: View {
                          caption: Fmt.size(monitor.memoryUsed),
                          captionAnimationValue: monitor.memoryUsed,
                          fraction: monitor.memoryFraction,
-                         tint: Theme.Chart.status(for: monitor.memoryFraction))
+                         tint: Theme.Chart.status(for: monitor.memoryFraction),
+                         valueTint: MetricPresentationPolicy.usageReadoutColor(monitor.memoryFraction))
 
                 StatTile(icon: "internaldrive", title: "Storage",
                          value: Fmt.percent(monitor.diskFraction),
@@ -51,7 +54,8 @@ struct DashboardView: View {
                          caption: "\(Fmt.size(max(0, monitor.diskTotal - monitor.diskUsed))) Free",
                          captionAnimationValue: max(0, monitor.diskTotal - monitor.diskUsed),
                          fraction: monitor.diskFraction,
-                         tint: Theme.Chart.status(for: monitor.diskFraction))
+                         tint: Theme.Chart.status(for: monitor.diskFraction),
+                         valueTint: MetricPresentationPolicy.usageReadoutColor(monitor.diskFraction))
 
                 batteryTile
             }
@@ -118,17 +122,17 @@ struct DashboardView: View {
     }
 
     private var healthJudgement: (title: String, detail: String, icon: String, tint: Color, module: Module?) {
-        if monitor.diskFraction > 0.90 {
+        if monitor.diskFraction > MetricAttentionPolicy.storageUsage {
             return ("Storage needs some breathing room",
                     "Your disk is over 90% full. Review Cleanup or Large & Old Files before macOS starts feeling cramped.",
-                    "internaldrive.fill.badge.exclamationmark", Theme.warn, .cleanup)
+                    "internaldrive.fill", Theme.warn, .cleanup)
         }
-        if monitor.memoryFraction > 0.88 {
-            return ("Memory pressure is building",
+        if monitor.memoryFraction > MetricAttentionPolicy.memoryUsage {
+            return ("Memory use is elevated",
                     "Active memory use is high. Free inactive memory now or inspect the apps doing the most work.",
                     "memorychip.fill", Theme.warn, .activity)
         }
-        if monitor.cpuUsage > 0.88 {
+        if monitor.cpuUsage > MetricAttentionPolicy.cpuUsage {
             return ("Your Mac is working hard",
                     "CPU use is elevated right now. Activity can show which processes are responsible.",
                     "waveform.path.ecg", Theme.warn, .activity)
@@ -148,7 +152,12 @@ struct DashboardView: View {
                         : (monitor.batteryHealth.map { "Health \(Fmt.percent($0))" } ?? "On Battery"),
                      captionAnimationValue: monitor.batteryHealth.map { $0 * 100 },
                      fraction: level,
-                     tint: Theme.Chart.batteryLevel(level))
+                     tint: Theme.Chart.batteryLevel(level),
+                     valueTint: MetricPresentationPolicy.batteryReadoutColor(level: level))
+        } else if monitor.hasBattery {
+            StatTile(icon: "questionmark.circle", title: "Battery",
+                     value: "—", caption: "Level Unavailable",
+                     fraction: 0, tint: .secondary, valueTint: .secondary)
         } else {
             StatTile(icon: "powerplug", title: "Power",
                      value: "AC", caption: "Plugged In",
@@ -159,16 +168,24 @@ struct DashboardView: View {
     private var networkCard: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Label("Network", systemImage: "wifi")
+                Label("Network", systemImage: state.network.online ? "wifi" : "wifi.slash")
                     .font(.rounded(13, .medium))
                     .foregroundStyle(.secondary)
                 Spacer()
             }
 
-            NetworkTrafficChart(samples: monitor.networkHistory,
-                                stats: networkStats,
-                                chartHeight: 72,
-                                showsInspection: true)
+            if state.network.online {
+                NetworkTrafficChart(samples: monitor.networkHistory,
+                                    stats: networkStats,
+                                    chartHeight: 72,
+                                    showsInspection: true,
+                                    rateUnit: networkRateUnit)
+            } else {
+                Label("Network Offline", systemImage: "wifi.slash")
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 72)
+            }
         }
         .card(tier: .raised, cornerRadius: Theme.Radius.raised)
     }
@@ -177,6 +194,10 @@ struct DashboardView: View {
         NetworkThroughputStats(samples: monitor.networkHistory,
                                currentDown: monitor.netDown,
                                currentUp: monitor.netUp)
+    }
+
+    private var networkRateUnit: NetworkRateUnit {
+        NetworkRateUnit(rawValue: networkRateUnitRawValue) ?? .bytesPerSecond
     }
 
     private var quickActions: some View {

@@ -6,7 +6,7 @@ struct KeepAwakeView: View {
     @State private var selectedDuration: KeepAwakeDuration = .oneHour
 
     private var tint: Color { Module.keepAwake.tint }
-    private var stateTint: Color { keepAwake.isActive ? Theme.bad : tint }
+    private var stateTint: Color { keepAwake.isActive ? Theme.Chart.red : tint }
 
     var body: some View {
         ModulePage(

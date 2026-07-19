@@ -1,21 +1,21 @@
 import SwiftUI
 
 enum MetricChartStyle {
-    static let usageGradient: [Color] = [Theme.Chart.red, Theme.Chart.amber, Theme.Chart.green]
-    static let batteryGradient: [Color] = [Theme.Chart.green, Theme.Chart.amber, Theme.Chart.red]
-    static let normalizedDomain: ClosedRange<Double> = 0...1
+    static let normalizedDomain = MetricPresentationPolicy.usageDomain
     static let expandedWindow: TimeInterval = 24 * 60 * 60
     static let smallWindow: TimeInterval = 6 * 60 * 60
     static let expandedMaxPoints = 720
     static let smallMaxPoints = 240
 
-    static func gradient(for metric: MetricKind) -> [Color]? {
+    static func gradient(for metric: MetricKind) -> MetricGradientSpec? {
         switch metric {
         case .cpu, .memory, .storage:
-            return usageGradient
+            return MetricPresentationPolicy.usageGradient
         case .battery:
-            return batteryGradient
-        case .temperature, .network:
+            return MetricPresentationPolicy.batteryChargeGradient
+        case .temperature:
+            return MetricPresentationPolicy.temperatureGradient
+        case .network:
             return nil
         }
     }

@@ -159,31 +159,18 @@ enum Thermal {
     }
 
     /// Hot/critical bands beyond the shared Theme status colors.
-    static let hot = Theme.orange
-    static let critical = Theme.plum
-
-    /// Fixed temperature-scale gradient stops, top (critical) → bottom (cool).
-    static let scaleColors: [Color] = [Theme.Chart.plum, Theme.Chart.red, Theme.Chart.orange,
-                                       Theme.Chart.amber, Theme.Chart.green]
-    static let chartDomain: ClosedRange<Double> = 40...105
+    static let gradient = MetricPresentationPolicy.temperatureGradient
+    static let chartDomain = MetricPresentationPolicy.temperatureDomain
 
     static func color(_ celsius: Double) -> Color {
-        switch celsius {
-        case ..<55:   return Theme.good   // green  — cool / idle
-        case ..<70:   return Theme.warn   // amber  — normal working temp
-        case ..<85:   return hot          // orange — hot, working hard
-        case ..<100:  return Theme.bad    // red    — very hot
-        default:      return critical     // purple — critical / throttling
-        }
+        MetricPresentationPolicy.temperatureSemanticColor(celsius)
     }
 
     static func chartColor(_ celsius: Double) -> Color {
-        switch celsius {
-        case ..<55:   return Theme.Chart.green
-        case ..<70:   return Theme.Chart.amber
-        case ..<85:   return Theme.Chart.orange
-        case ..<100:  return Theme.Chart.red
-        default:      return Theme.Chart.plum
-        }
+        MetricPresentationPolicy.temperatureChartColor(celsius)
+    }
+
+    static func readoutColor(_ celsius: Double) -> Color {
+        MetricPresentationPolicy.temperatureReadoutColor(celsius)
     }
 }

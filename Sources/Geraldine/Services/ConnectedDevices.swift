@@ -33,7 +33,10 @@ struct ConnectedDevice: Identifiable, Equatable {
     var detail: String
     var volumeURL: URL?       // present when the device can be ejected
 
-    var lowBattery: Bool { (battery ?? 1) < 0.2 }
+    var lowBattery: Bool {
+        guard battery != nil else { return false }
+        return MetricPresentationPolicy.batteryChargeState(level: battery) != .good
+    }
     var ejectable: Bool { volumeURL != nil }
 }
 
@@ -171,7 +174,9 @@ final class DeviceMonitor: ObservableObject {
                 for (name, value) in wrapper {
                     guard let info = value as? [String: Any] else { continue }
                     let battery = batteryLevel(info)
-                    let detail = battery.map { "Battery \(Int(($0 * 100).rounded()))%" } ?? "Connected"
+                    // The adjacent indicator owns the battery value and its chart-matched
+                    // color; repeating it here creates a second, neutral-colored readout.
+                    let detail = "Connected"
                     out.append(ConnectedDevice(id: "bt:\(name)", name: name, kind: .bluetooth,
                                                battery: battery, detail: detail, volumeURL: nil))
                 }

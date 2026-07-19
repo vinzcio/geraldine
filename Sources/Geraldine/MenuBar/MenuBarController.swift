@@ -54,12 +54,12 @@ final class MenuBarController: NSObject, NSWindowDelegate {
     private var layoutSink: AnyCancellable?
     private var currentStatusPlan: StatusPlan?
     private var cancellables = Set<AnyCancellable>()
-    private let menuBarRefreshInterval: RunLoop.SchedulerTimeType.Stride = .seconds(2)
     private let menuBarSparklineLimit = 60
     private let menuBarMetricWindow: TimeInterval = 60
     private let statusItemHorizontalPadding: CGFloat = 8
     private let statusAnimationDuration: TimeInterval = 0.24
     private let statusCrossfadeDuration: TimeInterval = 0.14
+    private var statusRenderPending = false
 
     private enum StatusAnimationMode {
         case digits
@@ -192,15 +192,23 @@ final class MenuBarController: NSObject, NSWindowDelegate {
         }
         #endif
 
-        // Keep sampling/charts at the monitor's cadence, but only redraw the visible
-        // menu-bar image about every two seconds. Layout changes stay immediate
-        // because the top widget controls what appears in the menu bar.
-        // objectWillChange fires *before* values update, so render on the next tick.
+        // Render once after each monitor refresh. objectWillChange fires before every
+        // published assignment, so the scheduler coalesces that burst onto the next
+        // main-loop turn without allowing the menu bar to lag the popover by a sample.
         monitorSink = state.monitor.objectWillChange
-            .throttle(for: menuBarRefreshInterval, scheduler: RunLoop.main, latest: true)
-            .sink { [weak self] _ in Task { @MainActor in self?.renderStatusItem() } }
+            .sink { [weak self] _ in Task { @MainActor in self?.scheduleStatusRender() } }
         layoutSink = state.layout.objectWillChange
             .sink { [weak self] _ in Task { @MainActor in self?.renderStatusItem() } }
+    }
+
+    private func scheduleStatusRender() {
+        guard !statusRenderPending else { return }
+        statusRenderPending = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.statusRenderPending = false
+            self.renderStatusItem()
+        }
     }
 
     @objc private func togglePanel(_ sender: NSStatusBarButton) {
@@ -276,7 +284,7 @@ final class MenuBarController: NSObject, NSWindowDelegate {
 
         init(_ sample: NetworkSample) {
             timestamp = sample.timestamp
-            value = sample.down + sample.up
+            value = sample.down
             sessionID = sample.sessionID
         }
     }
@@ -292,11 +300,12 @@ final class MenuBarController: NSObject, NSWindowDelegate {
         var widthSample: String   // widest value this metric can show; fixes the item width
         var color: NSColor        // the value (number) color
         var animationValue: Double?
-        var gradient: [NSColor]? = nil   // vertical gradient for the sparkline; nil → derive from color
-        var areaGradient: [NSColor]? = nil
+        var gradient: MetricGradientSpec? = nil   // vertical gradient for the sparkline; nil -> derive from color
+        var areaGradient: MetricGradientSpec? = nil
         var domain: ClosedRange<Double>? = nil
         var zeroBasedDynamicDomain = false
-        var valueColor: ((Double) -> NSColor)? = nil
+        var sampleColor: ((Double) -> NSColor)? = nil
+        var showsLatestEndpoint = true
     }
 
     private func renderStatusItem() {
@@ -333,7 +342,8 @@ final class MenuBarController: NSObject, NSWindowDelegate {
         }
 
         if currentStatusPlan.kind == nextPlan.kind,
-           measurementTokenChanged(from: currentStatusPlan, to: nextPlan) {
+           (measurementTokenChanged(from: currentStatusPlan, to: nextPlan)
+            || statusColorChanged(from: currentStatusPlan, to: nextPlan)) {
             animateStatusCrossfade(button: button,
                                    from: button.image ?? drawStatus(currentStatusPlan),
                                    to: nextImage,
@@ -380,9 +390,10 @@ final class MenuBarController: NSObject, NSWindowDelegate {
                     widthSample: "888°",
                     color: .secondaryLabelColor,
                     animationValue: nil,
-                    gradient: retainedSamples.isEmpty ? nil : Thermal.scaleColors.map { NSColor($0) },
+                    gradient: retainedSamples.isEmpty ? nil : Thermal.gradient,
                     domain: retainedSamples.isEmpty ? 0...1 : Thermal.chartDomain,
-                    valueColor: retainedSamples.isEmpty ? nil : { NSColor(Thermal.chartColor($0)) }
+                    sampleColor: nil,
+                    showsLatestEndpoint: false
                 )
             }
             return StatusPlan(kind: .temperature,
@@ -391,11 +402,11 @@ final class MenuBarController: NSObject, NSWindowDelegate {
                               timelineMaximumCount: menuBarSparklineLimit,
                               glyph: nil,
                               label: "\(Int(m.thermal.cpu.rounded()))°", widthSample: "888°",
-                              color: NSColor(Thermal.chartColor(m.thermal.cpu)),
+                              color: NSColor(Thermal.readoutColor(m.thermal.cpu)),
                               animationValue: m.thermal.cpu,
-                              gradient: Thermal.scaleColors.map { NSColor($0) },
+                              gradient: Thermal.gradient,
                               domain: Thermal.chartDomain,
-                              valueColor: { NSColor(Thermal.chartColor($0)) })
+                              sampleColor: { NSColor(Thermal.chartColor($0)) })
         case .cpu:
             return StatusPlan(kind: .cpu,
                               samples: m.cpuHistory.map(StatusTimelineSample.init),
@@ -403,10 +414,11 @@ final class MenuBarController: NSObject, NSWindowDelegate {
                               timelineMaximumCount: menuBarSparklineLimit,
                               glyph: nil,
                               label: Fmt.percent(m.cpuUsage), widthSample: "100%",
-                              color: NSColor(Theme.Chart.status(for: m.cpuUsage)),
+                              color: NSColor(MetricPresentationPolicy.usageReadoutColor(m.cpuUsage)),
                               animationValue: m.cpuUsage * 100,
-                              gradient: MetricChartStyle.gradient(for: .cpu)?.map { NSColor($0) },
-                              domain: MetricChartStyle.normalizedDomain)
+                              gradient: MetricChartStyle.gradient(for: .cpu),
+                              domain: MetricChartStyle.normalizedDomain,
+                              sampleColor: { NSColor(MetricPresentationPolicy.usageChartColor($0)) })
         case .memory:
             return StatusPlan(kind: .memory,
                               samples: m.memHistory.map(StatusTimelineSample.init),
@@ -414,33 +426,47 @@ final class MenuBarController: NSObject, NSWindowDelegate {
                               timelineMaximumCount: menuBarSparklineLimit,
                               glyph: nil,
                               label: Fmt.percent(m.memoryFraction), widthSample: "100%",
-                              color: NSColor(Theme.Chart.status(for: m.memoryFraction)),
+                              color: NSColor(MetricPresentationPolicy.usageReadoutColor(m.memoryFraction)),
                               animationValue: m.memoryFraction * 100,
-                              gradient: MetricChartStyle.gradient(for: .memory)?.map { NSColor($0) },
-                              domain: MetricChartStyle.normalizedDomain)
+                              gradient: MetricChartStyle.gradient(for: .memory),
+                              domain: MetricChartStyle.normalizedDomain,
+                              sampleColor: { NSColor(MetricPresentationPolicy.usageChartColor($0)) })
         case .network:
+            guard state.network.online else {
+                return StatusPlan(kind: .network,
+                                  glyph: nil,
+                                  label: "Offline",
+                                  widthSample: "↓8888.88M",
+                                  color: NSColor(Theme.warn),
+                                  animationValue: nil)
+            }
             let color = NSColor(Theme.Chart.blue)
+            let rateUnit = selectedNetworkRateUnit
+            let displayedDown = rateUnit.displayValue(for: m.netDown)
             return StatusPlan(kind: .network,
                               samples: m.networkHistory.map(StatusTimelineSample.init),
                               timelineDuration: SystemMonitor.liveHistoryWindow,
                               timelineMaximumCount: nil,
                               glyph: nil,
-                              label: "↓\(Fmt.fixedScaled(m.netDown))", widthSample: "↓8888.88M",
+                              label: "↓\(Fmt.fixedScaled(displayedDown))", widthSample: "↓8888.88M",
                               color: color,
-                              animationValue: m.netDown,
-                              gradient: [color.withAlphaComponent(0.68), color],
-                              areaGradient: [color.withAlphaComponent(0.24), color.withAlphaComponent(0.03)],
+                              animationValue: displayedDown,
+                              areaGradient: MetricGradientSpec(stops: [
+                                  .init(color: Color(nsColor: color.withAlphaComponent(0.24)), location: 0),
+                                  .init(color: Color(nsColor: color.withAlphaComponent(0.03)), location: 1)
+                              ]),
                               zeroBasedDynamicDomain: true)
         case .battery:
-            return StatusPlan(kind: .battery, glyph: batteryIcon, label: m.batteryLevel.map(Fmt.percent) ?? "AC",
+            let label = m.batteryLevel.map(Fmt.percent) ?? (m.hasBattery ? "—" : "AC")
+            return StatusPlan(kind: .battery, glyph: batteryIcon, label: label,
                               widthSample: "100%",
-                              color: NSColor(Theme.Chart.batteryLevel(m.batteryLevel)),
+                              color: NSColor(MetricPresentationPolicy.batteryReadoutColor(level: m.batteryLevel)),
                               animationValue: m.batteryLevel.map { $0 * 100 })
         case .storage:
             let free = max(0, m.diskTotal - m.diskUsed)
             return StatusPlan(kind: .storage, glyph: "internaldrive",
                               label: Fmt.fixedScaled(max(0, m.diskTotal - m.diskUsed)), widthSample: "8888.88G",
-                              color: NSColor(Theme.Chart.mint),
+                              color: NSColor(MetricPresentationPolicy.usageReadoutColor(m.diskFraction)),
                               animationValue: free)
         }
     }
@@ -514,11 +540,13 @@ final class MenuBarController: NSObject, NSWindowDelegate {
         case .memory:
             return "Memory \(Fmt.percent(m.memoryFraction))"
         case .network:
-            return "Download \(Fmt.rate(m.netDown)), upload \(Fmt.rate(m.netUp))"
+            guard state.network.online else { return "Network offline" }
+            return "Download \(Fmt.rate(m.netDown, unit: selectedNetworkRateUnit)), upload \(Fmt.rate(m.netUp, unit: selectedNetworkRateUnit))"
         case .battery:
             if let level = m.batteryLevel {
                 return "Battery \(Fmt.percent(level))"
             }
+            if m.hasBattery { return "Battery level unavailable" }
             return "Power connected"
         case .storage:
             return "Storage \(Fmt.size(max(0, m.diskTotal - m.diskUsed))) free"
@@ -541,6 +569,21 @@ final class MenuBarController: NSObject, NSWindowDelegate {
         let oldParts = splitLabel(old.label)
         let newParts = splitLabel(new.label)
         return oldParts.prefix != newParts.prefix || oldParts.suffix != newParts.suffix
+    }
+
+    /// Rolling old digits over a newly colored chart creates a brief false state at
+    /// threshold crossings. A whole-image crossfade keeps each rendered frame's
+    /// readout and chart together instead.
+    private func statusColorChanged(from old: StatusPlan, to new: StatusPlan) -> Bool {
+        guard let oldColor = old.color.usingColorSpace(.sRGB),
+              let newColor = new.color.usingColorSpace(.sRGB) else {
+            return !old.color.isEqual(new.color)
+        }
+        let tolerance: CGFloat = 0.001
+        return abs(oldColor.redComponent - newColor.redComponent) > tolerance
+            || abs(oldColor.greenComponent - newColor.greenComponent) > tolerance
+            || abs(oldColor.blueComponent - newColor.blueComponent) > tolerance
+            || abs(oldColor.alphaComponent - newColor.alphaComponent) > tolerance
     }
 
     private func animationDirection(from old: StatusPlan, to new: StatusPlan) -> CGFloat {
@@ -798,11 +841,12 @@ final class MenuBarController: NSObject, NSWindowDelegate {
                                   baseColor: plan.color,
                                   domain: plan.domain,
                                   zeroBasedDynamicDomain: plan.zeroBasedDynamicDomain,
-                                  valueColor: plan.valueColor)
+                                  sampleColor: plan.sampleColor,
+                                  showsLatestEndpoint: plan.showsLatestEndpoint)
         } else if let series = plan.fallbackSeries {
             drawSparkline(trimmed(series), in: NSRect(x: 0, y: 1, width: geometry.leadingWidth, height: geometry.height - 2),
                           gradient: plan.gradient, baseColor: plan.color,
-                          domain: plan.domain, valueColor: plan.valueColor)
+                          domain: plan.domain)
         } else if let glyph = plan.glyph, let symbol = tintedSymbol(glyph, color: plan.color) {
             let size = symbol.size
             symbol.draw(in: NSRect(x: 0, y: (geometry.height - size.height) / 2, width: size.width, height: size.height))
@@ -943,10 +987,11 @@ final class MenuBarController: NSObject, NSWindowDelegate {
     }
 
     /// Draws a filled, gradient sparkline (line + soft area fill). Temperature uses an
-    /// absolute thermal domain and threshold-colored line segments; normalized metrics
-    /// use fixed 0...1 domains with stable scale gradients.
-    private func drawSparkline(_ values: [Double], in rect: NSRect, gradient: [NSColor]?, baseColor: NSColor,
-                               domain: ClosedRange<Double>?, valueColor: ((Double) -> NSColor)?) {
+    /// absolute thermal domain; normalized metrics use fixed 0...1 domains. Both
+    /// render with the same continuous, threshold-positioned scale as SwiftUI.
+    private func drawSparkline(_ values: [Double], in rect: NSRect,
+                               gradient: MetricGradientSpec?, baseColor: NSColor,
+                               domain: ClosedRange<Double>?) {
         guard values.count >= 2, let ctx = NSGraphicsContext.current?.cgContext else { return }
         let dLo: Double
         let dSpan: Double
@@ -975,30 +1020,18 @@ final class MenuBarController: NSObject, NSWindowDelegate {
         area.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
         area.closeSubpath()
 
-        let lineColors = gradient ?? [baseColor, baseColor]
-        let areaColors = gradient?.map { $0.withAlphaComponent(0.22) }
-            ?? [baseColor.withAlphaComponent(0.32), baseColor.withAlphaComponent(0.03)]
+        let lineGradient = gradient ?? solidGradient(baseColor)
+        let areaGradient = gradient?.opacity(0.22)
+            ?? twoStopGradient(baseColor.withAlphaComponent(0.32), baseColor.withAlphaComponent(0.03))
         let top = CGPoint(x: rect.midX, y: rect.maxY), bottom = CGPoint(x: rect.midX, y: rect.minY)
         let opts: CGGradientDrawingOptions = [.drawsBeforeStartLocation, .drawsAfterEndLocation]
 
-        if let g = makeGradient(areaColors) {
+        if let g = makeGradient(areaGradient) {
             ctx.saveGState(); ctx.addPath(area); ctx.clip()
             ctx.drawLinearGradient(g, start: top, end: bottom, options: opts)
             ctx.restoreGState()
         }
-        if let valueColor {
-            ctx.saveGState()
-            ctx.setLineWidth(1.5); ctx.setLineCap(.round); ctx.setLineJoin(.round)
-            for index in 1..<values.count {
-                let segment = CGMutablePath()
-                segment.move(to: point(index - 1, values[index - 1]))
-                segment.addLine(to: point(index, values[index]))
-                ctx.addPath(segment)
-                ctx.setStrokeColor(valueColor(max(values[index - 1], values[index])).cgColor)
-                ctx.strokePath()
-            }
-            ctx.restoreGState()
-        } else if let g = makeGradient(lineColors) {
+        if let g = makeGradient(lineGradient) {
             ctx.saveGState()
             ctx.addPath(line)
             ctx.setLineWidth(1.5); ctx.setLineCap(.round); ctx.setLineJoin(.round)
@@ -1014,10 +1047,11 @@ final class MenuBarController: NSObject, NSWindowDelegate {
     /// history never connects across an app restart even when the restart is quick.
     private func drawTimelineSparkline(_ samples: [StatusTimelineSample], in rect: NSRect,
                                        duration: TimeInterval, maximumCount: Int?,
-                                       gradient: [NSColor]?, areaGradient: [NSColor]?,
+                                       gradient: MetricGradientSpec?, areaGradient: MetricGradientSpec?,
                                        baseColor: NSColor, domain: ClosedRange<Double>?,
                                        zeroBasedDynamicDomain: Bool,
-                                       valueColor: ((Double) -> NSColor)?) {
+                                       sampleColor: ((Double) -> NSColor)?,
+                                       showsLatestEndpoint: Bool) {
         guard !samples.isEmpty, let ctx = NSGraphicsContext.current?.cgContext else { return }
 
         let timeline = TimelineWindow(end: Date().timeIntervalSinceReferenceDate, duration: duration)
@@ -1070,32 +1104,18 @@ final class MenuBarController: NSObject, NSWindowDelegate {
             area.closeSubpath()
         }
 
-        let lineColors = gradient ?? [baseColor, baseColor]
-        let areaColors = areaGradient ?? gradient?.map { $0.withAlphaComponent(0.22) }
-            ?? [baseColor.withAlphaComponent(0.32), baseColor.withAlphaComponent(0.03)]
+        let lineGradient = gradient ?? solidGradient(baseColor)
+        let resolvedAreaGradient = areaGradient ?? gradient?.opacity(0.22)
+            ?? twoStopGradient(baseColor.withAlphaComponent(0.32), baseColor.withAlphaComponent(0.03))
         let top = CGPoint(x: rect.midX, y: rect.maxY), bottom = CGPoint(x: rect.midX, y: rect.minY)
         let opts: CGGradientDrawingOptions = [.drawsBeforeStartLocation, .drawsAfterEndLocation]
 
-        if let g = makeGradient(areaColors) {
+        if let g = makeGradient(resolvedAreaGradient) {
             ctx.saveGState(); ctx.addPath(area); ctx.clip()
             ctx.drawLinearGradient(g, start: top, end: bottom, options: opts)
             ctx.restoreGState()
         }
-        if let valueColor {
-            ctx.saveGState()
-            ctx.setLineWidth(1.5); ctx.setLineCap(.round); ctx.setLineJoin(.round)
-            for segment in lineSegments {
-                for index in 1..<segment.count {
-                    let path = CGMutablePath()
-                    path.move(to: point(segment[index - 1]))
-                    path.addLine(to: point(segment[index]))
-                    ctx.addPath(path)
-                    ctx.setStrokeColor(valueColor(max(segment[index - 1].value, segment[index].value)).cgColor)
-                    ctx.strokePath()
-                }
-            }
-            ctx.restoreGState()
-        } else if let g = makeGradient(lineColors) {
+        if let g = makeGradient(lineGradient) {
             ctx.saveGState()
             ctx.addPath(line)
             ctx.setLineWidth(1.5); ctx.setLineCap(.round); ctx.setLineJoin(.round)
@@ -1107,21 +1127,49 @@ final class MenuBarController: NSObject, NSWindowDelegate {
         // A fresh monitor session starts with one point. Keep that real observation
         // visible as a dot while waiting for the next sample rather than silently
         // presenting the previous session's line as the current one.
-        for segment in segments where segment.count == 1 {
+        for (index, segment) in segments.enumerated() where segment.count == 1 {
+            if index == segments.count - 1, !showsLatestEndpoint { continue }
             let sample = segment[0]
             let center = point(sample)
-            let dotColor = valueColor?(sample.value) ?? baseColor
+            let dotColor = sampleColor?(sample.value) ?? baseColor
+            ctx.setFillColor(dotColor.cgColor)
+            ctx.fillEllipse(in: CGRect(x: center.x - 1.5, y: center.y - 1.5, width: 3, height: 3))
+        }
+
+        // The endpoint is the visual contract for the adjacent number. Multi-point
+        // series need the same state-colored dot that singleton series already get.
+        if showsLatestEndpoint,
+           let latestSegment = segments.last,
+           latestSegment.count >= 2,
+           let sample = latestSegment.last {
+            let center = point(sample)
+            let dotColor = sampleColor?(sample.value) ?? baseColor
             ctx.setFillColor(dotColor.cgColor)
             ctx.fillEllipse(in: CGRect(x: center.x - 1.5, y: center.y - 1.5, width: 3, height: 3))
         }
     }
 
-    private func makeGradient(_ colors: [NSColor]) -> CGGradient? {
+    private func solidGradient(_ color: NSColor) -> MetricGradientSpec {
+        twoStopGradient(color, color)
+    }
+
+    private func twoStopGradient(_ top: NSColor, _ bottom: NSColor) -> MetricGradientSpec {
+        MetricGradientSpec(stops: [
+            .init(color: Color(nsColor: top), location: 0),
+            .init(color: Color(nsColor: bottom), location: 1)
+        ])
+    }
+
+    private func makeGradient(_ gradient: MetricGradientSpec) -> CGGradient? {
         let space = CGColorSpace(name: CGColorSpace.sRGB)!
-        let cg = colors.compactMap { $0.usingColorSpace(.sRGB)?.cgColor }
-        guard !cg.isEmpty else { return nil }
-        let stops = cg.count == 1 ? [cg[0], cg[0]] : cg
-        return CGGradient(colorsSpace: space, colors: stops as CFArray, locations: nil)
+        let converted = gradient.stops.compactMap { stop -> (color: CGColor, location: CGFloat)? in
+            guard let color = NSColor(stop.color).usingColorSpace(.sRGB)?.cgColor else { return nil }
+            return (color, stop.location)
+        }
+        guard let first = converted.first else { return nil }
+        let colors = converted.count == 1 ? [first.color, first.color] : converted.map(\.color)
+        let locations = converted.count == 1 ? [CGFloat(0), CGFloat(1)] : converted.map(\.location)
+        return CGGradient(colorsSpace: space, colors: colors as CFArray, locations: locations)
     }
 
     private func tintedSymbol(_ name: String, color: NSColor) -> NSImage? {
@@ -1139,6 +1187,11 @@ final class MenuBarController: NSObject, NSWindowDelegate {
         [0.38, 0.48, 0.42, 0.62, 0.34, 0.58, 0.46, 0.54]
     }
 
+    private var selectedNetworkRateUnit: NetworkRateUnit {
+        let rawValue = UserDefaults.standard.string(forKey: "networkRateUnit")
+        return rawValue.flatMap(NetworkRateUnit.init(rawValue:)) ?? .bytesPerSecond
+    }
+
     private func trimmed(_ v: [Double]) -> [Double] {
         if v.count >= 2 { return Array(v.suffix(menuBarSparklineLimit)) }
         return v.isEmpty ? [0, 0] : [v[0], v[0]]
@@ -1146,8 +1199,9 @@ final class MenuBarController: NSObject, NSWindowDelegate {
 
     private var batteryIcon: String {
         if !state.monitor.hasBattery { return "powerplug" }
+        guard let level = state.monitor.batteryLevel else { return "questionmark.circle" }
         if state.monitor.batteryCharging { return "battery.100.bolt" }
-        switch state.monitor.batteryLevel ?? 1 {
+        switch level {
         case ..<0.15: return "battery.0"
         case ..<0.4:  return "battery.25"
         case ..<0.65: return "battery.50"

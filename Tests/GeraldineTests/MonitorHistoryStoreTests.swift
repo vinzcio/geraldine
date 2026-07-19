@@ -143,6 +143,43 @@ final class MonitorHistoryStoreTests: XCTestCase {
         XCTAssertEqual(monitor.thermalHistory, [metric])
     }
 
+    @MainActor
+    func testBatteryRenderHistoryEndsAtCurrentHeadlineWithoutChangingStoredCadence() {
+        let now: TimeInterval = 350_000
+        let restoredSession = UUID()
+        let monitor = SystemMonitor(
+            historyStore: MonitorHistoryStore(
+                fileURL: FileManager.default.temporaryDirectory
+                    .appendingPathComponent("unused-\(UUID().uuidString).json")
+            ),
+            now: { Date(timeIntervalSinceReferenceDate: now) },
+            performInitialRefresh: false
+        )
+        monitor.hasBattery = true
+        monitor.batteryLevel = 0.08
+        monitor.batteryHistory = [
+            MetricSample(timestamp: now - 30, value: 0.22, sessionID: restoredSession)
+        ]
+
+        let rendered = monitor.batteryHistoryIncludingCurrent(
+            at: Date(timeIntervalSinceReferenceDate: now)
+        )
+
+        XCTAssertEqual(rendered.map(\.value), [0.22, 0.08])
+        XCTAssertEqual(rendered.last?.timestamp, now)
+        XCTAssertNotEqual(rendered.last?.sessionID, restoredSession,
+                          "a render-only endpoint must not bridge a restored session")
+        XCTAssertEqual(monitor.batteryHistory.map(\.value), [0.22],
+                       "render parity must not increase persisted sampling cadence")
+
+        monitor.batteryLevel = nil
+        XCTAssertEqual(
+            monitor.batteryHistoryIncludingCurrent(at: Date(timeIntervalSinceReferenceDate: now)),
+            monitor.batteryHistory,
+            "an unavailable current level must not fabricate a fresh chart endpoint"
+        )
+    }
+
     func testUnknownValuesAreNotAppendedAndLongHistoryUsesLowerCadence() {
         var history: [MetricSample] = []
         let firstSession = UUID()

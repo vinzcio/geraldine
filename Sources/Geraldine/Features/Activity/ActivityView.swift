@@ -64,7 +64,7 @@ struct ActivityView: View {
                       value: Fmt.percent(monitor.cpuUsage),
                       valueAnimationValue: monitor.cpuUsage * 100,
                       history: monitor.cpuHistory,
-                      tint: Theme.status(for: monitor.cpuUsage),
+                      tint: MetricPresentationPolicy.usageReadoutColor(monitor.cpuUsage),
                       chartTint: Theme.Chart.status(for: monitor.cpuUsage),
                       footnote: String(format: "Load Average %.2f", monitor.loadAverage),
                       footnoteAnimationValue: monitor.loadAverage)
@@ -73,7 +73,7 @@ struct ActivityView: View {
                       value: Fmt.percent(monitor.memoryFraction),
                       valueAnimationValue: monitor.memoryFraction * 100,
                       history: monitor.memHistory,
-                      tint: Theme.status(for: monitor.memoryFraction),
+                      tint: MetricPresentationPolicy.usageReadoutColor(monitor.memoryFraction),
                       chartTint: Theme.Chart.status(for: monitor.memoryFraction),
                       footnote: "\(Fmt.size(monitor.memoryUsed)) of \(Fmt.size(monitor.memoryTotal)) used",
                       footnoteAnimationValue: monitor.memoryUsed)
@@ -110,7 +110,9 @@ struct ActivityView: View {
                                window: SystemMonitor.liveHistoryWindow,
                                now: Date(),
                                tint: chartTint,
+                               gradient: MetricPresentationPolicy.usageGradient,
                                domain: MetricChartStyle.normalizedDomain,
+                               sampleColor: MetricPresentationPolicy.usageChartColor,
                                gapThreshold: SystemMonitor.chartSampleGapThreshold,
                                maximumPointCount: 300,
                                inspectionValueFormatter: { Fmt.percent($0) },
@@ -132,7 +134,7 @@ struct ActivityView: View {
                 if th.available {
                     AnimatedNumberText("\(Int(th.cpu.rounded()))°C", value: th.cpu)
                         .font(.rounded(26, .bold))
-                        .foregroundStyle(Thermal.color(th.cpu))
+                        .foregroundStyle(Thermal.readoutColor(th.cpu))
                 } else {
                     Text("N/A").font(.callout).foregroundStyle(.secondary)
                 }
@@ -159,7 +161,7 @@ struct ActivityView: View {
                                 Spacer()
                                 AnimatedNumberText("\(Int(s.temp.rounded()))°C", value: s.temp)
                                     .font(.caption.monospacedDigit())
-                                    .foregroundStyle(Thermal.color(s.temp))
+                                    .foregroundStyle(.secondary)
                             }
                             .padding(.vertical, 3)
                         }
@@ -180,7 +182,7 @@ struct ActivityView: View {
             Text(label).font(.caption2).foregroundStyle(.secondary)
             AnimatedNumberText("\(Int(temp.rounded()))°C", value: temp)
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(Thermal.color(temp))
+                .foregroundStyle(.secondary)
         }
         .padding(.horizontal, 10).padding(.vertical, 5)
         .background(.quaternary.opacity(0.4), in: Capsule())

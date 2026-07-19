@@ -350,7 +350,8 @@ private struct StorageCapacityHero: View {
         DonutChart(segments: segments,
                    centerTitle: Fmt.size(capacity.free),
                    centerSubtitle: "Available",
-                   lineWidth: 26)
+                   lineWidth: 26,
+                   centerTitleColor: Theme.Chart.silver)
             .frame(width: 184, height: 184)
     }
 
@@ -364,6 +365,7 @@ private struct StorageCapacityHero: View {
                                value: capacity.usedFraction * 100)
                 .font(.rounded(28, .bold).monospacedDigit())
                 .contentTransition(.numericText())
+                .foregroundStyle(MetricPresentationPolicy.usageReadoutColor(capacity.usedFraction))
             Text("of the startup disk is in use")
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -371,19 +373,24 @@ private struct StorageCapacityHero: View {
             StatBar(fraction: capacity.usedFraction, tint: tint, height: 8)
 
             HStack(spacing: Theme.Spacing.lg) {
-                capacityMetric(title: "Available", value: Fmt.size(capacity.free), animationValue: capacity.free)
-                capacityMetric(title: "Used", value: Fmt.size(capacity.used), animationValue: capacity.used)
-                capacityMetric(title: "Total", value: Fmt.size(capacity.total), animationValue: capacity.total)
+                capacityMetric(title: "Available", value: Fmt.size(capacity.free),
+                               animationValue: capacity.free, color: Theme.Chart.silver)
+                capacityMetric(title: "Used", value: Fmt.size(capacity.used),
+                               animationValue: capacity.used, color: tint)
+                capacityMetric(title: "Total", value: Fmt.size(capacity.total),
+                               animationValue: capacity.total, color: .secondary)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func capacityMetric(title: String, value: String, animationValue: Double) -> some View {
+    private func capacityMetric(title: String, value: String, animationValue: Double,
+                                color: Color) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title).font(.caption2).foregroundStyle(.secondary)
             AnimatedNumberText(value, value: animationValue)
                 .font(.caption.weight(.semibold).monospacedDigit())
+                .foregroundStyle(color)
         }
     }
 }
@@ -494,6 +501,7 @@ private struct StorageCategoryRow: View {
             VStack(alignment: .trailing, spacing: 4) {
                 AnimatedNumberText(Fmt.size(category.value), value: category.value)
                     .font(.callout.weight(.medium).monospacedDigit())
+                    .foregroundStyle(category.chartColor)
                 if let action = actionLabel {
                     Button { open(category.route) } label: {
                         Label(action.title, systemImage: action.icon)
