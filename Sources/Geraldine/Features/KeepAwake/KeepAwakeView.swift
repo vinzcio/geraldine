@@ -13,8 +13,7 @@ struct KeepAwakeView: View {
             module: .keepAwake,
             headerTint: stateTint,
             headerStyle: .utility,
-            widthRole: .focused,
-            trailing: { headerControl }
+            widthRole: .focused
         ) {
             hero
 
@@ -31,28 +30,6 @@ struct KeepAwakeView: View {
             automationCard
         }
         .onAppear { selectedDuration = keepAwake.defaultDuration }
-    }
-
-    private var headerControl: some View {
-        Button {
-            keepAwake.toggle()
-        } label: {
-            HStack(spacing: Theme.Spacing.xs) {
-                ContextualSymbol(
-                    inactive: "play.fill",
-                    active: "stop.fill",
-                    isActive: keepAwake.isActive,
-                    tint: keepAwake.isActive ? Theme.bad : tint,
-                    size: 13
-                )
-                Text(keepAwake.isActive ? "Stop" : "Start")
-            }
-        }
-        .buttonStyle(.soft(keepAwake.isActive ? Theme.bad : tint))
-        .accessibilityLabel(keepAwake.isActive ? "Stop Keep Awake" : "Start Keep Awake")
-        .accessibilityHint(keepAwake.isActive
-                           ? "Allows idle sleep again."
-                           : "Keeps this Mac awake for the selected duration.")
     }
 
     private var hero: some View {
@@ -125,7 +102,7 @@ struct KeepAwakeView: View {
                             .font(.caption)
                             .foregroundStyle(Theme.warn)
                     } else {
-                        Text("Choose a duration, then start when you need an uninterrupted session.")
+                        Text("Poke the eye to keep this Mac awake for the duration you choose below.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -141,17 +118,7 @@ struct KeepAwakeView: View {
 
     private var durationCard: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
-            HStack(alignment: .firstTextBaseline) {
-                SectionHeader("Session Length", subtitle: "Choosing a duration never starts a session by itself.")
-                Spacer()
-                Button {
-                    keepAwake.activate(option: selectedDuration)
-                } label: {
-                    Label(keepAwake.isActive ? "Restart" : "Start",
-                          systemImage: keepAwake.isActive ? "arrow.clockwise" : "play.fill")
-                }
-                .buttonStyle(.soft(tint))
-            }
+            SectionHeader("Awake For", subtitle: "Poke the eye to start a session for this long. Picking a duration never starts one by itself.")
 
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 96), spacing: Theme.Spacing.xs)],
                       spacing: Theme.Spacing.xs) {
@@ -204,25 +171,56 @@ struct KeepAwakeView: View {
     private var idleActivityCard: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.md) {
             HStack(alignment: .firstTextBaseline) {
-                SectionHeader("Idle Activity")
+                SectionHeader("Stay Active", subtitle: "Nudges input after you go idle, so chat and status apps keep seeing you as active.")
                 Spacer()
                 Label(keepAwake.idleActivityStatusLine, systemImage: idleActivityIcon)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(idleActivityTint)
+                    .fixedSize()
             }
 
             Toggle(isOn: $keepAwake.simulateIdleActivity) {
-                Label("Simulate Activity After Idle", systemImage: "cursorarrow")
+                Label("Simulate Activity", systemImage: "cursorarrow")
             }
 
-            Stepper(value: $keepAwake.idleActivityDelayMinutes, in: 1...120, step: 1) {
-                HStack {
-                    Label("Start After", systemImage: "timer")
-                    Spacer()
-                    Text(keepAwake.idleActivityDelayLabel)
-                        .font(.callout.monospacedDigit().weight(.semibold))
-                        .foregroundStyle(.secondary)
+            HStack {
+                Label("Active After", systemImage: "timer")
+                Spacer()
+                ForEach(KeepAwakeController.idleActivityDelayOptions, id: \.self) { minutes in
+                    Button("\(minutes)m") {
+                        keepAwake.idleActivityDelayMinutes = minutes
+                    }
+                    .font(.callout.monospacedDigit().weight(.semibold))
+                    .buttonStyle(.geraldineSelection(
+                        tint,
+                        isSelected: keepAwake.idleActivityDelayMinutes == minutes,
+                        cornerRadius: Theme.Radius.badge
+                    ))
+                    .frame(minWidth: Theme.Layout.minimumHitArea, minHeight: Theme.Layout.minimumHitArea)
+                    .accessibilityAddTraits(keepAwake.idleActivityDelayMinutes == minutes ? [.isSelected] : [])
                 }
+                Menu {
+                    ForEach(KeepAwakeController.idleActivityExtendedDelayOptions, id: \.self) { minutes in
+                        Button {
+                            keepAwake.idleActivityDelayMinutes = minutes
+                        } label: {
+                            if keepAwake.idleActivityDelayMinutes == minutes {
+                                Label("\(minutes)m", systemImage: "checkmark")
+                            } else {
+                                Text("\(minutes)m")
+                            }
+                        }
+                    }
+                } label: {
+                    let current = keepAwake.idleActivityDelayMinutes
+                    Text(KeepAwakeController.idleActivityExtendedDelayOptions.contains(current)
+                         ? "\(current)m" : "More")
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .frame(minHeight: Theme.Layout.minimumHitArea)
+                .help("Choose a longer Idle Activity delay")
+                .accessibilityLabel("More Idle Activity delays")
             }
             .disabled(!keepAwake.simulateIdleActivity)
 

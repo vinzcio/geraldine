@@ -49,7 +49,7 @@ struct UninstallerView: View {
                             ScrollView {
                                 if vm.diagnostics.hasVisibleIssues {
                                     ScanDiagnosticsBanner(diagnostics: vm.diagnostics)
-                                        .padding(.horizontal, 20)
+                                        .padding(.horizontal, Theme.Layout.pagePadding)
                                         .padding(.top, 8)
                                 }
                                 LazyVGrid(columns: columns, spacing: 12) {
@@ -60,7 +60,8 @@ struct UninstallerView: View {
                                         }
                                     }
                                 }
-                                .padding(20)
+                                .padding(.horizontal, Theme.Layout.pagePadding)
+                                .padding(.vertical, Theme.Spacing.lg)
                             }
                         }
                     }
@@ -83,7 +84,7 @@ struct UninstallerView: View {
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
         .adaptiveMaterialBackground(.ultraThin, in: Capsule())
-        .padding(.horizontal, 20).padding(.bottom, 4)
+        .padding(.horizontal, Theme.Layout.pagePadding).padding(.bottom, 4)
     }
 }
 

@@ -127,7 +127,7 @@ struct ActivityView: View {
 
     @ViewBuilder private var temperatureCard: some View {
         let th = monitor.thermal
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Label("Temperature", systemImage: "thermometer.medium").font(.rounded(14, .semibold))
                 Spacer()
@@ -202,7 +202,7 @@ struct ActivityView: View {
     }
 
     private var topConsumers: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack {
                 SectionHeader("Top Consumers")
                 Picker("", selection: $vm.sortByMemory) {

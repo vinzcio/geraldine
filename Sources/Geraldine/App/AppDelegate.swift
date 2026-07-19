@@ -15,6 +15,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menuBarController = MenuBarController(state: state)
         keyboardTransportHUD = KeyboardTransportHUDCoordinator()
         keyboardTransportHUD?.start()
+
+        #if DEBUG
+        // Dev helper: `--open-module <rawValue>` opens the full window straight to a module,
+        // so a specific page can be inspected/screenshotted without clicking the sidebar.
+        if let index = CommandLine.arguments.firstIndex(of: "--open-module"),
+           index + 1 < CommandLine.arguments.count,
+           let module = Module(rawValue: CommandLine.arguments[index + 1]) {
+            DispatchQueue.main.async {
+                state.selection = module
+                state.showMainWindow()
+                // Widen the window so wide-layout alignment can be inspected/screenshotted.
+                if CommandLine.arguments.contains("--wide") {
+                    state.mainWindow?.setContentSize(NSSize(width: 1280, height: 820))
+                    state.mainWindow?.center()
+                }
+            }
+        }
+        #endif
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {

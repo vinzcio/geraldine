@@ -359,7 +359,7 @@ struct SmartCareView: View {
                     }
                 }
             }
-            .padding(.horizontal, Theme.Spacing.xl)
+            .padding(.horizontal, Theme.Layout.pagePadding)
             .padding(.bottom, Theme.Spacing.xl)
         }
     }
@@ -578,7 +578,7 @@ private struct SmartCareScanSummary: View {
             .font(.caption)
             .foregroundStyle(.secondary)
         }
-        .card(padding: 14)
+        .card(padding: Theme.Spacing.md)
     }
 }
 
@@ -611,7 +611,7 @@ private struct QueuedActionsCard: View {
             }
             .buttonStyle(BrandProminentButtonStyle())
         }
-        .card(padding: 14, tier: .tinted(Theme.accent))
+        .card(padding: Theme.Spacing.md, tier: .tinted(Theme.accent))
     }
 }
 
@@ -628,7 +628,7 @@ private struct FindingRow: View {
                 .foregroundStyle(finding.severity.color)
                 .frame(width: 24, height: 24)
 
-            VStack(alignment: .leading, spacing: 7) {
+            VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
                 Text(finding.title).font(.rounded(14, .semibold))
                 Text(finding.detail).font(.caption).foregroundStyle(.secondary)
                 HStack(spacing: 8) {
@@ -664,7 +664,7 @@ private struct FindingRow: View {
 
             Spacer(minLength: 8)
         }
-        .interactiveCard(padding: 14, tier: .tinted(finding.severity.color))
+        .interactiveCard(padding: Theme.Spacing.md, tier: .tinted(finding.severity.color))
     }
 }
 

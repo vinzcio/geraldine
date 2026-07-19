@@ -267,10 +267,12 @@ struct StorageView: View {
                 }
                 .disabled(vm.loading)
             }
+            .frame(maxWidth: Theme.Layout.readingMaxWidth)
+            .frame(maxWidth: .infinity)
 
             if let capacity = vm.capacity {
                 ScrollView {
-                    VStack(spacing: Theme.Spacing.md) {
+                    VStack(spacing: Theme.Layout.pageSpacing) {
                         StorageCapacityHero(capacity: capacity)
                             .geraldineEntrance()
 
@@ -291,9 +293,10 @@ struct StorageView: View {
                         )
                         .geraldineEntrance(delay: 0.12, distance: 6)
                     }
+                    .padding(.horizontal, Theme.Layout.pagePadding)
                     .frame(maxWidth: Theme.Layout.readingMaxWidth)
                     .frame(maxWidth: .infinity)
-                    .padding(Theme.Spacing.xl)
+                    .padding(.vertical, Theme.Spacing.xl)
                 }
             } else if case .failed(let message) = vm.status {
                 StorageErrorState(message: message, retry: vm.load)
@@ -435,7 +438,7 @@ private struct StorageBreakdownCard: View {
             } else {
                 VStack(spacing: 0) {
                     ForEach(Array(categories.enumerated()), id: \.element.id) { index, category in
-                        if index > 0 { Divider().padding(.leading, 21) }
+                        if index > 0 { Divider().padding(.leading, 22) }
                         StorageCategoryRow(category: category, open: open)
                             .padding(.vertical, Theme.Spacing.sm)
                     }

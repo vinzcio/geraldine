@@ -32,12 +32,33 @@ struct NetworkThroughputStats {
     }
 }
 
-struct NetworkTrafficChart: View {
+struct NetworkTrafficChart<StatsAccessory: View>: View {
     let samples: [NetworkSample]
     let stats: NetworkThroughputStats
-    var chartHeight: CGFloat = 60
-    var showsInspection = false
-    var rateUnit: NetworkRateUnit = .bytesPerSecond
+    let chartHeight: CGFloat
+    let showsInspection: Bool
+    let rateUnit: NetworkRateUnit
+    /// When true the Now/Avg/Peak columns stretch to fill the width beside the accessory,
+    /// so they don't hug the left with a cavernous gap. The dashboard (no accessory) keeps
+    /// the compact fixed-width table.
+    let distributesColumns: Bool
+    private let statsAccessory: StatsAccessory
+
+    init(samples: [NetworkSample],
+         stats: NetworkThroughputStats,
+         chartHeight: CGFloat = 60,
+         showsInspection: Bool = false,
+         rateUnit: NetworkRateUnit = .bytesPerSecond,
+         distributesColumns: Bool = true,
+         @ViewBuilder statsAccessory: () -> StatsAccessory) {
+        self.samples = samples
+        self.stats = stats
+        self.chartHeight = chartHeight
+        self.showsInspection = showsInspection
+        self.rateUnit = rateUnit
+        self.distributesColumns = distributesColumns
+        self.statsAccessory = statsAccessory()
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -52,7 +73,36 @@ struct NetworkTrafficChart: View {
                                  rateUnit: rateUnit)
                 .frame(height: chartHeight)
                 .accessibilityLabel("Network throughput history")
-            NetworkThroughputStatsTable(stats: stats, rateUnit: rateUnit)
+            HStack(alignment: .top, spacing: 12) {
+                if distributesColumns {
+                    NetworkThroughputStatsTable(stats: stats, rateUnit: rateUnit,
+                                                distributesColumns: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    statsAccessory
+                } else {
+                    NetworkThroughputStatsTable(stats: stats, rateUnit: rateUnit,
+                                                distributesColumns: false)
+                    Spacer(minLength: 8)
+                    statsAccessory
+                }
+            }
+        }
+    }
+}
+
+extension NetworkTrafficChart where StatsAccessory == EmptyView {
+    init(samples: [NetworkSample],
+         stats: NetworkThroughputStats,
+         chartHeight: CGFloat = 60,
+         showsInspection: Bool = false,
+         rateUnit: NetworkRateUnit = .bytesPerSecond) {
+        self.init(samples: samples,
+                  stats: stats,
+                  chartHeight: chartHeight,
+                  showsInspection: showsInspection,
+                  rateUnit: rateUnit,
+                  distributesColumns: false) {
+            EmptyView()
         }
     }
 }
@@ -60,9 +110,20 @@ struct NetworkTrafficChart: View {
 private struct NetworkThroughputStatsTable: View {
     let stats: NetworkThroughputStats
     let rateUnit: NetworkRateUnit
+    var distributesColumns: Bool = false
 
     private let labelWidth: CGFloat = 54
     private let valueWidth: CGFloat = 58
+
+    /// Fixed-width columns keep the compact dashboard table; distributed columns stretch to
+    /// evenly fill the popover's wider row so the values aren't bunched on the left.
+    @ViewBuilder private func columnFrame<V: View>(_ view: V) -> some View {
+        if distributesColumns {
+            view.frame(minWidth: valueWidth, maxWidth: .infinity, alignment: .trailing)
+        } else {
+            view.frame(width: valueWidth, alignment: .trailing)
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -94,10 +155,11 @@ private struct NetworkThroughputStatsTable: View {
     }
 
     private func header(_ text: String) -> some View {
-        Text(text)
-            .font(.rounded(10, .semibold))
-            .foregroundStyle(.secondary)
-            .frame(width: valueWidth, alignment: .trailing)
+        columnFrame(
+            Text(text)
+                .font(.rounded(10, .semibold))
+                .foregroundStyle(.secondary)
+        )
     }
 
     private func statRow(_ icon: String, _ label: String, iconTint: Color, textTint: Color,
@@ -122,17 +184,19 @@ private struct NetworkThroughputStatsTable: View {
 
     @ViewBuilder private func statValue(_ value: Double?, tint: Color) -> some View {
         if let value {
-            AnimatedNumberText(Fmt.compactRate(value, unit: rateUnit),
-                               value: rateUnit.displayValue(for: value))
-                .font(.rounded(11, .semibold).monospacedDigit())
-                .foregroundStyle(tint)
-                .minimumScaleFactor(0.76)
-                .frame(width: valueWidth, alignment: .trailing)
+            columnFrame(
+                AnimatedNumberText(Fmt.compactRate(value, unit: rateUnit),
+                                   value: rateUnit.displayValue(for: value))
+                    .font(.rounded(11, .semibold).monospacedDigit())
+                    .foregroundStyle(tint)
+                    .minimumScaleFactor(0.76)
+            )
         } else {
-            Text("-")
-                .font(.rounded(11, .semibold).monospacedDigit())
-                .foregroundStyle(.tertiary)
-                .frame(width: valueWidth, alignment: .trailing)
+            columnFrame(
+                Text("-")
+                    .font(.rounded(11, .semibold).monospacedDigit())
+                    .foregroundStyle(.tertiary)
+            )
         }
     }
 

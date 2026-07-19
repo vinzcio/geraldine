@@ -255,11 +255,35 @@ struct MissionControlTransformMath {
         let windowPoint = screenPoint.applying(screenToWindow)
         return CGRect(origin: .zero, size: windowSize).insetBy(dx: -2, dy: -2).contains(windowPoint)
     }
+}
 
-    static func transformedArea(windowSize: CGSize, screenToWindow: CGAffineTransform) -> CGFloat {
-        let determinant = abs(screenToWindow.a * screenToWindow.d - screenToWindow.b * screenToWindow.c)
-        guard determinant > .ulpOfOne else { return .greatestFiniteMagnitude }
-        return windowSize.width * windowSize.height / determinant
+struct MissionControlWindowCandidate {
+    let processIdentifier: pid_t
+    let windowID: CGWindowID
+    let windowSize: CGSize
+    let screenToWindow: CGAffineTransform
+}
+
+enum MissionControlWindowTargeting {
+    /// Candidates must be passed through in WindowServer's front-to-back order.
+    /// A second hit means the thumbnail geometry is ambiguous (for example while
+    /// Mission Control is settling), so do not guess and close a background window.
+    static func candidate(
+        at screenPoint: CGPoint,
+        in candidates: [MissionControlWindowCandidate]
+    ) -> MissionControlWindowCandidate? {
+        var match: MissionControlWindowCandidate?
+
+        for candidate in candidates where MissionControlTransformMath.contains(
+            screenPoint: screenPoint,
+            windowSize: candidate.windowSize,
+            screenToWindow: candidate.screenToWindow
+        ) {
+            guard match == nil else { return nil }
+            match = candidate
+        }
+
+        return match
     }
 }
 
@@ -275,12 +299,6 @@ private typealias AXUIElementGetWindowFunction = @convention(c) (
 ) -> AXError
 
 private enum MissionControlWindowServer {
-    private struct Candidate {
-        let processIdentifier: pid_t
-        let windowID: CGWindowID
-        let transformedArea: CGFloat
-    }
-
     private static let skyLightHandle = dlopen(
         "/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight",
         RTLD_NOW
@@ -303,7 +321,7 @@ private enum MissionControlWindowServer {
     static func window(at screenPoint: CGPoint) -> AXUIElement? {
         guard let mainConnectionID, let getWindowTransform, let getWindowID else { return nil }
         let connection = mainConnectionID()
-        var candidates: [Candidate] = []
+        var candidates: [MissionControlWindowCandidate] = []
 
         let windowInfo = CGWindowListCopyWindowInfo(
             [.optionOnScreenOnly, .excludeDesktopElements],
@@ -327,17 +345,18 @@ private enum MissionControlWindowServer {
                     screenToWindow: screenToWindow
                   ) else { continue }
 
-            candidates.append(Candidate(
+            candidates.append(MissionControlWindowCandidate(
                 processIdentifier: processIdentifier,
                 windowID: windowID,
-                transformedArea: MissionControlTransformMath.transformedArea(
-                    windowSize: bounds.size,
-                    screenToWindow: screenToWindow
-                )
+                windowSize: bounds.size,
+                screenToWindow: screenToWindow
             ))
         }
 
-        guard let candidate = candidates.min(by: { $0.transformedArea < $1.transformedArea }),
+        guard let candidate = MissionControlWindowTargeting.candidate(
+                  at: screenPoint,
+                  in: candidates
+              ),
               let app = NSRunningApplication(processIdentifier: candidate.processIdentifier) else {
             return nil
         }
@@ -930,18 +949,28 @@ final class FinderPowerToolsService {
         let script = """
         tell application "Finder"
             set selectedItems to selection as alias list
-            set output to ""
+            set output to {}
             repeat with selectedItem in selectedItems
-                set output to output & POSIX path of selectedItem & linefeed
+                set end of output to POSIX path of selectedItem
             end repeat
             return output
         end tell
         """
-        let result = Shell.run("/usr/bin/osascript", ["-e", script])
-        guard result.status == 0 else { return [] }
-        return result.output
-            .split(separator: "\n")
-            .map { URL(fileURLWithPath: String($0)) }
+        let appleScript = NSAppleScript(source: script)
+        var error: NSDictionary?
+        guard let descriptor = appleScript?.executeAndReturnError(&error) else { return [] }
+        return decodeSelectedFileURLs(from: descriptor)
+    }
+
+    static func decodeSelectedFileURLs(from descriptor: NSAppleEventDescriptor) -> [URL] {
+        guard descriptor.descriptorType == typeAEList else { return [] }
+        guard descriptor.numberOfItems > 0 else { return [] }
+        return (1...descriptor.numberOfItems).compactMap { index in
+            guard let item = descriptor.atIndex(index),
+                  [typeChar, typeUnicodeText, typeUTF8Text, typeUTF16ExternalRepresentation].contains(item.descriptorType),
+                  let path = item.stringValue else { return nil }
+            return URL(fileURLWithPath: path)
+        }
     }
 
     private static func frontFinderDirectory() -> URL? {

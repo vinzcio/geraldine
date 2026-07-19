@@ -341,8 +341,15 @@ final class KeepAwakeController: ObservableObject {
     }
 
     private static func clampedIdleActivityDelayMinutes(_ minutes: Int) -> Int {
-        min(120, max(1, minutes))
+        // Thresholds avoid subtracting an untrusted persisted Int, which could overflow
+        // while repairing a corrupt UserDefaults value such as Int.min or Int.max.
+        if minutes <= 1 { return 1 }
+        if minutes >= 120 { return 120 }
+        return minutes
     }
+
+    static let idleActivityDelayOptions = [1, 2, 5]
+    static let idleActivityExtendedDelayOptions = [10, 15, 30, 60, 120]
 
     private func installWorkspaceObservers() {
         let center = NSWorkspace.shared.notificationCenter

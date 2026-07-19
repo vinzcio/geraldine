@@ -54,7 +54,7 @@ struct PowerToolsView: View {
     }
 
     private var permissionCard: some View {
-        HStack(spacing: Theme.Spacing.md) {
+        HStack(spacing: Theme.Spacing.sm) {
             ContextualSymbol(
                 inactive: "exclamationmark.triangle.fill",
                 active: "checkmark.circle.fill",
@@ -62,7 +62,7 @@ struct PowerToolsView: View {
                 tint: powerTools.accessibilityTrusted ? Theme.good : Theme.warn,
                 size: 24
             )
-            .frame(width: 38, height: 38)
+            .frame(width: 40, height: 40)
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(powerTools.accessibilityTrusted ? "Input Controls Are Ready" : "Accessibility Is Required")
@@ -79,7 +79,7 @@ struct PowerToolsView: View {
             .buttonStyle(.quiet(powerTools.accessibilityTrusted ? tint : Theme.warn))
         }
         .outcomeWash(permissionReturnTone)
-        .card(padding: Theme.Spacing.md,
+        .card(padding: 18,
               tier: .tinted(powerTools.accessibilityTrusted ? Theme.good : Theme.warn))
     }
 

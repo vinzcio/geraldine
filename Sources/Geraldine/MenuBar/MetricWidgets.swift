@@ -808,11 +808,24 @@ struct MetricWidget: View {
         smallFooter
     }
 
+    /// Every small tile shares one footer rhythm: a caption on the left, the quiet action
+    /// pinned bottom-trailing — so actions never sit in different corners tile to tile.
     @ViewBuilder private var smallFooter: some View {
         switch kind {
-        case .temperature: caption(monitor.thermal.available ? "CPU Die" : "Unavailable")
-        case .cpu:         actionButton("Details") { state.open(.activity) }
-        case .memory:      actionButton("Free Up", busy: freeing) { freeMemory() }
+        case .temperature:
+            caption(monitor.thermal.available ? "CPU Die" : "Unavailable")
+        case .cpu:
+            HStack {
+                caption("In Use")
+                Spacer(minLength: 4)
+                actionButton("Details") { state.open(.activity) }
+            }
+        case .memory:
+            HStack {
+                caption("In Use")
+                Spacer(minLength: 4)
+                actionButton("Free Up", busy: freeing) { freeMemory() }
+            }
         case .storage:
             HStack {
                 caption("\(Fmt.percent(monitor.diskFraction)) Used",
@@ -1013,17 +1026,18 @@ struct MetricWidget: View {
                     NetworkTrafficChart(samples: monitor.networkHistory,
                                         stats: networkStats,
                                         chartHeight: 104,
-                                        rateUnit: networkRateUnit)
+                                        rateUnit: networkRateUnit) {
+                        VStack(alignment: .trailing, spacing: 4) {
+                            if let link = network.linkRateMbps {
+                                caption("\(Int(link.rounded())) Mbps Link", animationValue: link)
+                            }
+                            speedControl
+                        }
+                        .frame(width: 132, alignment: .trailing)
+                    }
                 } else {
                     networkOfflineState
                         .frame(maxWidth: .infinity, minHeight: 104)
-                }
-                HStack(spacing: 8) {
-                    if let link = network.linkRateMbps {
-                        caption("\(Int(link.rounded())) Mbps Link", animationValue: link)
-                    }
-                    Spacer(minLength: 6)
-                    speedControl
                 }
             }
         }
@@ -1189,7 +1203,7 @@ struct MetricWidget: View {
                                 tint: phase == .upload ? Theme.accent : Theme.accent2,
                                 size: 10
                             )
-                            Text(phase == .download ? "Testing Download" : "Testing Upload")
+                            Text(phase == .download ? "Downloading" : "Uploading")
                                 .foregroundStyle(.secondary)
                         }
                     case .done(let down, let up):
@@ -1214,7 +1228,7 @@ struct MetricWidget: View {
             }
             .font(.system(size: 10.5, weight: .semibold).monospacedDigit())
             .lineLimit(1)
-            .frame(width: 162, height: Theme.Layout.minimumHitArea, alignment: .trailing)
+            .frame(width: 132, height: Theme.Layout.minimumHitArea, alignment: .trailing)
         }
         .animation(GeraldineMotion.animation(.standard, reduceMotion: reduceMotion), value: speedPhaseKey)
     }

@@ -240,7 +240,7 @@ struct BatteryView: View {
                                 .font(.callout.monospacedDigit()).foregroundStyle(Theme.Chart.green)
                                 .frame(width: 42, alignment: .trailing)
                         }
-                        .padding(.vertical, 7)
+                        .padding(.vertical, Theme.Spacing.xs)
                         if idx < vm.consumers.count - 1 { Divider() }
                     }
                 }
@@ -253,7 +253,7 @@ struct BatteryView: View {
 
     @ViewBuilder private var healthCard: some View {
         let d = vm.detail
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: Theme.Spacing.md) {
             SectionHeader("Battery Health")
             HStack(spacing: 20) {
                 GaugeRing(value: d.healthFraction ?? 0, tint: healthColor(d)) {
@@ -268,7 +268,7 @@ struct BatteryView: View {
                 }
                 .frame(width: 104, height: 104)
 
-                VStack(alignment: .leading, spacing: 9) {
+                VStack(alignment: .leading, spacing: Theme.Spacing.xs) {
                     infoRow("Condition", d.condition ?? "Unknown", color: conditionColor(d.condition))
                     infoRow("Cycle Count", d.cycleCount.map(String.init) ?? "—")
                     if let t = d.temperatureC {

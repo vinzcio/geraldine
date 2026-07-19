@@ -65,15 +65,15 @@ struct KeepAwakeWidget: View {
     // MARK: - Small tile
 
     private var smallIdle: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            header(eyeSize: 26, title: "Keep Awake", subtitle: nil, eyeIsSource: true)
-            HStack(spacing: 6) {
-                durationPill
-                actionButton(compact: true)
-                Spacer(minLength: 0)
+        VStack(alignment: .leading, spacing: 6) {
+            compactHeader(title: "Keep Awake")
+            if let lastError {
+                errorLabel(lastError, lineLimit: 2)
+            } else {
+                durationWheel(height: 42, compact: true)
             }
-            if let lastError { errorLabel(lastError, lineLimit: 2) }
             Spacer(minLength: 0)
+            idleActivityRow(showChips: false)
         }
     }
 
@@ -85,15 +85,9 @@ struct KeepAwakeWidget: View {
             // Drains like the countdown halo: the bar shows time *remaining*.
             if hasEnd { StatBar(fraction: 1 - progress, tint: Theme.Chart.red, height: 4) }
             Spacer(minLength: 0)
-            // The idle-activity menu replaces the end-time line here (the
-            // countdown headline already carries the time): the small active
-            // tile has room for only two controls, and idle activity must stay
-            // reachable because toggling it affects the running session.
-            HStack(spacing: 6) {
-                idleActivityMenuPill
-                Spacer(minLength: 4)
-                actionButton(compact: true)
-            }
+            // Idle activity stays reachable while active because toggling it affects
+            // the running session; the halo eye above is the stop control.
+            idleActivityRow(showChips: false)
         }
     }
 
@@ -101,34 +95,31 @@ struct KeepAwakeWidget: View {
 
     private var mediumIdle: some View {
         VStack(alignment: .leading, spacing: 8) {
-            header(eyeSize: 36, title: "Keep Awake", subtitle: "Your Mac Sleeps Normally",
-                   eyeIsSource: true)
-            if let lastError { errorLabel(lastError, lineLimit: 1) }
-            Spacer(minLength: 0)
-            HStack(spacing: 6) {
-                durationPill
-                idleActivityMenuPill
-                Spacer(minLength: 4)
-                actionButton(compact: false)
+            compactHeader(title: "Keep Awake", hint: pokeHint)
+            if let lastError {
+                errorLabel(lastError, lineLimit: 1)
+            } else {
+                labeledDurationWheel(height: 42)
             }
+            Spacer(minLength: 0)
+            idleActivityRow(showChips: true)
         }
     }
 
     /// The active session layout the medium and large tiles share: countdown hero,
-    /// a remaining-time bar that drains like the halo, then idle/extend/stop controls.
+    /// a remaining-time bar that drains like the halo, then idle activity + extend
+    /// chips. The halo eye is the stop control — no separate Stop button.
     private func expandedActive(compact: Bool) -> some View {
         VStack(alignment: .leading, spacing: compact ? 8 : 10) {
             activeCountdownHero
             if hasEnd { StatBar(fraction: 1 - progress, tint: Theme.Chart.red, height: compact ? 4 : 5) }
             Spacer(minLength: 0)
-            HStack(spacing: 6) {
-                idleActivityMenuPill
+            HStack(spacing: 8) {
+                idleActivityRow(showChips: !compact)
                 if hasEnd {
                     extendChip("+30m", 30 * 60)
                     extendChip("+1h", 60 * 60)
                 }
-                Spacer(minLength: 0)
-                actionButton(compact: compact)
             }
         }
     }
@@ -136,19 +127,19 @@ struct KeepAwakeWidget: View {
     // MARK: - Large tile (full width)
 
     private var largeIdle: some View {
-        VStack(alignment: .leading, spacing: 11) {
-            header(eyeSize: 44, title: "Keep Awake", subtitle: "Your Mac Sleeps Normally",
+        VStack(alignment: .leading, spacing: 12) {
+            header(eyeSize: 46, title: "Keep Awake",
+                   subtitle: "Poke the eye to stay awake — your Mac sleeps normally",
                    eyeIsSource: true)
-            durationGrid
-            idleActivityRow
-            HStack(spacing: 10) {
-                actionButton(compact: false)
-                Text(startHint)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-                Spacer(minLength: 0)
+            HStack(alignment: .top, spacing: 14) {
+                VStack(alignment: .leading, spacing: 6) {
+                    fieldLabel("Awake for", systemImage: "moon.zzz")
+                    durationWheel(height: 88, compact: false)
+                }
+                .frame(width: 150, alignment: .leading)
+
+                idleActivityControl
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
             if let lastError { errorLabel(lastError, lineLimit: 2) }
         }
@@ -225,6 +216,32 @@ struct KeepAwakeWidget: View {
         }
     }
 
+    /// Compact tiles keep the eye's 40pt accessibility target in chrome rather than letting
+    /// that invisible target inflate the fixed row's content height. The optional hint (shown
+    /// where the old Start button sat) tells first-timers the eye is the control.
+    private func compactHeader(title: String, hint: String? = nil) -> some View {
+        HStack(alignment: .center, spacing: 2) {
+            Color.clear.frame(width: 36, height: 24)
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+            Spacer(minLength: 4)
+            if let hint {
+                Text(hint)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+        }
+        .frame(height: 24, alignment: .leading)
+        .overlay(alignment: .leading) {
+            eye(24, isSource: true)
+                .offset(y: -4)
+        }
+    }
+
     @ViewBuilder private func remainingHeadline(size: CGFloat) -> some View {
         if hasEnd {
             HStack(alignment: .firstTextBaseline, spacing: 5) {
@@ -242,202 +259,189 @@ struct KeepAwakeWidget: View {
         }
     }
 
-    private var durationGrid: some View {
-        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 4), spacing: 6) {
-            ForEach(KeepAwakeDuration.allCases) { durationCard($0) }
-        }
+    private func durationWheel(height: CGFloat, compact: Bool) -> some View {
+        DurationWheel(selection: durationSelection,
+                      height: height,
+                      rowHeight: compact ? 20 : 28,
+                      tint: Module.keepAwake.tint)
+            .help("Scroll to set how long to stay awake (now \(keepAwake.defaultDuration.label))")
     }
 
-    private func durationCard(_ duration: KeepAwakeDuration) -> some View {
-        let selected = keepAwake.defaultDuration == duration
-        return Button {
-            if let animation = GeraldineMotion.animation(.standard, reduceMotion: motionReduced) {
-                withAnimation(animation) { keepAwake.defaultDuration = duration }
-            } else {
-                keepAwake.defaultDuration = duration
-            }
-        } label: {
-            Text(duration.shortLabel)
-                .font(.rounded(14, .semibold))
-                .monospacedDigit()
-                .foregroundStyle(selected ? Module.keepAwake.tint : .secondary)
+    /// The medium tile's duration control: an "Awake for" label that deliberately pairs with
+    /// the idle row's "Active after" so the two timers read as clearly different things.
+    private func labeledDurationWheel(height: CGFloat) -> some View {
+        HStack(spacing: 10) {
+            fieldLabel("Awake for", systemImage: "moon.zzz")
+                .frame(width: 78, alignment: .leading)
+            durationWheel(height: height, compact: true)
                 .frame(maxWidth: .infinity)
-                .frame(minHeight: 34)
-                .background(Theme.surfaceBase.opacity(0.72),
-                            in: RoundedRectangle(cornerRadius: Theme.Radius.badge, style: .continuous))
         }
-        .buttonStyle(.geraldineSelection(Module.keepAwake.tint,
-                                         isSelected: selected,
-                                         cornerRadius: Theme.Radius.badge))
-        .minimumHitArea()
-        .help("Set the duration to \(duration.label)")
-        .accessibilityLabel(duration.label)
-        .accessibilityAddTraits(selected ? [.isSelected] : [])
     }
 
-    private var durationPill: some View {
-        Menu {
-            Picker("Duration", selection: $keepAwake.defaultDuration) {
-                ForEach(KeepAwakeDuration.allCases) { Text($0.label).tag($0) }
-            }
-            Divider()
-            idleActivityMenuItems
-        } label: {
-            HStack(spacing: 4) {
-                Text(keepAwake.defaultDuration.shortLabel)
-                    .font(.caption.weight(.semibold))
-                    .monospacedDigit()
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 8, weight: .bold))
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .background(Theme.surfaceBase.opacity(0.76), in: Capsule())
-            .overlay(Capsule().strokeBorder(Theme.separator, lineWidth: 1))
+    private func fieldLabel(_ text: String, systemImage: String) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: systemImage)
+                .font(.system(size: 9, weight: .semibold))
+            Text(text)
+                .font(.caption2.weight(.semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .minimumHitArea()
-        .pointingHandCursor()
-        .help("Choose duration and idle activity")
+        .foregroundStyle(.secondary)
     }
 
-    private var idleActivityRow: some View {
-        HStack(spacing: 7) {
+    private var pokeHint: String { active ? "Poke to sleep" : "Poke to start" }
+
+    private var durationSelection: Binding<KeepAwakeDuration> {
+        Binding(
+            get: { keepAwake.defaultDuration },
+            set: { keepAwake.defaultDuration = $0 }
+        )
+    }
+
+    /// One row that finally *names* idle activity and, in the wider tiles, its "Active after"
+    /// delay — so it never reads as a second duration. Small/active tiles show just the labeled
+    /// switch; medium tiles add the delay chips.
+    @ViewBuilder private func idleActivityRow(showChips: Bool) -> some View {
+        HStack(spacing: 6) {
             Image(systemName: idleActivityIcon)
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(idleActivityTint)
                 .frame(width: 14)
-            VStack(alignment: .leading, spacing: 0) {
-                Text("Idle Activity")
+            if showChips {
+                Text("Active after")
                     .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.primary)
-                Text(keepAwake.idleActivityStatusLine)
-                    .font(.caption2)
-                    .foregroundStyle(idleActivityTint)
+                    .foregroundStyle(.secondary)
+                    .fixedSize()
+                idleActivityOptions(compact: true)
+            } else {
+                Text("Stay active")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.75)
+                    .minimumScaleFactor(0.8)
             }
-            Spacer(minLength: 0)
             if keepAwake.idleActivityNeedsAccessibility {
                 Button("Grant") { keepAwake.refreshIdleActivityAccess(prompt: true) }
                     .font(.caption2.weight(.semibold))
                     .buttonStyle(.quiet(Theme.warn))
-                    .help("Grant Accessibility access")
+                    .help("Grant Accessibility access so Geraldine can simulate activity")
             }
-            Stepper(value: $keepAwake.idleActivityDelayMinutes, in: 1...120, step: 1) {
-                Text(keepAwake.idleActivityDelayLabel)
-                    .font(.caption2.monospacedDigit().weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(minWidth: 28, alignment: .trailing)
-            }
-            .controlSize(.mini)
-            .fixedSize()
-            .help("Set how long Geraldine waits before simulating activity")
-            Toggle("Idle Activity", isOn: $keepAwake.simulateIdleActivity)
-                .labelsHidden()
-                .toggleStyle(.switch)
-                .controlSize(.mini)
+            Spacer(minLength: 4)
+            idleActivitySwitch
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 5)
-        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: Theme.Radius.badge, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: Theme.Radius.badge, style: .continuous)
-            .strokeBorder(idleActivityTint.opacity(keepAwake.simulateIdleActivity ? 0.22 : 0.08), lineWidth: 1))
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .contain)
         .accessibilityLabel("Idle Activity")
         .accessibilityValue(keepAwake.idleActivityStatusLine)
     }
 
-    /// The idle-activity controls, shared by the small tile's duration menu and the large tile's
-    /// idle pill. A Stepper is inert inside an NSMenu-backed Menu, so the delay uses a Picker.
-    @ViewBuilder private var idleActivityMenuItems: some View {
-        Toggle("Enable Idle Activity", isOn: $keepAwake.simulateIdleActivity)
-        Picker("Start After", selection: $keepAwake.idleActivityDelayMinutes) {
-            ForEach(idleActivityDelayOptions, id: \.self) { minutes in
-                Text(idleActivityDelayMenuLabel(minutes)).tag(minutes)
+    /// The large tile's idle-activity control: a titled card that explains what idle activity
+    /// does and keeps its "Active after" delay visually separate from the "Awake for" duration.
+    private var idleActivityControl: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 6) {
+                Image(systemName: idleActivityIcon)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(idleActivityTint)
+                    .frame(width: 14)
+                Text("Stay Active")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.primary)
+                Spacer(minLength: 0)
+                if keepAwake.idleActivityNeedsAccessibility {
+                    Button("Grant") { keepAwake.refreshIdleActivityAccess(prompt: true) }
+                        .font(.caption2.weight(.semibold))
+                        .buttonStyle(.quiet(Theme.warn))
+                        .help("Grant Accessibility access")
+                }
+                Toggle("Enable Idle Activity", isOn: $keepAwake.simulateIdleActivity)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .controlSize(.mini)
             }
-        }
-        if keepAwake.idleActivityNeedsAccessibility {
-            Button("Grant Accessibility") {
-                keepAwake.refreshIdleActivityAccess(prompt: true)
+
+            Text("Nudges input after you go idle, so chat and status apps keep seeing you as active.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 8) {
+                fieldLabel("Active after", systemImage: "timer")
+                idleActivityOptions(compact: false)
+                Spacer(minLength: 0)
             }
+            .opacity(keepAwake.simulateIdleActivity ? 1 : 0.45)
         }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: Theme.Radius.badge, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Theme.Radius.badge, style: .continuous)
+            .strokeBorder(idleActivityTint.opacity(keepAwake.simulateIdleActivity ? 0.22 : 0.08), lineWidth: 1))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Idle Activity")
+        .accessibilityValue(keepAwake.idleActivityStatusLine)
     }
 
-    private static let idleActivityDelayPresets = [1, 2, 5, 10, 15, 30, 60, 120]
-
-    /// Presets, plus the current value when the large tile's stepper picked an off-preset delay,
-    /// so the menu always shows the active selection.
-    private var idleActivityDelayOptions: [Int] {
-        let current = keepAwake.idleActivityDelayMinutes
-        guard !Self.idleActivityDelayPresets.contains(current) else { return Self.idleActivityDelayPresets }
-        return (Self.idleActivityDelayPresets + [current]).sorted()
-    }
-
-    private func idleActivityDelayMenuLabel(_ minutes: Int) -> String {
-        switch minutes {
-        case 1:   return "1 Minute"
-        case 60:  return "1 Hour"
-        case 120: return "2 Hours"
-        default:  return "\(minutes) Minutes"
+    private var idleActivitySwitch: some View {
+        Toggle(isOn: $keepAwake.simulateIdleActivity) {
+            Image(systemName: idleActivityIcon)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(idleActivityTint)
         }
+        .toggleStyle(.switch)
+        .controlSize(.mini)
+        .labelsHidden()
+        .help("Enable Idle Activity after \(keepAwake.idleActivityDelayLabel)")
+        .accessibilityLabel("Idle Activity")
+        .accessibilityValue(keepAwake.idleActivityStatusLine)
     }
 
-    private var idleActivityMenuPill: some View {
-        Menu {
-            idleActivityMenuItems
-        } label: {
-            HStack(spacing: 4) {
-                Image(systemName: "timer")
-                    .font(.system(size: 9, weight: .semibold))
-                Text("Idle \(keepAwake.idleActivityDelayLabel)")
+    @ViewBuilder private func idleActivityOptions(compact: Bool) -> some View {
+        HStack(spacing: compact ? 2 : 4) {
+            ForEach(KeepAwakeController.idleActivityDelayOptions, id: \.self) { minutes in
+                Button {
+                    keepAwake.idleActivityDelayMinutes = minutes
+                } label: {
+                    Text("\(minutes)m")
+                        .font(.caption2.monospacedDigit().weight(.semibold))
+                        .foregroundStyle(keepAwake.idleActivityDelayMinutes == minutes
+                                         ? idleActivityTint : .secondary)
+                        .frame(minWidth: compact ? 24 : 28, minHeight: 22)
+                        .background(keepAwake.idleActivityDelayMinutes == minutes
+                                    ? idleActivityTint.opacity(0.14) : Color.clear,
+                                    in: Capsule())
+                }
+                .buttonStyle(.quiet(idleActivityTint))
+                .minimumHitArea()
+                .help("Start Idle Activity after \(minutes) minute\(minutes == 1 ? "" : "s")")
+                .accessibilityLabel("Idle Activity after \(minutes) minute\(minutes == 1 ? "" : "s")")
+                .accessibilityAddTraits(keepAwake.idleActivityDelayMinutes == minutes ? [.isSelected] : [])
+            }
+            Menu {
+                ForEach(KeepAwakeController.idleActivityExtendedDelayOptions, id: \.self) { minutes in
+                    Button {
+                        keepAwake.idleActivityDelayMinutes = minutes
+                    } label: {
+                        if keepAwake.idleActivityDelayMinutes == minutes {
+                            Label("\(minutes)m", systemImage: "checkmark")
+                        } else {
+                            Text("\(minutes)m")
+                        }
+                    }
+                }
+            } label: {
+                let current = keepAwake.idleActivityDelayMinutes
+                Image(systemName: KeepAwakeController.idleActivityExtendedDelayOptions.contains(current)
+                      ? "clock.badge.checkmark" : "ellipsis")
                     .font(.caption2.weight(.semibold))
-                    .monospacedDigit()
+                    .frame(minWidth: compact ? 24 : 28, minHeight: 22)
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
-            .foregroundStyle(idleActivityTint)
-            .background(Theme.surfaceBase.opacity(0.76), in: Capsule())
-            .overlay(Capsule().strokeBorder(idleActivityTint.opacity(keepAwake.simulateIdleActivity ? 0.22 : 0.10), lineWidth: 1))
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .minimumHitArea()
-        .pointingHandCursor()
-        .help("Set how long Geraldine waits before simulating activity")
-        .accessibilityLabel("Idle Activity timer")
-        .accessibilityValue(keepAwake.idleActivityDelayLabel)
-    }
-
-    @ViewBuilder private func actionButton(compact: Bool) -> some View {
-        let button = Button { keepAwake.toggle() } label: {
-            HStack(spacing: 5) {
-                ContextualSymbol(
-                    inactive: "play.fill",
-                    active: "stop.fill",
-                    isActive: active,
-                    tint: stateTint,
-                    size: compact ? 9 : 11
-                )
-                Text(active ? "Stop" : "Start")
-                    .lineLimit(1)
-            }
-        }
-
-        if compact {
-            button
-                .buttonStyle(.soft(stateTint, compact: true))
-                .help(active ? "Stop Keep Awake." : "Start Keep Awake for the selected duration.")
-                .accessibilityLabel(active ? "Stop Keep Awake" : "Start Keep Awake")
-        } else {
-            button
-                .buttonStyle(.soft(stateTint))
-                .help(active ? "Stop Keep Awake." : "Start Keep Awake for the selected duration.")
-                .accessibilityLabel(active ? "Stop Keep Awake" : "Start Keep Awake")
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .minimumHitArea()
+            .help("Choose a longer Idle Activity delay")
+            .accessibilityLabel("More Idle Activity delays")
         }
     }
 
@@ -514,9 +518,161 @@ struct KeepAwakeWidget: View {
     }
 
     private var countdownTint: Color { Theme.Chart.red }
+}
 
-    private var startHint: String {
-        keepAwake.defaultDuration == .indefinitely ? "No Time Limit" : "For \(keepAwake.defaultDuration.label)"
+/// A compact, snap-to-row duration selector inspired by the iOS alarm wheel. The mask keeps
+/// adjacent values legible while the selected row stays calm and readable in the center.
+private struct DurationWheel: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Binding var selection: KeepAwakeDuration
+    let height: CGFloat
+    let rowHeight: CGFloat
+    let tint: Color
+    @State private var scrollPosition: Int?
+
+    /// Keep two complete cycles above and below the initial position. That preserves the
+    /// familiar circular alarm-wheel affordance without an observable reset while scrolling.
+    private let repetitionCount = 5
+
+    private var durations: [KeepAwakeDuration] { KeepAwakeDuration.allCases }
+    private var itemCount: Int { durations.count * repetitionCount }
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
+                .fill(Theme.surfaceBase.opacity(0.48))
+
+            ScrollView(.vertical) {
+                LazyVStack(spacing: 0) {
+                    ForEach(0..<itemCount, id: \.self) { index in
+                        let duration = duration(at: index)
+                        Text(duration.shortLabel)
+                            .font(.rounded(rowHeight >= 26 ? 20 : (rowHeight >= 20 ? 16 : 14), .semibold))
+                            .monospacedDigit()
+                            .foregroundStyle(duration == selection
+                                             ? Color.primary
+                                             : Color.secondary.opacity(0.72))
+                            .frame(maxWidth: .infinity)
+                            .frame(height: rowHeight)
+                            .contentShape(Rectangle())
+                            .id(index)
+                            .onTapGesture {
+                                selection = duration
+                                scrollPosition = index
+                            }
+                            .accessibilityHidden(true)
+                    }
+                }
+                .scrollTargetLayout()
+                .padding(.vertical, max(0, (height - rowHeight) / 2))
+            }
+            .scrollIndicators(.hidden)
+            .scrollTargetBehavior(.viewAligned)
+            .scrollPosition(id: $scrollPosition)
+            .scrollBounceBehavior(.basedOnSize)
+            .mask {
+                LinearGradient(
+                    stops: [
+                        .init(color: .black.opacity(0.16), location: 0),
+                        .init(color: .black.opacity(0.82), location: 0.20),
+                        .init(color: .black, location: 0.42),
+                        .init(color: .black, location: 0.58),
+                        .init(color: .black.opacity(0.82), location: 0.80),
+                        .init(color: .black.opacity(0.16), location: 1)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            }
+
+            RoundedRectangle(cornerRadius: Theme.Radius.badge, style: .continuous)
+                .fill(tint.opacity(0.14))
+                .overlay {
+                    RoundedRectangle(cornerRadius: Theme.Radius.badge, style: .continuous)
+                        .strokeBorder(tint.opacity(0.32), lineWidth: 1)
+                }
+                .frame(height: rowHeight + 4)
+                .padding(.horizontal, 6)
+                .shadow(color: tint.opacity(0.16), radius: 3, y: 1)
+                .allowsHitTesting(false)
+        }
+        .frame(height: height)
+        .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
+                .strokeBorder(Theme.separator.opacity(0.7), lineWidth: 1)
+        }
+        .contentShape(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Duration")
+        .accessibilityValue(selection.label)
+        .accessibilityAdjustableAction { direction in
+            let current = recenteredIndex(scrollPosition ?? initialIndex(for: selection))
+            let nextIndex: Int
+            switch direction {
+            case .increment: nextIndex = current + 1
+            case .decrement: nextIndex = current - 1
+            @unknown default: return
+            }
+            selection = duration(at: nextIndex)
+            scrollPosition = nextIndex
+        }
+        .onAppear {
+            scrollPosition = initialIndex(for: selection)
+        }
+        .onChange(of: selection) { _, newValue in
+            let target = nearestIndex(for: newValue, around: scrollPosition)
+            guard scrollPosition != target else { return }
+            if reduceMotion {
+                scrollPosition = target
+            } else {
+                withAnimation(GeraldineMotion.animation(.standard, reduceMotion: false)) {
+                    scrollPosition = target
+                }
+            }
+        }
+        .onChange(of: scrollPosition) { _, newIndex in
+            guard let newIndex else { return }
+            let newValue = duration(at: newIndex)
+            if selection != newValue {
+                selection = newValue
+            }
+
+            let recentered = recenteredIndex(newIndex)
+            guard recentered != newIndex else { return }
+            DispatchQueue.main.async {
+                // The same duration and neighboring rows occupy both positions, so this
+                // buffer reset is visually identical and never exposes a hard scroll edge.
+                guard scrollPosition == newIndex else { return }
+                scrollPosition = recentered
+            }
+        }
+    }
+
+    private func duration(at index: Int) -> KeepAwakeDuration {
+        durations[index % durations.count]
+    }
+
+    private func initialIndex(for duration: KeepAwakeDuration) -> Int {
+        let offset = durations.firstIndex(of: duration) ?? 0
+        return (repetitionCount / 2) * durations.count + offset
+    }
+
+    private func recenteredIndex(_ index: Int) -> Int {
+        let outerCycle = index < durations.count
+            || index >= (repetitionCount - 1) * durations.count
+        guard outerCycle else { return index }
+        let wrappedOffset = (index % durations.count + durations.count) % durations.count
+        return (repetitionCount / 2) * durations.count + wrappedOffset
+    }
+
+    private func nearestIndex(for duration: KeepAwakeDuration, around current: Int?) -> Int {
+        let offset = durations.firstIndex(of: duration) ?? 0
+        let anchor = current ?? initialIndex(for: duration)
+        return (0..<repetitionCount)
+            .map { $0 * durations.count + offset }
+            .min { abs($0 - anchor) < abs($1 - anchor) }
+            ?? initialIndex(for: duration)
     }
 }
 
