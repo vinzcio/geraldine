@@ -527,6 +527,7 @@ struct StatTile: View {
     var captionAnimationValue: Double?
     var fraction: Double         // 0…1 for the ring
     var tint: Color
+    var valueTint: Color = .primary
 
     var body: some View {
         VStack(spacing: 12) {
@@ -541,8 +542,9 @@ struct StatTile: View {
                     if let valueAnimationValue {
                         AnimatedNumberText(value, value: valueAnimationValue)
                             .font(.rounded(22, .semibold))
+                            .foregroundStyle(valueTint)
                     } else {
-                        Text(value).font(.rounded(22, .semibold))
+                        Text(value).font(.rounded(22, .semibold)).foregroundStyle(valueTint)
                     }
                     if let captionAnimationValue {
                         AnimatedNumberText(caption, value: captionAnimationValue)

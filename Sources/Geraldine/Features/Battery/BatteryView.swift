@@ -9,10 +9,13 @@ struct BatteryView: View {
     @State private var range: HistoryRange = .day
 
     private var tint: Color { Module.battery.tint }
-    // Charge only — never health. Falls back to the last charge we sampled, and stays
-    // nil (shown as an em dash) until a real reading exists so we never fabricate 0%.
-    private var knownLevel: Double? { monitor.batteryLevel ?? monitor.batteryHistory.last?.value }
+    // Charge only — never health or a stale history point. A temporarily unavailable
+    // live reading stays nil (shown as an em dash) rather than impersonating "now."
+    private var knownLevel: Double? { monitor.batteryLevel }
     private var level: Double { knownLevel ?? 0 }
+    private var chargeTint: Color {
+        MetricPresentationPolicy.batteryReadoutColor(level: knownLevel)
+    }
     private var hardwareName: String { state.hardware.displayName }
     private var hasInternalBattery: Bool { monitor.hasBattery || vm.detail.hasBattery }
     private var chargeHistory: [ChargeSample] {
@@ -70,11 +73,11 @@ struct BatteryView: View {
 
     private var hero: some View {
         HStack(spacing: 18) {
-            BatteryGlyph(level: level, charging: monitor.batteryCharging)
+            BatteryGlyph(level: level, charging: monitor.batteryCharging, tint: chargeTint)
             VStack(alignment: .leading, spacing: 4) {
                 AnimatedNumberText(knownLevel.map(Fmt.percent) ?? "—", value: level * 100)
                     .font(.rounded(40, .bold))
-                    .foregroundStyle(BatteryGlyph.color(level: level, charging: monitor.batteryCharging))
+                    .foregroundStyle(chargeTint)
                 Text(statusText)
                     .font(.callout).foregroundStyle(.secondary)
                 if vm.detail.adapterConnected, let adapter = adapterLabel {
@@ -88,7 +91,7 @@ struct BatteryView: View {
             }
             Spacer()
         }
-        .card(tier: .tinted(BatteryGlyph.color(level: level, charging: monitor.batteryCharging)),
+        .card(tier: .tinted(chargeTint),
               cornerRadius: Theme.Radius.hero)
     }
 
@@ -166,7 +169,7 @@ struct BatteryView: View {
                     .transition(GeraldineMotion.stateTransition(reduceMotion: reduceMotion))
                 HStack(spacing: 16) {
                     legendSwatch(Theme.Chart.green.opacity(0.18), "Charging / Plugged In")
-                    legendSwatch(Theme.Chart.green, "Battery Level")
+                    batteryLevelLegend
                     Spacer()
                 }
                 .font(.caption2).foregroundStyle(.secondary)
@@ -185,6 +188,19 @@ struct BatteryView: View {
         HStack(spacing: 5) {
             RoundedRectangle(cornerRadius: 3).fill(color).frame(width: 12, height: 12)
             Text(label)
+        }
+    }
+
+    private var batteryLevelLegend: some View {
+        HStack(spacing: 5) {
+            RoundedRectangle(cornerRadius: 3)
+                .fill(LinearGradient(
+                    gradient: MetricPresentationPolicy.batteryChargeGradient.swiftUI,
+                    startPoint: .top,
+                    endPoint: .bottom
+                ))
+                .frame(width: 12, height: 12)
+            Text("Battery Level")
         }
     }
 
@@ -221,7 +237,7 @@ struct BatteryView: View {
                             StatBar(fraction: c.impact / maxImpact, tint: Theme.Chart.green, height: 6)
                                 .frame(width: 90)
                             AnimatedNumberText(String(format: "%.1f", c.impact), value: c.impact)
-                                .font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+                                .font(.callout.monospacedDigit()).foregroundStyle(Theme.Chart.green)
                                 .frame(width: 42, alignment: .trailing)
                         }
                         .padding(.vertical, 7)
@@ -244,6 +260,9 @@ struct BatteryView: View {
                     VStack(spacing: 1) {
                         Text(d.maxCapacityPercent.map { "\($0)%" } ?? "—")
                             .font(.rounded(22, .bold))
+                            .foregroundStyle(MetricPresentationPolicy.batteryHealthReadoutColor(
+                                d.healthFraction
+                            ))
                         Text("Capacity").font(.caption2).foregroundStyle(.secondary)
                     }
                 }
@@ -253,7 +272,7 @@ struct BatteryView: View {
                     infoRow("Condition", d.condition ?? "Unknown", color: conditionColor(d.condition))
                     infoRow("Cycle Count", d.cycleCount.map(String.init) ?? "—")
                     if let t = d.temperatureC {
-                        infoRow("Temperature", "\(String(format: "%.1f", t))°C", color: Thermal.color(t))
+                        infoRow("Temperature", "\(String(format: "%.1f", t))°C", color: .secondary)
                     }
                 }
                 Spacer()
@@ -305,14 +324,9 @@ struct BatteryGlyph: View {
 
     var level: Double
     var charging: Bool
+    var tint: Color
 
     @State private var plugHaloProgress: CGFloat = 1
-
-    static func color(level: Double, charging: Bool) -> Color {
-        if charging || level > 0.2 { return Theme.good }
-        if level > 0.1 { return Theme.warn }
-        return Theme.bad
-    }
 
     private let bodyWidth: CGFloat = 62
     private let bodyHeight: CGFloat = 30
@@ -322,7 +336,7 @@ struct BatteryGlyph: View {
             ZStack {
                 Capsule()
                     .stroke(
-                        Self.color(level: level, charging: charging)
+                        tint
                             .opacity((1 - plugHaloProgress) * 0.46),
                         lineWidth: 2
                     )
@@ -333,7 +347,7 @@ struct BatteryGlyph: View {
                     .frame(width: bodyWidth, height: bodyHeight)
                 HStack(spacing: 0) {
                     RoundedRectangle(cornerRadius: 4, style: .continuous)
-                        .fill(Self.color(level: level, charging: charging).gradient)
+                        .fill(tint.gradient)
                         .frame(width: max(4, (bodyWidth - 8) * min(1, max(0, level))), height: bodyHeight - 8)
                         .animation(GeraldineMotion.animation(.emphasis, reduceMotion: reduceMotion), value: level)
                     Spacer(minLength: 0)
@@ -407,7 +421,7 @@ struct ChargeHistoryChart: View {
             let lowChargeY = y(0.20)
             ctx.fill(
                 Path(CGRect(x: 0, y: lowChargeY, width: plotW, height: plotH - lowChargeY)),
-                with: .color(Theme.bad.opacity(0.035))
+                with: .color(Theme.Chart.red.opacity(0.035))
             )
 
             // Horizontal gridlines + % labels (100 / 50 / 0).
@@ -439,7 +453,7 @@ struct ChargeHistoryChart: View {
                 area.addLine(to: CGPoint(x: x(points[points.count - 1].date), y: plotH))
                 area.closeSubpath()
                 ctx.fill(area, with: .linearGradient(
-                    Gradient(colors: [tint.opacity(0.38), tint.opacity(0.04)]),
+                    MetricPresentationPolicy.batteryChargeGradient.opacity(0.24).swiftUI,
                     startPoint: CGPoint(x: 0, y: 0), endPoint: CGPoint(x: 0, y: plotH)))
 
                 var line = Path()
@@ -449,7 +463,11 @@ struct ChargeHistoryChart: View {
                 }
                 ctx.stroke(
                     line,
-                    with: .color(tint),
+                    with: .linearGradient(
+                        MetricPresentationPolicy.batteryChargeGradient.swiftUI,
+                        startPoint: CGPoint(x: 0, y: 0),
+                        endPoint: CGPoint(x: 0, y: plotH)
+                    ),
                     style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round)
                 )
             }
@@ -460,24 +478,25 @@ struct ChargeHistoryChart: View {
                 let point = CGPoint(x: x(points[0].date), y: y(points[0].level))
                 ctx.fill(
                     Path(ellipseIn: CGRect(x: point.x - 2, y: point.y - 2, width: 4, height: 4)),
-                    with: .color(tint)
+                    with: .color(chargeColor(level: points[0].level))
                 )
             }
 
-            if let last = segments.last?.last, endpointReveal > 0 {
+            if currentLevel != nil, let last = segments.last?.last, endpointReveal > 0 {
                 let point = CGPoint(x: x(last.date), y: y(last.level))
+                let endpointColor = chargeColor(level: last.level)
                 let haloRadius = 7 * endpointReveal
                 ctx.fill(Path(ellipseIn: CGRect(x: point.x - haloRadius,
                                                 y: point.y - haloRadius,
                                                 width: haloRadius * 2,
                                                 height: haloRadius * 2)),
-                         with: .color(tint.opacity(0.18 * Double(endpointReveal))))
+                         with: .color(endpointColor.opacity(0.18 * Double(endpointReveal))))
                 let dotRadius = 3 * endpointReveal
                 ctx.fill(Path(ellipseIn: CGRect(x: point.x - dotRadius,
                                                 y: point.y - dotRadius,
                                                 width: dotRadius * 2,
                                                 height: dotRadius * 2)),
-                         with: .color(tint))
+                         with: .color(endpointColor))
             }
 
             // X-axis time labels.
@@ -497,13 +516,14 @@ struct ChargeHistoryChart: View {
                             style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
 
                     Circle()
-                        .fill(tint)
+                        .fill(chargeColor(level: inspection.sample.level))
                         .frame(width: 8, height: 8)
                         .position(inspection.point)
 
                     VStack(alignment: .leading, spacing: 1) {
                         Text(Fmt.percent(inspection.sample.level))
                             .font(.caption.weight(.semibold).monospacedDigit())
+                            .foregroundStyle(chargeColor(level: inspection.sample.level))
                         Text(inspection.sample.onAC ? "Plugged in" : "On battery")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
@@ -566,6 +586,10 @@ struct ChargeHistoryChart: View {
         .accessibilityValue(accessibilityValue)
         .accessibilityHint("Use left and right arrow keys, or increment and decrement, to inspect samples.")
         .accessibilityAdjustableAction(adjustAccessibilitySelection)
+    }
+
+    private func chargeColor(level: Double) -> Color {
+        MetricPresentationPolicy.batteryChartColor(level: level)
     }
 
     private struct Inspection {

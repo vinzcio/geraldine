@@ -15,7 +15,7 @@ modifying unrelated user work.
 
 | Plan | Title | Priority | Effort | Depends on | Status |
 |------|-------|----------|--------|------------|--------|
-| 001 | Make Trash classification canonical and testable | P1 | M | — | TODO |
+| 001 | Make Trash classification canonical and testable | P1 | M | — | DONE |
 | 002 | Contain and qualify Uninstaller leftover paths | P1 | M | 001 | TODO |
 | 003 | Preserve Finder selections as structured URLs | P1 | S | — | TODO |
 | 004 | Move slow Power Tools effects off the main actor | P1 | M | 001, 003 | TODO |

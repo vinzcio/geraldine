@@ -58,9 +58,10 @@ struct TimelineSparkGraph: View {
     var window: TimeInterval
     var now: Date
     var tint: Color
-    var gradientColors: [Color]? = nil
+    var gradient: MetricGradientSpec? = nil
     var domain: ClosedRange<Double>?
-    var valueColor: ((Double) -> Color)? = nil
+    var sampleColor: ((Double) -> Color)? = nil
+    var showsLatestEndpoint = true
     var gapThreshold: TimeInterval = SystemMonitor.chartSampleGapThreshold
     var maximumPointCount: Int? = nil
     var inspectionValueFormatter: ((Double) -> String)? = nil
@@ -108,6 +109,7 @@ struct TimelineSparkGraph: View {
                         timeline: timeline,
                         domain: resolvedDomain,
                         tint: tint,
+                        sampleColor: sampleColor,
                         valueFormatter: inspectionValueFormatter,
                         accessibilitySample: selectedAccessibilitySample
                     )
@@ -163,15 +165,16 @@ struct TimelineSparkGraph: View {
     }
 
     private var lineShading: AnyShapeStyle {
-        if let g = gradientColors {
-            return AnyShapeStyle(LinearGradient(colors: g, startPoint: .top, endPoint: .bottom))
+        if let gradient {
+            return AnyShapeStyle(LinearGradient(gradient: gradient.swiftUI,
+                                                startPoint: .top, endPoint: .bottom))
         }
         return AnyShapeStyle(tint.gradient)
     }
 
     private var areaShading: AnyShapeStyle {
-        if let g = gradientColors {
-            return AnyShapeStyle(LinearGradient(colors: g.map { $0.opacity(0.22) },
+        if let gradient {
+            return AnyShapeStyle(LinearGradient(gradient: gradient.opacity(0.22).swiftUI,
                                                 startPoint: .top, endPoint: .bottom))
         }
         return AnyShapeStyle(LinearGradient(colors: [tint.opacity(0.32), tint.opacity(0.03)],
@@ -243,37 +246,16 @@ struct TimelineSparkGraph: View {
             let points = samples.map { point($0, in: size) }
             let isLatestSegment = index == segments.indices.last
             if samples.count == 1, let sample = samples.first, let point = points.first {
-                if isLatestSegment {
-                    ChartEndpoint(point: point, tint: valueColor?(sample.value) ?? tint)
+                if isLatestSegment, showsLatestEndpoint {
+                    ChartEndpoint(point: point, tint: sampleColor?(sample.value) ?? tint)
                         .id(sample.timestamp)
                 } else {
-                    ChartSamplePoint(point: point, tint: valueColor?(sample.value) ?? tint)
+                    ChartSamplePoint(point: point, tint: sampleColor?(sample.value) ?? tint)
                         .id(sample.timestamp)
                 }
             } else {
                 SparkPath.area(underSegment: points, baselineY: size.height).fill(areaShading)
-                if let valueColor {
-                    ForEach(1..<samples.count, id: \.self) { sampleIndex in
-                        let shading = AnyShapeStyle(
-                            valueColor(max(samples[sampleIndex - 1].value, samples[sampleIndex].value))
-                        )
-                        if isLatestSegment, sampleIndex == samples.count - 1 {
-                            ChartLatestSegment(
-                                from: points[sampleIndex - 1],
-                                to: points[sampleIndex],
-                                shading: shading
-                            )
-                            .id(samples[sampleIndex].timestamp)
-                        } else {
-                            Path { p in
-                                p.move(to: points[sampleIndex - 1])
-                                p.addLine(to: points[sampleIndex])
-                            }
-                            .stroke(shading,
-                                    style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
-                        }
-                    }
-                } else if isLatestSegment, points.count >= 2 {
+                if isLatestSegment, points.count >= 2 {
                     if points.count > 2 {
                         SparkPath.line(through: Array(points.dropLast()))
                             .stroke(lineShading,
@@ -288,8 +270,8 @@ struct TimelineSparkGraph: View {
                         .stroke(lineShading, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
                 }
 
-                if isLatestSegment, let last = samples.last {
-                    ChartEndpoint(point: point(last, in: size), tint: valueColor?(last.value) ?? tint)
+                if isLatestSegment, showsLatestEndpoint, let last = samples.last {
+                    ChartEndpoint(point: point(last, in: size), tint: sampleColor?(last.value) ?? tint)
                         .id(last.timestamp)
                 }
             }
@@ -486,16 +468,16 @@ struct NetworkTimelineGraph: View {
                 if isLatestSegment, points.count >= 2 {
                     if points.count > 2 {
                         SparkPath.line(through: Array(points.dropLast()))
-                            .stroke(tint.gradient,
+                            .stroke(tint,
                                     style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
                     }
                     ChartLatestSegment(from: points[points.count - 2],
                                        to: points[points.count - 1],
-                                       shading: AnyShapeStyle(tint.gradient))
+                                       shading: AnyShapeStyle(tint))
                         .id(samples.last?.timestamp)
                 } else {
                     SparkPath.line(through: points)
-                        .stroke(tint.gradient,
+                        .stroke(tint,
                                 style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
                 }
                 if isLatestSegment, let last = points.last {
@@ -625,6 +607,7 @@ private struct TimelineInspectionOverlay: View {
     let timeline: TimelineWindow
     let domain: ClosedRange<Double>
     let tint: Color
+    let sampleColor: ((Double) -> Color)?
     let valueFormatter: (Double) -> String
     let accessibilitySample: MetricSample?
 
@@ -635,20 +618,22 @@ private struct TimelineInspectionOverlay: View {
             ZStack {
                 if let sample = inspectedSample(width: proxy.size.width) {
                     let point = point(for: sample, in: proxy.size)
+                    let pointTint = sampleColor?(sample.value) ?? tint
                     Path { path in
                         path.move(to: CGPoint(x: point.x, y: 0))
                         path.addLine(to: CGPoint(x: point.x, y: proxy.size.height))
                     }
-                    .stroke(tint.opacity(0.42), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                    .stroke(pointTint.opacity(0.42), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
 
                     Circle()
-                        .fill(tint)
+                        .fill(pointTint)
                         .frame(width: 8, height: 8)
                         .position(point)
 
                     VStack(alignment: .leading, spacing: 1) {
                         Text(valueFormatter(sample.value))
                             .font(.caption.weight(.semibold).monospacedDigit())
+                            .foregroundStyle(pointTint)
                         Text(sample.date, style: .time)
                             .font(.caption2)
                             .foregroundStyle(.secondary)
@@ -795,6 +780,7 @@ struct DonutChart: View {
     var centerTitle: String
     var centerSubtitle: String
     var lineWidth: CGFloat = 26
+    var centerTitleColor: Color = .primary
 
     private var ranges: [(seg: DonutSegment, start: CGFloat, end: CGFloat)] {
         let total = max(segments.reduce(0) { $0 + $1.value }, 0.0001)
@@ -820,7 +806,7 @@ struct DonutChart: View {
                     .rotationEffect(.degrees(-90))
             }
             VStack(spacing: 2) {
-                Text(centerTitle).font(.rounded(24, .bold))
+                Text(centerTitle).font(.rounded(24, .bold)).foregroundStyle(centerTitleColor)
                 Text(centerSubtitle).font(.caption).foregroundStyle(.secondary)
             }
         }

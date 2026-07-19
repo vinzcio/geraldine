@@ -140,6 +140,25 @@ final class SystemMonitor: ObservableObject {
     var memoryFraction: Double { memoryTotal > 0 ? memoryUsed / memoryTotal : 0 }
     var diskFraction: Double { diskTotal > 0 ? diskUsed / diskTotal : 0 }
 
+    /// The stored battery series intentionally samples once per minute, but a live
+    /// chart must end at the same reading as its headline. This returns a render-only
+    /// endpoint in the current monitor session without changing persistence cadence.
+    func batteryHistoryIncludingCurrent(at date: Date = Date()) -> [MetricSample] {
+        guard hasBattery, let batteryLevel else { return batteryHistory }
+        let current = MetricSample(
+            timestamp: date.timeIntervalSinceReferenceDate,
+            value: batteryLevel,
+            sessionID: sessionID
+        )
+        var result = batteryHistory
+        if result.last?.timestamp == current.timestamp {
+            result[result.count - 1] = current
+        } else {
+            result.append(current)
+        }
+        return result
+    }
+
     func refresh() {
         let timestamp = now().timeIntervalSinceReferenceDate
         let sampledCPU = sampleCPU()
@@ -319,11 +338,14 @@ final class SystemMonitor: ObservableObject {
     private static func sampleDisk() -> (used: Double, total: Double) {
         let url = URL(fileURLWithPath: "/")
         guard let v = try? url.resourceValues(forKeys: [.volumeTotalCapacityKey,
+                                                        .volumeAvailableCapacityKey,
                                                         .volumeAvailableCapacityForImportantUsageKey]) else {
             return (0, 0)
         }
         let total = Double(v.volumeTotalCapacity ?? 0)
-        let available = Double(v.volumeAvailableCapacityForImportantUsage ?? 0)
+        let importantAvailable = v.volumeAvailableCapacityForImportantUsage
+        let fallbackAvailable = v.volumeAvailableCapacity.map(Int64.init)
+        let available = Double(importantAvailable ?? fallbackAvailable ?? 0)
         return (max(0, total - available), total)
     }
 

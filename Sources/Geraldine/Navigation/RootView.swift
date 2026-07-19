@@ -24,9 +24,10 @@ struct RootView: View {
             ZStack {
                 WindowBackground(module: module)
                 DetailHost(module: module, direction: state.navigationDirection)
+                    .clipped()
             }
             .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
-            .clipped()
+            .ignoresSafeArea(.container, edges: .top)
         }
         .geraldineSurfaceActive(state.mainWindowVisible)
         .background(WindowAccessor { window in state.bind(window: window) })
@@ -40,11 +41,23 @@ struct RootView: View {
 struct Sidebar: View {
     @Binding var selection: Module?
 
+    /// Keep navigation state in Geraldine's own selection plate. The native
+    /// selected row is deliberately nil so AppKit cannot paint its blue overlay.
+    private var listSelection: Binding<Module?> {
+        Binding(
+            get: { nil },
+            set: { newValue in
+                guard let newValue else { return }
+                selection = newValue
+            }
+        )
+    }
+
     var body: some View {
         // Keep the List independently bounded by the app shell. Detail screens
         // can have large intrinsic sizes, spacers, or geometry readers without
         // participating in the sidebar's layout or scroll position.
-        List(selection: $selection) {
+        List(selection: listSelection) {
             BrandHeader()
                 .listRowSeparator(.hidden)
                 .listRowInsets(EdgeInsets(top: 10, leading: 8, bottom: 14, trailing: 8))
@@ -123,6 +136,7 @@ private struct SidebarRow: View {
         }
         .selectionPlate(isSelected: isSelected, tint: tint)
         .contentShape(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
         .onHover { isHovered = $0 }
         .animation(GeraldineMotion.animation(.quick, reduceMotion: reduceMotion), value: isHovered)
     }
@@ -141,6 +155,7 @@ private struct SidebarFooter: View {
                 AnimatedNumberText("\(Fmt.size(max(0, monitor.diskTotal - monitor.diskUsed))) Free",
                                    value: max(0, monitor.diskTotal - monitor.diskUsed))
                     .font(.caption.weight(.medium))
+                    .foregroundStyle(MetricPresentationPolicy.usageReadoutColor(monitor.diskFraction))
                 StatBar(fraction: monitor.diskFraction,
                         tint: Theme.Chart.status(for: monitor.diskFraction), height: 5)
             }

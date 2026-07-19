@@ -144,7 +144,7 @@ private struct DeviceRow: View {
                 Spacer(minLength: 4)
 
                 if let battery = device.battery {
-                    DeviceBatteryIndicator(level: battery, low: device.lowBattery)
+                    DeviceBatteryIndicator(level: battery)
                 }
 
                 if device.ejectable {
@@ -199,16 +199,17 @@ private struct DeviceRow: View {
 
 private struct DeviceBatteryIndicator: View {
     let level: Double
-    let low: Bool
 
     private var clampedLevel: Double { min(1, max(0, level)) }
-    private var tint: Color { low ? Theme.bad : Theme.good }
+    private var tint: Color {
+        MetricPresentationPolicy.batteryReadoutColor(level: clampedLevel)
+    }
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 2) {
             AnimatedNumberText("\(Int((clampedLevel * 100).rounded()))%", value: clampedLevel * 100)
                 .font(.caption2.weight(.semibold).monospacedDigit())
-                .foregroundStyle(low ? Theme.bad : Color.secondary)
+                .foregroundStyle(tint)
             GeometryReader { proxy in
                 Capsule()
                     .fill(Color.primary.opacity(0.08))

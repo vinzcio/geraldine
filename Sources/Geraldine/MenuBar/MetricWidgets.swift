@@ -762,16 +762,17 @@ struct MetricWidget: View {
         .buttonStyle(.quiet(Theme.accent)).disabled(busy)
     }
 
-    @ViewBuilder private func caption(_ text: String, animationValue: Double? = nil) -> some View {
+    @ViewBuilder private func caption(_ text: String, animationValue: Double? = nil,
+                                      tint: Color = .secondary) -> some View {
         if let animationValue {
             AnimatedNumberText(text, value: animationValue)
                 .font(.caption2)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(tint)
                 .lineLimit(1)
         } else {
             Text(text)
                 .font(.caption2)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(tint)
                 .lineLimit(1)
         }
     }
@@ -784,7 +785,7 @@ struct MetricWidget: View {
                 // Hidden while editing so the value never sits under the resize badge.
                 if !isSmall && !customizationActive {
                     animatedValueText(size: 15, weight: .semibold)
-                        .foregroundStyle(kind == .temperature ? tint : .primary)
+                        .foregroundStyle(chartTint)
                 }
             }
             if isSmall { standardSmall } else { standardExpanded }
@@ -793,7 +794,7 @@ struct MetricWidget: View {
 
     @ViewBuilder private var standardSmall: some View {
         animatedValueText(size: 16, weight: .semibold)
-            .foregroundStyle(kind == .temperature ? tint : .primary)
+            .foregroundStyle(chartTint)
         if kind == .battery {
             normalizedHistoryChart(window: MetricChartStyle.smallWindow,
                                    maximumPointCount: MetricChartStyle.smallMaxPoints)
@@ -815,7 +816,8 @@ struct MetricWidget: View {
         case .storage:
             HStack {
                 caption("\(Fmt.percent(monitor.diskFraction)) Used",
-                        animationValue: monitor.diskFraction * 100)
+                        animationValue: monitor.diskFraction * 100,
+                        tint: chartTint)
                 Spacer(minLength: 4)
                 actionButton("Review") { state.open(.storage) }
             }
@@ -842,10 +844,12 @@ struct MetricWidget: View {
         VStack(alignment: .leading, spacing: 8) {
             StatBar(fraction: monitor.diskFraction, tint: chartTint, height: 8)
             HStack(spacing: 16) {
-                caption("\(Fmt.size(monitor.diskUsed)) Used", animationValue: monitor.diskUsed)
+                caption("\(Fmt.size(monitor.diskUsed)) Used", animationValue: monitor.diskUsed,
+                        tint: chartTint)
                 Spacer(minLength: 4)
                 caption("\(Fmt.percent(monitor.diskFraction)) Full",
-                        animationValue: monitor.diskFraction * 100)
+                        animationValue: monitor.diskFraction * 100,
+                        tint: chartTint)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -855,20 +859,25 @@ struct MetricWidget: View {
         switch kind {
         case .temperature:
             liveHistoryChart(samples: monitor.thermalHistory,
-                             tint: MetricChartStyle.chartColor(for: .temperature),
-                             gradientColors: Thermal.scaleColors,
+                             tint: monitor.thermal.available
+                                ? MetricChartStyle.chartColor(for: .temperature)
+                                : .secondary,
+                             gradient: Thermal.gradient,
                              domain: Thermal.chartDomain,
-                             valueColor: Thermal.chartColor)
+                             sampleColor: monitor.thermal.available ? Thermal.chartColor : nil,
+                             showsLatestEndpoint: monitor.thermal.available)
         case .cpu:
             liveHistoryChart(samples: monitor.cpuHistory,
                              tint: MetricChartStyle.chartColor(for: .cpu),
-                             gradientColors: MetricChartStyle.gradient(for: .cpu),
-                             domain: MetricChartStyle.normalizedDomain)
+                             gradient: MetricChartStyle.gradient(for: .cpu),
+                             domain: MetricChartStyle.normalizedDomain,
+                             sampleColor: MetricPresentationPolicy.usageChartColor)
         case .memory:
             liveHistoryChart(samples: monitor.memHistory,
                              tint: MetricChartStyle.chartColor(for: .memory),
-                             gradientColors: MetricChartStyle.gradient(for: .memory),
-                             domain: MetricChartStyle.normalizedDomain)
+                             gradient: MetricChartStyle.gradient(for: .memory),
+                             domain: MetricChartStyle.normalizedDomain,
+                             sampleColor: MetricPresentationPolicy.usageChartColor)
         case .battery:
             normalizedHistoryChart(window: MetricChartStyle.expandedWindow,
                                    maximumPointCount: MetricChartStyle.expandedMaxPoints)
@@ -879,36 +888,37 @@ struct MetricWidget: View {
         }
     }
 
-    private var slowMetricHistory: [MetricSample] {
-        switch kind {
-        case .battery:
-            return monitor.batteryHistory
-        default:
-            return []
-        }
-    }
-
     private func liveHistoryChart(samples: [MetricSample], tint: Color,
-                                  gradientColors: [Color]?, domain: ClosedRange<Double>,
-                                  valueColor: ((Double) -> Color)? = nil) -> some View {
+                                  gradient: MetricGradientSpec?, domain: ClosedRange<Double>,
+                                  sampleColor: ((Double) -> Color)? = nil,
+                                  showsLatestEndpoint: Bool = true) -> some View {
         TimelineSparkGraph(samples: samples,
                            window: SystemMonitor.liveHistoryWindow,
                            now: Date(),
                            tint: tint,
-                           gradientColors: gradientColors,
+                           gradient: gradient,
                            domain: domain,
-                           valueColor: valueColor,
+                           sampleColor: sampleColor,
+                           showsLatestEndpoint: showsLatestEndpoint,
                            gapThreshold: SystemMonitor.chartSampleGapThreshold,
                            maximumPointCount: 300)
     }
 
     private func normalizedHistoryChart(window: TimeInterval, maximumPointCount: Int) -> some View {
-        TimelineSparkGraph(samples: slowMetricHistory,
+        let now = Date()
+        let samples = kind == .battery
+            ? monitor.batteryHistoryIncludingCurrent(at: now)
+            : []
+        return TimelineSparkGraph(samples: samples,
                            window: window,
-                           now: Date(),
+                           now: now,
                            tint: MetricChartStyle.chartColor(for: kind),
-                           gradientColors: MetricChartStyle.gradient(for: kind),
+                           gradient: MetricChartStyle.gradient(for: kind),
                            domain: MetricChartStyle.normalizedDomain,
+                           sampleColor: kind == .battery
+                               ? { MetricPresentationPolicy.batteryChartColor(level: $0) }
+                               : nil,
+                           showsLatestEndpoint: kind != .battery || monitor.batteryLevel != nil,
                            gapThreshold: MetricChartStyle.gapThreshold(window: window,
                                                                        maximumPointCount: maximumPointCount),
                            maximumPointCount: maximumPointCount)
@@ -920,16 +930,19 @@ struct MetricWidget: View {
             let low = monitor.thermalHistory.map(\.value).min()
             let high = monitor.thermalHistory.map(\.value).max()
             HStack {
-                caption("Low \(tempString(low))", animationValue: low)
+                caption("Low \(tempString(low))", animationValue: low,
+                        tint: low.map(Thermal.chartColor) ?? .secondary)
                 Spacer()
-                caption("High \(tempString(high))", animationValue: high)
+                caption("High \(tempString(high))", animationValue: high,
+                        tint: high.map(Thermal.chartColor) ?? .secondary)
             }
         case .cpu:
             HStack { caption("Live Usage"); Spacer(); actionButton("Activity") { state.open(.activity) } }
         case .memory:
             HStack {
                 caption("\(Fmt.size(monitor.memoryUsed)) of \(Fmt.size(monitor.memoryTotal))",
-                        animationValue: monitor.memoryUsed)
+                        animationValue: monitor.memoryUsed,
+                        tint: chartTint)
                 Spacer()
                 actionButton("Free Up", busy: freeing) { freeMemory() }
             }
@@ -945,7 +958,8 @@ struct MetricWidget: View {
                 caption(batteryCaption, animationValue: batteryCaptionAnimationValue)
                 Spacer()
                 if let health = monitor.batteryHealth {
-                    caption("Health \(Fmt.percent(health))", animationValue: health * 100)
+                    caption("Health \(Fmt.percent(health))", animationValue: health * 100,
+                            tint: Theme.Chart.batteryHealth(health))
                 }
             }
         case .network:
@@ -966,9 +980,13 @@ struct MetricWidget: View {
                     networkRateUnitToggle
                 }
                 Spacer(minLength: 0)
-                HStack(spacing: 4) {
-                    rate("arrow.down", monitor.netDown, Theme.accent2)
-                    rate("arrow.up", monitor.netUp, Theme.accent)
+                if network.online {
+                    HStack(spacing: 4) {
+                        rate("arrow.down", monitor.netDown, Theme.Chart.blue)
+                        rate("arrow.up", monitor.netUp, Theme.Chart.purple)
+                    }
+                } else {
+                    networkOfflineState
                 }
             }
         case .medium:
@@ -978,8 +996,12 @@ struct MetricWidget: View {
                 networkTitleRows
                 Spacer(minLength: 0)
                 HStack(spacing: 8) {
-                    rate("arrow.down", monitor.netDown, Theme.accent2)
-                    rate("arrow.up", monitor.netUp, Theme.accent)
+                    if network.online {
+                        rate("arrow.down", monitor.netDown, Theme.Chart.blue)
+                        rate("arrow.up", monitor.netUp, Theme.Chart.purple)
+                    } else {
+                        networkOfflineState
+                    }
                     Spacer(minLength: 6)
                     speedControl
                 }
@@ -987,10 +1009,15 @@ struct MetricWidget: View {
         case .large:
             VStack(alignment: .leading, spacing: 8) {
                 networkTitleRows
-                NetworkTrafficChart(samples: monitor.networkHistory,
-                                    stats: networkStats,
-                                    chartHeight: 104,
-                                    rateUnit: networkRateUnit)
+                if network.online {
+                    NetworkTrafficChart(samples: monitor.networkHistory,
+                                        stats: networkStats,
+                                        chartHeight: 104,
+                                        rateUnit: networkRateUnit)
+                } else {
+                    networkOfflineState
+                        .frame(maxWidth: .infinity, minHeight: 104)
+                }
                 HStack(spacing: 8) {
                     if let link = network.linkRateMbps {
                         caption("\(Int(link.rounded())) Mbps Link", animationValue: link)
@@ -1000,6 +1027,12 @@ struct MetricWidget: View {
                 }
             }
         }
+    }
+
+    private var networkOfflineState: some View {
+        Label("Offline", systemImage: "wifi.slash")
+            .font(.caption.weight(.medium))
+            .foregroundStyle(.secondary)
     }
 
     /// Header + name/toggle/security rows shared by the medium and large layouts, so the
@@ -1123,6 +1156,7 @@ struct MetricWidget: View {
             AnimatedNumberText(Fmt.compactRate(value, unit: networkRateUnit),
                                value: networkRateUnit.displayValue(for: animationValue))
                 .font(.system(size: networkRateFontSize, weight: .semibold).monospacedDigit())
+                .foregroundStyle(tint)
                 .lineLimit(1)
                 .minimumScaleFactor(isSmall ? 0.82 : 0.9)
                 .frame(width: networkRateTextWidth, alignment: .leading)
@@ -1162,9 +1196,9 @@ struct MetricWidget: View {
                         Button { network.runSpeedTest() } label: {
                             HStack(spacing: 5) {
                                 AnimatedNumberText("↓\(speedString(down))", value: down)
-                                    .foregroundStyle(Theme.accent2)
+                                    .foregroundStyle(Theme.Chart.blue)
                                 AnimatedNumberText("↑\(speedString(up))", value: up)
-                                    .foregroundStyle(Theme.accent)
+                                    .foregroundStyle(Theme.Chart.purple)
                                 Text("Mbps").foregroundStyle(.secondary)
                             }
                         }
@@ -1200,11 +1234,13 @@ struct MetricWidget: View {
 
     private var tint: Color {
         switch kind {
-        case .temperature: return Thermal.color(monitor.thermal.cpu)
-        case .cpu:         return Theme.status(for: monitor.cpuUsage)
-        case .memory:      return Theme.status(for: monitor.memoryFraction)
-        case .storage:     return Theme.status(for: monitor.diskFraction)
-        case .battery:     return (monitor.batteryLevel ?? 1) < 0.2 ? Theme.bad : Theme.good
+        case .temperature:
+            return monitor.thermal.available ? Thermal.readoutColor(monitor.thermal.cpu) : .secondary
+        case .cpu:         return MetricPresentationPolicy.usageReadoutColor(monitor.cpuUsage)
+        case .memory:      return MetricPresentationPolicy.usageReadoutColor(monitor.memoryFraction)
+        case .storage:     return MetricPresentationPolicy.usageReadoutColor(monitor.diskFraction)
+        case .battery:
+            return MetricPresentationPolicy.batteryReadoutColor(level: monitor.batteryLevel)
         case .network:     return network.online ? Theme.accent2 : Theme.warn
         }
     }
@@ -1212,7 +1248,7 @@ struct MetricWidget: View {
     private var chartTint: Color {
         switch kind {
         case .temperature:
-            return Thermal.chartColor(monitor.thermal.cpu)
+            return monitor.thermal.available ? Thermal.chartColor(monitor.thermal.cpu) : .secondary
         case .cpu:
             return Theme.Chart.status(for: monitor.cpuUsage)
         case .memory:
@@ -1242,7 +1278,9 @@ struct MetricWidget: View {
         case .cpu:         return Fmt.percent(monitor.cpuUsage)
         case .memory:      return Fmt.percent(monitor.memoryFraction)
         case .storage:     return "\(Fmt.size(max(0, monitor.diskTotal - monitor.diskUsed))) Free"
-        case .battery:     return monitor.batteryLevel.map(Fmt.percent) ?? "AC"
+        case .battery:
+            if let level = monitor.batteryLevel { return Fmt.percent(level) }
+            return monitor.hasBattery ? "—" : "AC"
         case .network:     return network.displayName
         }
     }
@@ -1278,7 +1316,9 @@ struct MetricWidget: View {
 
     private var batteryCaption: String {
         // Desktop / no battery.
-        guard monitor.batteryLevel != nil else { return "Plugged In" }
+        guard monitor.batteryLevel != nil else {
+            return monitor.hasBattery ? "Level Unavailable" : "Plugged In"
+        }
         // Unplugged — running on the battery.
         guard monitor.batteryOnAC else {
             if let m = monitor.batteryMinutesToEmpty { return "On Battery · \(BatteryInfo.durationString(m)) Left" }

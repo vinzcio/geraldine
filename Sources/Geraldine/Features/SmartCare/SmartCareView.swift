@@ -67,9 +67,6 @@ final class SmartCareViewModel: ObservableObject {
     var healthLabel: String {
         switch score { case 85...: return "Great"; case 60..<85: return "Fair"; default: return "Needs Attention" }
     }
-    var healthColor: Color {
-        switch score { case 85...: return Theme.good; case 60..<85: return Theme.warn; default: return Theme.bad }
-    }
     var actionableFindings: [Finding] {
         findings.filter(\.isActionable)
     }
@@ -103,7 +100,7 @@ final class SmartCareViewModel: ObservableObject {
                     actionTitle: "Open Storage",
                     actionIcon: "chart.pie.fill"
                 ))
-            } else if diskFraction > 0.9 {
+            } else if diskFraction > MetricAttentionPolicy.storageUsage {
                 results.append(Finding(
                     title: "Low On Disk Space",
                     detail: "Only \(Fmt.size(diskFree)) free. Review storage first, then clean selected items.",
@@ -151,11 +148,11 @@ final class SmartCareViewModel: ObservableObject {
                 ))
             }
 
-            if memFraction > 0.85 {
+            if memFraction > MetricAttentionPolicy.memoryUsage {
                 results.append(Finding(
                     title: "Memory Is Running High",
                     detail: "\(Fmt.percent(memFraction)) is in use. Check heavy apps before freeing inactive memory.",
-                    scope: "Live memory pressure from Geraldine's system monitor.",
+                    scope: "Live memory use from Geraldine's system monitor.",
                     confidence: .high,
                     severity: .warn,
                     module: .activity,
@@ -166,7 +163,7 @@ final class SmartCareViewModel: ObservableObject {
                 results.append(Finding(
                     title: "Memory Looks Healthy",
                     detail: "\(Fmt.percent(memFraction)) is in use.",
-                    scope: "Live memory pressure from Geraldine's system monitor.",
+                    scope: "Live memory use from Geraldine's system monitor.",
                     confidence: .high,
                     severity: .good,
                     module: nil,
@@ -255,7 +252,7 @@ struct SmartCareView: View {
                         WorkflowMark(state: .idle, tint: Theme.accent,
                                      idleIcon: "checkmark.seal.fill", size: 120)
                         Text("Smart Care").font(.rounded(24, .bold))
-                        Text("One tap checks live disk space, memory pressure, user caches, logs, Trash, and user launch agents. It suggests review routes; it does not clean anything without you opening the target module.")
+                        Text("One tap checks live disk space, memory use, user caches, logs, Trash, and user launch agents. It suggests review routes; it does not clean anything without you opening the target module.")
                             .font(.callout).foregroundStyle(.secondary)
                             .multilineTextAlignment(.center).frame(maxWidth: 500)
                         PrimaryButton(title: "Run Smart Care", icon: "sparkles", action: rescan)
@@ -328,7 +325,7 @@ struct SmartCareView: View {
                 if showResultContext {
                     Text("Mac Health: \(vm.healthLabel)")
                         .font(.rounded(20, .semibold))
-                        .foregroundStyle(vm.healthColor)
+                        .foregroundStyle(Theme.Chart.health(for: vm.score))
                         .transition(.opacity)
 
                     SmartCareScanSummary(freshness: vm.freshnessText,
@@ -524,6 +521,7 @@ private struct SmartCareScoreHero: View {
                 VStack(spacing: 0) {
                     AnimatedNumberText("\(displayedScore)", value: Double(displayedScore))
                         .font(.rounded(40, .bold))
+                        .foregroundStyle(tint)
                     Text("/ 100").font(.caption).foregroundStyle(.secondary)
                 }
                 .transition(.opacity.combined(with: .scale(scale: 0.96)))
