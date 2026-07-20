@@ -219,6 +219,9 @@ struct PowerToolsView: View {
                 Toggle("Option-N Creates A New Text File In Finder",
                        isOn: tracking($powerTools.finderOptionNNewFile, section: .finder))
                     .toggleStyle(.switch)
+                Toggle("Backspace Moves The Finder Selection To Trash",
+                       isOn: tracking($powerTools.finderBackspaceMovesToTrash, section: .finder))
+                    .toggleStyle(.switch)
             }
 
             Divider()

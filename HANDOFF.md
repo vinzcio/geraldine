@@ -1,7 +1,14 @@
 # Geraldine — Menu Bar Work Handoff
 
-**Last updated:** 2026-07-16
+**Last updated:** 2026-07-23
 **Status:** Current work is consolidated on `main`. The June menu-bar adoption investigation in §6 is retained as historical troubleshooting context, not an unverified current blocker.
+
+## Current closeout snapshot — 2026-07-23
+
+- Keep Awake’s small, medium, and large menu-bar tiles now share fixed control-row geometry, clearer Duration/Stay Active grouping, aligned delay chips, and compact button styling so adjacent widgets keep a consistent rhythm.
+- Power Tools now offers `Backspace Moves The Finder Selection To Trash`. The Finder-only shortcut accepts plain Backspace, ignores modified/forward-delete keys, and routes selections through a reversible-only Trash operation that refuses anything already in Trash.
+- Regression coverage includes shortcut matching, Finder result reporting, safe Trash behavior, and an opt-in Keep Awake surface renderer for visual development.
+- Closeout verification is the full Swift test suite followed by a clean merged-source `./build.sh install run`, strict Developer ID signature verification, installed build provenance, live process proof, and visual inspection of `/Applications/Geraldine.app`.
 
 ## Current closeout snapshot — 2026-07-16
 

@@ -129,6 +129,29 @@ final class TrashServiceTests: XCTestCase {
         XCTAssertEqual(result.permanentlyDeleted, 0)
     }
 
+    func testMoveToTrashUsesOnlyReversibleOperation() {
+        let root = URL(fileURLWithPath: "/Users/test/.Trash", isDirectory: true)
+        let outside = ScanItem(url: URL(fileURLWithPath: "/work/file"), size: 20)
+        let inside = ScanItem(url: root.appendingPathComponent("existing"), size: 30)
+        let fileOperator = RecordingTrashFileOperator()
+
+        let result = TrashService.moveToTrash(
+            [outside, inside],
+            fileOperator: fileOperator,
+            rootResolver: FixedTrashRootResolver(roots: [root])
+        )
+
+        XCTAssertEqual(fileOperator.trashed, [outside.url])
+        XCTAssertTrue(fileOperator.removed.isEmpty)
+        XCTAssertEqual(result.removed, 1)
+        XCTAssertEqual(result.trashed, 1)
+        XCTAssertEqual(result.permanentlyDeleted, 0)
+        XCTAssertEqual(result.freed, 0)
+        XCTAssertEqual(result.failures, [
+            TrashService.Failure(url: inside.url, message: "The item is already in the Trash.")
+        ])
+    }
+
     func testTrashDescendantUsesOnlyPermanentRemoval() {
         let root = URL(fileURLWithPath: "/Users/test/.Trash", isDirectory: true)
         let item = ScanItem(url: root.appendingPathComponent("file"), size: 30)

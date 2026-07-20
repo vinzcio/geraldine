@@ -759,7 +759,7 @@ struct MetricWidget: View {
             }
             .foregroundStyle(Theme.accent)
         }
-        .buttonStyle(.quiet(Theme.accent)).disabled(busy)
+        .buttonStyle(.quiet(Theme.accent, compact: true)).disabled(busy)
     }
 
     @ViewBuilder private func caption(_ text: String, animationValue: Double? = nil,
@@ -806,10 +806,11 @@ struct MetricWidget: View {
         }
         Spacer(minLength: 0)
         smallFooter
+            .frame(height: Theme.Layout.compactHitArea)
     }
 
-    /// Every small tile shares one footer rhythm: a caption on the left, the quiet action
-    /// pinned bottom-trailing — so actions never sit in different corners tile to tile.
+    /// Every small tile shares one footer rhythm: a fixed-height strip with a caption on
+    /// the left and the quiet action trailing — so captions and actions line up tile to tile.
     @ViewBuilder private var smallFooter: some View {
         switch kind {
         case .temperature:
@@ -840,7 +841,8 @@ struct MetricWidget: View {
     }
 
     /// Medium fills the shared unit height with a flexible chart; large (full width) gets
-    /// a taller fixed chart and takes the height it needs.
+    /// a taller fixed chart and takes the height it needs. The footer is a fixed-height
+    /// strip so every tile's chart resolves to the same height side by side.
     @ViewBuilder private var standardExpanded: some View {
         if kind == .storage {
             storageCapacitySummary
@@ -851,6 +853,7 @@ struct MetricWidget: View {
             chart.frame(maxHeight: .infinity)
         }
         largeFooter
+            .frame(height: Theme.Layout.compactHitArea)
     }
 
     private var storageCapacitySummary: some View {
@@ -1121,7 +1124,7 @@ struct MetricWidget: View {
                     .font(.rounded(size, .semibold))
                     .foregroundStyle(Theme.accent2)
             }
-            .buttonStyle(.quiet(Theme.accent2))
+            .buttonStyle(.quiet(Theme.accent2, compact: true))
             .help(network.nameAccess == .denied
                   ? "Open Location Services to show the Wi-Fi network name"
                   : "Allow Location so macOS reveals the Wi-Fi network name")
@@ -1192,7 +1195,7 @@ struct MetricWidget: View {
                         Button { network.runSpeedTest() } label: {
                             Label("Test Speed", systemImage: "gauge.with.dots.needle.67percent")
                         }
-                        .buttonStyle(.quiet(Theme.accent))
+                        .buttonStyle(.quiet(Theme.accent, compact: true))
                     case .running(let phase):
                         HStack(spacing: 6) {
                             ProgressView().controlSize(.mini)
@@ -1216,19 +1219,19 @@ struct MetricWidget: View {
                                 Text("Mbps").foregroundStyle(.secondary)
                             }
                         }
-                        .buttonStyle(.quiet(Theme.accent))
+                        .buttonStyle(.quiet(Theme.accent, compact: true))
                         .help("Run the speed test again")
                     case .failed:
                         Button { network.runSpeedTest() } label: {
                             Label("Retry Test", systemImage: "exclamationmark.arrow.circlepath")
                         }
-                        .buttonStyle(.quiet(Theme.accent))
+                        .buttonStyle(.quiet(Theme.accent, compact: true))
                     }
                 }
             }
             .font(.system(size: 10.5, weight: .semibold).monospacedDigit())
             .lineLimit(1)
-            .frame(width: 132, height: Theme.Layout.minimumHitArea, alignment: .trailing)
+            .frame(width: 132, height: Theme.Layout.compactHitArea, alignment: .trailing)
         }
         .animation(GeraldineMotion.animation(.standard, reduceMotion: reduceMotion), value: speedPhaseKey)
     }
