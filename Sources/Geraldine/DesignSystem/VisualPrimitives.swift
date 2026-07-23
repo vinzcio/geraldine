@@ -246,18 +246,21 @@ struct SelectionPlate: ViewModifier {
     let isSelected: Bool
     let tint: Color
     var cornerRadius: CGFloat = Theme.Radius.control
+    var showsAccentRail = true
 
     func body(content: Content) -> some View {
         content
             .background {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                            .fill(isSelected ? Theme.decorativeFill(tint) : Color.clear)
+                    .fill(isSelected ? Theme.decorativeFill(tint) : Color.clear)
                     .overlay(alignment: .leading) {
-                        Capsule()
-                            .fill(tint)
-                            .frame(width: 3)
-                            .padding(.vertical, 7)
-                            .opacity(isSelected ? 1 : 0)
+                        if showsAccentRail {
+                            Capsule()
+                                .fill(tint)
+                                .frame(width: 3)
+                                .padding(.vertical, 7)
+                                .opacity(isSelected ? 1 : 0)
+                        }
                     }
             }
             .animation(GeraldineMotion.animation(.quick, reduceMotion: reduceMotion), value: isSelected)
@@ -268,9 +271,15 @@ extension View {
     func selectionPlate(
         isSelected: Bool,
         tint: Color,
-        cornerRadius: CGFloat = Theme.Radius.control
+        cornerRadius: CGFloat = Theme.Radius.control,
+        showsAccentRail: Bool = true
     ) -> some View {
-        modifier(SelectionPlate(isSelected: isSelected, tint: tint, cornerRadius: cornerRadius))
+        modifier(SelectionPlate(
+            isSelected: isSelected,
+            tint: tint,
+            cornerRadius: cornerRadius,
+            showsAccentRail: showsAccentRail
+        ))
     }
 
     /// Keeps the visible control compact while guaranteeing an accessible target.

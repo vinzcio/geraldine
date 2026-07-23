@@ -207,20 +207,22 @@ struct WidgetItem: Codable, Identifiable, Equatable {
 @MainActor
 final class WidgetLayoutStore: ObservableObject {
     @Published private(set) var items: [WidgetItem]
+    private let defaults: UserDefaults
 
     /// The last persisted order. The menu-bar status item reads this instead of `items`
     /// so a live reorder drag (which stages moves without persisting) doesn't make the
     /// status item flicker between metrics until the drop commits.
     private var committedItems: [WidgetItem]
 
-    private static let key = "geraldine.widgetLayout.v2"
+    private static let key = "geraldine.widgetLayout.v3"
+    private static let previousKey = "geraldine.widgetLayout.v2"
     private static let legacyKey = "geraldine.widgetLayout.v1"
 
-    /// Spans total a multiple of four so the default grid packs with no trailing gap:
-    /// row 1 = temperature (2) + keep awake (2), row 2 = cpu (1) + memory (1) + network (2).
+    /// Keep Awake defaults to the full-width watch panel so the eye, time markers,
+    /// honeycomb, and Stay Active controls are all visible without a resize step.
     static let defaults: [WidgetItem] = [
         WidgetItem(.temperature, .medium),
-        WidgetItem(.keepAwake, .medium),
+        WidgetItem(.keepAwake, .large),
         WidgetItem(.cpu, .small),
         WidgetItem(.memory, .small),
         WidgetItem(.network, .medium),
@@ -229,12 +231,24 @@ final class WidgetLayoutStore: ObservableObject {
         WidgetItem(.calendar, .large, isShown: false)
     ]
 
-    init() {
-        let loaded = Self.load(key: Self.key, legacySizes: false)
-            ?? Self.load(key: Self.legacyKey, legacySizes: true)
-            ?? Self.defaults
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        let current = Self.load(key: Self.key, legacySizes: false, defaults: defaults)
+        let previous = current == nil
+            ? Self.load(key: Self.previousKey, legacySizes: false, defaults: defaults)
+            : nil
+        let legacy = current == nil && previous == nil
+            ? Self.load(key: Self.legacyKey, legacySizes: true, defaults: defaults)
+            : nil
+        let needsWatchPanelMigration = current == nil && (previous != nil || legacy != nil)
+        let loaded = needsWatchPanelMigration
+            ? Self.upgradingKeepAwakeToWatchPanel(previous ?? legacy ?? Self.defaults)
+            : (current ?? Self.defaults)
         items = loaded
         committedItems = loaded
+        if needsWatchPanelMigration {
+            Self.save(loaded, key: Self.key, defaults: defaults)
+        }
     }
 
     /// The metric mirrored live in the menu-bar status item. Non-metric widgets
@@ -324,8 +338,24 @@ final class WidgetLayoutStore: ObservableObject {
 
     private func persist() {
         committedItems = items
+        Self.save(items, key: Self.key, defaults: defaults)
+    }
+
+    private static func save(_ items: [WidgetItem], key: String, defaults: UserDefaults) {
         guard let data = try? JSONEncoder().encode(items) else { return }
-        UserDefaults.standard.set(data, forKey: Self.key)
+        defaults.set(data, forKey: key)
+    }
+
+    /// One-time v2/v1 upgrade: the approved design requires the full-width watch face.
+    /// Once saved under v3, later user-initiated resizes remain untouched.
+    nonisolated static func upgradingKeepAwakeToWatchPanel(
+        _ items: [WidgetItem]
+    ) -> [WidgetItem] {
+        var upgraded = items
+        if let index = upgraded.firstIndex(where: { $0.kind == .keepAwake }) {
+            upgraded[index].size = .large
+        }
+        return upgraded
     }
 
     /// Mirrors a persisted `WidgetItem` but keeps kind and size as raw strings, so a saved
@@ -339,8 +369,12 @@ final class WidgetLayoutStore: ObservableObject {
 
     /// `legacySizes` decodes the v1 two-size scheme, where "large" meant a half-row
     /// two-track tile — today's `.medium`. The calendar is pinned to full width either way.
-    private static func load(key: String, legacySizes: Bool) -> [WidgetItem]? {
-        guard let data = UserDefaults.standard.data(forKey: key),
+    private static func load(
+        key: String,
+        legacySizes: Bool,
+        defaults: UserDefaults
+    ) -> [WidgetItem]? {
+        guard let data = defaults.data(forKey: key),
               let stored = try? JSONDecoder().decode([StoredItem].self, from: data) else { return nil }
         let decoded = stored.compactMap { item -> WidgetItem? in
             guard let kind = WidgetKind(id: item.kind) else { return nil }

@@ -134,7 +134,7 @@ private struct SidebarRow: View {
             RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
                 .fill(isHovered && !isSelected ? tint.opacity(0.065) : .clear)
         }
-        .selectionPlate(isSelected: isSelected, tint: tint)
+        .selectionPlate(isSelected: isSelected, tint: tint, showsAccentRail: false)
         .contentShape(RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         .onHover { isHovered = $0 }

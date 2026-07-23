@@ -17,7 +17,14 @@ final class KeepAwakeSnapshotRenderTests: XCTestCase {
         try XCTSkipUnless(ProcessInfo.processInfo.environment["RENDER_SNAPSHOTS"] == "1")
         try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
 
-        let keepAwake = KeepAwakeController()
+        let suiteName = "KeepAwakeSnapshotRenderTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.set(KeepAwakeDuration.twelveHours.rawValue, forKey: "keepAwake.defaultDuration")
+        defaults.set(true, forKey: "keepAwake.simulateIdleActivity")
+        defaults.set(2, forKey: "keepAwake.idleActivityDelayMinutes")
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let keepAwake = KeepAwakeController(defaults: defaults)
+        defer { keepAwake.shutdown() }
 
         // Grid geometry from the live panel: 640 wide, 16pt outer padding, 4 tracks.
         let gridWidth: CGFloat = 640 - 32
@@ -36,7 +43,9 @@ final class KeepAwakeSnapshotRenderTests: XCTestCase {
 
         // Briefly start a real session (released again below) to capture the active layouts.
         keepAwake.toggle()
-        defer { if keepAwake.isActive { keepAwake.toggle() } }
+        // ImageRenderer otherwise captures the first frame of the eye/background transition,
+        // which makes unchanged controls look spuriously faded in the developer snapshots.
+        RunLoop.main.run(until: Date().addingTimeInterval(0.45))
         try render("widget-small-active", width: track, height: WidgetGridMetrics.unitHeight) {
             KeepAwakeWidget(size: .small).environmentObject(keepAwake)
         }
@@ -45,6 +54,15 @@ final class KeepAwakeSnapshotRenderTests: XCTestCase {
             KeepAwakeWidget(size: .medium).environmentObject(keepAwake)
         }
         try render("widget-large-active", width: gridWidth, height: nil) {
+            KeepAwakeWidget(size: .large).environmentObject(keepAwake)
+        }
+
+        // A short synthetic session makes the elapsed/remaining split visible without
+        // adding production-only progress injection hooks to KeepAwakeController.
+        keepAwake.deactivate()
+        keepAwake.activate(duration: 4)
+        RunLoop.main.run(until: Date().addingTimeInterval(2.05))
+        try render("widget-large-active-half-elapsed", width: gridWidth, height: nil) {
             KeepAwakeWidget(size: .large).environmentObject(keepAwake)
         }
     }

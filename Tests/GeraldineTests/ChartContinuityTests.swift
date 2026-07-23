@@ -94,6 +94,19 @@ final class ChartContinuityTests: XCTestCase {
         XCTAssertEqual(merged[1], live[1])
     }
 
+    func testBatteryHistoryParserRequiresACompleteChargeToken() {
+        XCTAssertEqual(
+            BatteryInfo.chargeMatch(in: "Using Batt(Charge: 82)")?.pct,
+            82
+        )
+        XCTAssertEqual(
+            BatteryInfo.chargeMatch(in: "Using BATT (Charge:68%)")?.pct,
+            68
+        )
+        XCTAssertNil(BatteryInfo.chargeMatch(in: "Using Batt(Charge: 8"))
+        XCTAssertNil(BatteryInfo.chargeMatch(in: "Using AC(Charge: 101)"))
+    }
+
     func testBatteryPolicyKeepsNormalSparsePmsetReadingsConnected() {
         let start = Date(timeIntervalSinceReferenceDate: 0)
         let samples = [
@@ -108,6 +121,22 @@ final class ChartContinuityTests: XCTestCase {
         )
 
         XCTAssertEqual(segments, [samples])
+    }
+
+    func testBatteryChartSuppressesBaselineAreaFillAcrossDiscontinuousHistory() {
+        let start = Date(timeIntervalSinceReferenceDate: 0)
+        let firstSegment = [
+            ChargeSample(date: start, level: 0.8, onAC: false),
+            ChargeSample(date: start.addingTimeInterval(60), level: 0.7, onAC: false)
+        ]
+        let secondSegment = [
+            ChargeSample(date: start.addingTimeInterval(2 * 60 * 60), level: 0.6, onAC: true),
+            ChargeSample(date: start.addingTimeInterval(2 * 60 * 60 + 60), level: 0.65, onAC: true)
+        ]
+
+        XCTAssertTrue(BatteryHistoryRenderPolicy.showsAreaFill(for: [firstSegment]))
+        XCTAssertFalse(BatteryHistoryRenderPolicy.showsAreaFill(for: [firstSegment, secondSegment]))
+        XCTAssertFalse(BatteryHistoryRenderPolicy.showsAreaFill(for: [[firstSegment[0]]]))
     }
 
     func testBatteryPolicyDisconnectsStalePmsetHistoryFromCurrentEndpoint() {

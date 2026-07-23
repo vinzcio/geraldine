@@ -383,6 +383,15 @@ struct BatteryGlyph: View {
 
 // MARK: - Charge history chart
 
+enum BatteryHistoryRenderPolicy {
+    /// Closing a filled area at every gap makes each segment look like a measured
+    /// plunge to 0%. Keep the fill only when the visible history is continuous;
+    /// discontinuous history still renders its real lines, dots, and AC intervals.
+    static func showsAreaFill<Sample>(for segments: [[Sample]]) -> Bool {
+        segments.count == 1 && (segments.first?.count ?? 0) >= 2
+    }
+}
+
 /// Reconstructs the macOS Battery-settings graph: charge level over time with
 /// shaded charging/plugged-in windows behind the level curve.
 struct ChargeHistoryChart: View {
@@ -411,6 +420,7 @@ struct ChargeHistoryChart: View {
             let start = end.addingTimeInterval(-range.seconds)
             let span = max(1, end.timeIntervalSince(start))
             let segments = plotSegments(start: start, end: end)
+            let showsAreaFill = BatteryHistoryRenderPolicy.showsAreaFill(for: segments)
 
             func x(_ date: Date) -> CGFloat {
                 CGFloat(min(max(date.timeIntervalSince(start) / span, 0), 1)) * plotW
@@ -445,16 +455,18 @@ struct ChargeHistoryChart: View {
                     ctx.fill(Path(rect), with: .color(tint.opacity(0.16)))
                 }
 
-                var area = Path()
-                area.move(to: CGPoint(x: x(points[0].date), y: plotH))
-                for point in points {
-                    area.addLine(to: CGPoint(x: x(point.date), y: y(point.level)))
+                if showsAreaFill {
+                    var area = Path()
+                    area.move(to: CGPoint(x: x(points[0].date), y: plotH))
+                    for point in points {
+                        area.addLine(to: CGPoint(x: x(point.date), y: y(point.level)))
+                    }
+                    area.addLine(to: CGPoint(x: x(points[points.count - 1].date), y: plotH))
+                    area.closeSubpath()
+                    ctx.fill(area, with: .linearGradient(
+                        MetricPresentationPolicy.batteryChargeGradient.opacity(0.24).swiftUI,
+                        startPoint: CGPoint(x: 0, y: 0), endPoint: CGPoint(x: 0, y: plotH)))
                 }
-                area.addLine(to: CGPoint(x: x(points[points.count - 1].date), y: plotH))
-                area.closeSubpath()
-                ctx.fill(area, with: .linearGradient(
-                    MetricPresentationPolicy.batteryChargeGradient.opacity(0.24).swiftUI,
-                    startPoint: CGPoint(x: 0, y: 0), endPoint: CGPoint(x: 0, y: plotH)))
 
                 var line = Path()
                 for (index, point) in points.enumerated() {

@@ -53,6 +53,14 @@ enum KeepAwakeDuration: String, CaseIterable, Identifiable {
         case .indefinitely: return "∞"
         }
     }
+
+    static func matching(seconds: TimeInterval?) -> KeepAwakeDuration? {
+        guard let seconds else { return .indefinitely }
+        return allCases.first { option in
+            guard let optionSeconds = option.seconds else { return false }
+            return abs(optionSeconds - seconds) < 0.5
+        }
+    }
 }
 
 @MainActor
@@ -147,6 +155,7 @@ final class KeepAwakeController: ObservableObject {
         simulateIdleActivity = defaults.bool(forKey: DefaultsKey.simulateIdleActivity)
         let rawIdleDelay = defaults.object(forKey: DefaultsKey.idleActivityDelayMinutes) as? Int ?? 2
         idleActivityDelayMinutes = Self.clampedIdleActivityDelayMinutes(rawIdleDelay)
+        defaults.set(idleActivityDelayMinutes, forKey: DefaultsKey.idleActivityDelayMinutes)
 
         installPowerSourceObserver()
         installWorkspaceObservers()
@@ -208,12 +217,36 @@ final class KeepAwakeController: ObservableObject {
         return min(1, max(0, 1 - remaining / total))
     }
 
+    /// The timed span owned by the running session. This deliberately does not read
+    /// `defaultDuration`: changing the honeycomb while active configures the next session.
+    var activeDuration: TimeInterval? {
+        guard isActive, let activeSince, let activeUntil else { return nil }
+        return max(0, activeUntil.timeIntervalSince(activeSince))
+    }
+
+    /// The honeycomb option represented by the running session. URL automation may
+    /// start an arbitrary duration; in that case no preset should appear selected.
+    var activeDurationOption: KeepAwakeDuration? {
+        guard isActive else { return nil }
+        return KeepAwakeDuration.matching(seconds: activeDuration)
+    }
+
     func activateDefault() {
         activate(duration: defaultDuration.seconds)
     }
 
     func activate(option: KeepAwakeDuration) {
         activate(duration: option.seconds)
+    }
+
+    /// Applies a duration choice consistently across every surface. While a session is
+    /// running, the choice becomes the new current session instead of silently changing
+    /// only the next launch.
+    func selectDuration(_ option: KeepAwakeDuration) {
+        defaultDuration = option
+        if isActive {
+            activate(option: option)
+        }
     }
 
     func activate(duration: TimeInterval?) {
@@ -341,15 +374,14 @@ final class KeepAwakeController: ObservableObject {
     }
 
     private static func clampedIdleActivityDelayMinutes(_ minutes: Int) -> Int {
-        // Thresholds avoid subtracting an untrusted persisted Int, which could overflow
-        // while repairing a corrupt UserDefaults value such as Int.min or Int.max.
+        // Only 1m, 2m, and 5m remain valid. Thresholds avoid subtracting an untrusted
+        // persisted Int, which could overflow while repairing Int.min or Int.max.
         if minutes <= 1 { return 1 }
-        if minutes >= 120 { return 120 }
-        return minutes
+        if minutes <= 3 { return 2 }
+        return 5
     }
 
     static let idleActivityDelayOptions = [1, 2, 5]
-    static let idleActivityExtendedDelayOptions = [10, 15, 30, 60, 120]
 
     private func installWorkspaceObservers() {
         let center = NSWorkspace.shared.notificationCenter

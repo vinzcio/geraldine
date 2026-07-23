@@ -161,7 +161,8 @@ enum BatteryInfo {
     private static let timeRegex = try? NSRegularExpression(
         pattern: "^([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} [+-][0-9]{4})")
     private static let chargeRegex = try? NSRegularExpression(
-        pattern: "Using (AC|BATT) ?\\(Charge ?: ?([0-9]{1,3})", options: [.caseInsensitive])
+        pattern: "Using\\s+(AC|BATT)\\s*\\(Charge\\s*:\\s*([0-9]{1,3})\\s*%?\\s*\\)",
+        options: [.caseInsensitive])
 
     private static func firstMatch(_ regex: NSRegularExpression?, in s: String,
                                    range: Range<String.Index>) -> String? {
@@ -172,13 +173,14 @@ enum BatteryInfo {
         return String(s[r])
     }
 
-    private static func chargeMatch(in s: String) -> (source: String, pct: Int)? {
+    static func chargeMatch(in s: String) -> (source: String, pct: Int)? {
         guard let regex = chargeRegex else { return nil }
         let ns = NSRange(s.startIndex..<s.endIndex, in: s)
         guard let m = regex.firstMatch(in: s, range: ns), m.numberOfRanges > 2,
               let sr = Range(m.range(at: 1), in: s),
               let pr = Range(m.range(at: 2), in: s),
-              let pct = Int(s[pr]) else { return nil }
+              let pct = Int(s[pr]),
+              (0...100).contains(pct) else { return nil }
         return (String(s[sr]), pct)
     }
 
