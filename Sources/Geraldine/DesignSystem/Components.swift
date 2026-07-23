@@ -773,15 +773,17 @@ private struct SoftButtonBody: View {
 
 struct QuietButtonStyle: ButtonStyle {
     var tint: Color = Theme.accent
+    var compact = false
 
     func makeBody(configuration: Configuration) -> some View {
-        QuietButtonBody(configuration: configuration, tint: tint)
+        QuietButtonBody(configuration: configuration, tint: tint, compact: compact)
     }
 }
 
 private struct QuietButtonBody: View {
     let configuration: ButtonStyleConfiguration
     let tint: Color
+    var compact = false
 
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.isFocused) private var isFocused
@@ -792,7 +794,8 @@ private struct QuietButtonBody: View {
         configuration.label
             .font(.rounded(13, .medium))
             .padding(.horizontal, 10)
-            .frame(minWidth: Theme.Layout.minimumHitArea, minHeight: Theme.Layout.minimumHitArea)
+            .frame(minWidth: Theme.Layout.minimumHitArea,
+                   minHeight: compact ? Theme.Layout.compactHitArea : Theme.Layout.minimumHitArea)
             .foregroundStyle(
                 isEnabled
                     ? (isHovered || isFocused ? tint : Color.secondary)
@@ -834,8 +837,9 @@ extension ButtonStyle where Self == SoftCapsuleButtonStyle {
 }
 
 extension ButtonStyle where Self == QuietButtonStyle {
-    static func quiet(_ tint: Color = Theme.accent) -> QuietButtonStyle {
-        QuietButtonStyle(tint: tint)
+    /// `compact` caps the control at `compactHitArea` for fixed-height widget rows.
+    static func quiet(_ tint: Color = Theme.accent, compact: Bool = false) -> QuietButtonStyle {
+        QuietButtonStyle(tint: tint, compact: compact)
     }
 }
 

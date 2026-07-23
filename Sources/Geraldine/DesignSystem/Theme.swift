@@ -194,6 +194,9 @@ enum Theme {
         static let contentMaxWidth: CGFloat = 1180
         static let readingMaxWidth: CGFloat = 760
         static let minimumHitArea: CGFloat = 40
+        /// Control height for fixed-height widget tile rows, where the full
+        /// `minimumHitArea` would inflate the row and misalign neighboring tiles.
+        static let compactHitArea: CGFloat = 24
         static let sidebarMinWidth: CGFloat = 224
         static let sidebarIdealWidth: CGFloat = 248
         static let sidebarMaxWidth: CGFloat = 292

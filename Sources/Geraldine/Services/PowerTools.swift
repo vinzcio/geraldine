@@ -42,7 +42,7 @@ enum DockMiddleClickBehavior: String, CaseIterable, Identifiable {
     }
 }
 
-enum PowerToolResultStatus {
+enum PowerToolResultStatus: Equatable {
     case success
     case warning
     case failure
@@ -79,6 +79,7 @@ private enum PowerToolKeys {
     static let finderReturnOpens = "powerTools.finder.returnOpens"
     static let finderCutPaste = "powerTools.finder.cutPaste"
     static let finderOptionNNewFile = "powerTools.finder.optionNNewFile"
+    static let finderBackspaceMovesToTrash = "powerTools.finder.backspaceMovesToTrash"
 }
 
 @MainActor
@@ -125,6 +126,12 @@ final class PowerToolsController: ObservableObject {
     @Published var finderOptionNNewFile: Bool {
         didSet { defaults.set(finderOptionNNewFile, forKey: PowerToolKeys.finderOptionNNewFile); applyHooks() }
     }
+    @Published var finderBackspaceMovesToTrash: Bool {
+        didSet {
+            defaults.set(finderBackspaceMovesToTrash, forKey: PowerToolKeys.finderBackspaceMovesToTrash)
+            applyHooks()
+        }
+    }
 
     let finder = FinderPowerToolsService()
     let system = SystemPowerToolsService()
@@ -153,6 +160,7 @@ final class PowerToolsController: ObservableObject {
         finderReturnOpens = defaults.bool(forKey: PowerToolKeys.finderReturnOpens)
         finderCutPaste = defaults.bool(forKey: PowerToolKeys.finderCutPaste)
         finderOptionNNewFile = defaults.bool(forKey: PowerToolKeys.finderOptionNNewFile)
+        finderBackspaceMovesToTrash = defaults.bool(forKey: PowerToolKeys.finderBackspaceMovesToTrash)
     }
 
     func start() {
@@ -242,7 +250,8 @@ final class PowerToolsController: ObservableObject {
 
         missionControlTwoFingerClose ? missionControlCloseService.start() : missionControlCloseService.stop()
 
-        let needsKeyboardTap = commandQDoubleTap || commandWDoubleTap || finderReturnOpens || finderCutPaste || finderOptionNNewFile
+        let needsKeyboardTap = commandQDoubleTap || commandWDoubleTap || finderReturnOpens ||
+            finderCutPaste || finderOptionNNewFile || finderBackspaceMovesToTrash
         needsKeyboardTap ? keyboardService.start() : keyboardService.stop()
 
         unminimizeOnActivation ? windowService.startActivationObserver() : windowService.stopActivationObserver()
@@ -678,6 +687,15 @@ final class KeyboardPowerToolsService {
             return true
         }
 
+        if Self.isFinderTrashShortcut(keyCode: keyCode, flags: flags),
+           defaults.bool(forKey: PowerToolKeys.finderBackspaceMovesToTrash) {
+            if isAutorepeat { return true }
+            DispatchQueue.main.async {
+                _ = FinderPowerToolsService.moveFinderSelectionToTrash()
+            }
+            return true
+        }
+
         if flags.contains(.maskCommand),
            !flags.contains(.maskShift),
            !flags.contains(.maskControl),
@@ -700,6 +718,11 @@ final class KeyboardPowerToolsService {
         }
 
         return false
+    }
+
+    static func isFinderTrashShortcut(keyCode: Int64, flags: CGEventFlags) -> Bool {
+        keyCode == KeyCode.delete &&
+            flags.intersection([.maskCommand, .maskShift, .maskControl, .maskAlternate]).isEmpty
     }
 
     private func blockFirstTap(keyCode: Int64, app: NSRunningApplication?) -> Bool {
@@ -727,6 +750,7 @@ private enum KeyCode {
     static let v: Int64 = 9
     static let n: Int64 = 45
     static let returnKey: Int64 = 36
+    static let delete: Int64 = 51
 }
 
 final class WindowActionService {
@@ -943,6 +967,27 @@ final class FinderPowerToolsService {
             return output == "No Finder selection." ? .warning(output) : .success("Opened Finder selection.")
         }
         return .failure("Could not open Finder selection: \(shortErrorText(result.output))")
+    }
+
+    static func moveFinderSelectionToTrash() -> PowerToolResult {
+        moveToTrash(selectedFileURLs())
+    }
+
+    static func moveToTrash(
+        _ urls: [URL],
+        operation: ([ScanItem]) -> TrashService.Result = { TrashService.moveToTrash($0) }
+    ) -> PowerToolResult {
+        guard !urls.isEmpty else { return .warning("No Finder selection.") }
+
+        let result = operation(urls.map { ScanItem(url: $0, size: 0) })
+        if result.failures.isEmpty {
+            return .success(
+                "Moved \(result.trashed) item\(result.trashed == 1 ? "" : "s") to Trash."
+            )
+        }
+
+        let summary = "Moved \(result.trashed) of \(urls.count) items to Trash."
+        return result.trashed > 0 ? .warning(summary) : .failure(summary)
     }
 
     private static func selectedFileURLs() -> [URL] {

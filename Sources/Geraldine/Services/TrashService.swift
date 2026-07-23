@@ -130,6 +130,41 @@ enum TrashService {
         return result
     }
 
+    /// Moves items outside the Trash into it and refuses anything already
+    /// inside. Unlike `clean`, this operation never permanently deletes.
+    @discardableResult
+    static func moveToTrash(
+        _ items: [ScanItem],
+        fileOperator: any TrashFileOperating = FileManagerTrashFileOperator(),
+        rootResolver: any TrashRootResolving = ProductionTrashRootResolver()
+    ) -> Result {
+        var result = Result()
+        let roots = rootResolver.trashRoots()
+
+        for item in items {
+            guard classify(item.url, trashRoots: roots) == .outside else {
+                result.failures.append(Failure(
+                    url: item.url,
+                    message: "The item is already in the Trash."
+                ))
+                continue
+            }
+
+            do {
+                try fileOperator.trashItem(at: item.url)
+                result.removed += 1
+                result.trashed += 1
+            } catch {
+                result.failures.append(Failure(
+                    url: item.url,
+                    message: (error as NSError).localizedDescription
+                ))
+            }
+        }
+
+        return result
+    }
+
     static func isInTrash(_ url: URL) -> Bool {
         classify(url, trashRoots: ProductionTrashRootResolver().trashRoots()) == .descendant
     }
