@@ -3,3 +3,11 @@
 *.xcodeproj
 DerivedData/
 .DS_Store
+
+# Node / cloud service
+cloud/node_modules/
+cloud/.next/
+cloud/.env
+cloud/.env.local
+cloud/next-env.d.ts
+cloud/*.tsbuildinfo
