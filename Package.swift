@@ -19,7 +19,9 @@ let package = Package(
                 .linkedFramework("CoreWLAN"),
                 .linkedFramework("CoreLocation"),
                 .linkedFramework("Network"),
-                .linkedFramework("ApplicationServices")
+                .linkedFramework("ApplicationServices"),
+                .linkedFramework("Carbon"),
+                .linkedFramework("Security")
             ]
         ),
         .testTarget(

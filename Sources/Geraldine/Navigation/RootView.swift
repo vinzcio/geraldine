@@ -231,6 +231,7 @@ struct DetailHost: View {
             case .battery:     BatteryView()
             case .keepAwake:   KeepAwakeView()
             case .calendar:    CalendarSettingsView()
+            case .clipboard:   ClipboardHistoryView()
             case .powerTools:  PowerToolsView()
             case .cleanup:     CleanupView()
             case .uninstaller: UninstallerView()
