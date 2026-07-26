@@ -120,17 +120,8 @@ struct ScanResultsView: View {
         }
     }
 
-    /// Real Finder icon for a scan row's file, cached by path so long lists
-    /// don't re-hit the workspace. Returns nil when the file is gone, so the
-    /// caller can fall back to the group glyph.
-    private static let iconCache = NSCache<NSString, NSImage>()
     private static func fileIcon(for url: URL) -> NSImage? {
-        let path = url.path
-        if let cached = iconCache.object(forKey: path as NSString) { return cached }
-        guard FileManager.default.fileExists(atPath: path) else { return nil }
-        let icon = NSWorkspace.shared.icon(forFile: path)
-        iconCache.setObject(icon, forKey: path as NSString)
-        return icon
+        AppIcons.forFile(at: url)
     }
 
     private var footer: some View {

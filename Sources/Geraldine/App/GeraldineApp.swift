@@ -14,6 +14,7 @@ struct GeraldineApp: App {
                 .environmentObject(state.network)
                 .environmentObject(state.keepAwake)
                 .environmentObject(state.powerTools)
+                .environmentObject(state.clipboard)
                 .environmentObject(state.calendar)
                 .frame(minWidth: 920, minHeight: 620)
         }

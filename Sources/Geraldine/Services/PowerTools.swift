@@ -1167,20 +1167,6 @@ private func shortErrorText(_ output: String) -> String {
     return trimmed.isEmpty ? "unknown error" : trimmed
 }
 
-private enum KeyboardPoster {
-    static func post(keyCode: Int64, flags: CGEventFlags) {
-        guard let source = CGEventSource(stateID: .combinedSessionState),
-              let down = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(keyCode), keyDown: true),
-              let up = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(keyCode), keyDown: false) else {
-            return
-        }
-        down.flags = flags
-        up.flags = flags
-        down.post(tap: .cghidEventTap)
-        up.post(tap: .cghidEventTap)
-    }
-}
-
 private enum AXTools {
     private struct RestoreFrame {
         let window: AXUIElement
