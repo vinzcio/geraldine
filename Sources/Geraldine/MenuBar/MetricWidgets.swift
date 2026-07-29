@@ -122,53 +122,9 @@ struct WidgetPackingLayout: Layout {
 
 // MARK: - Drag state
 
-/// The cursor position of an in-flight drag, split into its own object so its 120 Hz
-/// updates re-render only the floating tile — never the grid, the tiles, or their
-/// frame recorders.
-@MainActor
-private final class WidgetDragPointer: ObservableObject {
-    /// Floating-tile center target in grid space. Tracked 1:1 while dragging (never
-    /// animated); animated once by the settle spring.
-    @Published var location: CGPoint = .zero
-}
-
-/// Live state for an iOS-Home-Screen-style reorder drag: the picked-up tile renders as a
-/// floating copy above the grid while an invisible hole keeps its place in the flow, and
-/// the other tiles spring around the hole as it retargets.
-@MainActor
-private final class WidgetDragState: ObservableObject {
-    struct Active {
-        var kind: WidgetKind
-        /// Cursor − tile center at pickup, so the tile stays under the grab point.
-        var grabOffset: CGSize
-        var size: CGSize
-    }
-
-    @Published var active: Active?
-    @Published var isSettling = false
-
-    /// High-frequency cursor tracking, deliberately outside this object's publisher.
-    let pointer = WidgetDragPointer()
-
-    /// Measured tile frames in grid space. Deliberately not `@Published`: they change on
-    /// every layout pass, and publishing them would feed rendering back into itself.
-    var liveFrames: [WidgetKind: CGRect] = [:]
-    /// Content heights captured while no drag is in flight, so hit-testing full-width
-    /// tiles never reads a mid-animation frame.
-    var settledHeights: [WidgetKind: CGFloat] = [:]
-    var gridWidth: CGFloat = 292
-
-    var isDragging: Bool { active != nil }
-
-    func reset() {
-        active = nil
-        isSettling = false
-    }
-}
-
-/// Reports a tile's frame (in grid space) into the drag state on every layout pass.
+/// Reports a tile's frame (in grid space) into the drag controller on every layout pass.
 private struct WidgetFrameRecorder: View {
-    @EnvironmentObject private var drag: WidgetDragState
+    @EnvironmentObject private var drag: WidgetDragController
     let kind: WidgetKind
 
     var body: some View {
@@ -196,7 +152,7 @@ struct WidgetGrid: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.geraldineSurfaceActive) private var surfaceActive
     @State private var customizing = false
-    @StateObject private var drag = WidgetDragState()
+    @StateObject private var drag = WidgetDragController()
 
     var body: some View {
         VStack(spacing: 8) {
@@ -206,31 +162,40 @@ struct WidgetGrid: View {
         }
         .environment(\.widgetCustomizationActive, customizing)
         .environmentObject(drag)
+        .onAppear { configureDragController() }
+        .onChange(of: reduceMotion, initial: true) { _, isReduced in
+            drag.reduceMotion = isReduced
+        }
         .onChange(of: customizing) { _, isCustomizing in
-            if !isCustomizing { endDragIfNeeded() }
+            if !isCustomizing { drag.finalizeIfNeeded() }
         }
         // The popover panel is orderOut-hidden, not torn down, so onDisappear never fires
         // on close — surfaceActive is the reliable "panel closed" signal. A DragGesture
-        // cancelled that way (e.g. Escape) calls neither onChanged nor onEnded.
+        // cancelled that way calls neither onChanged nor onEnded.
         .onChange(of: surfaceActive) { _, isActive in
-            if !isActive { endDragIfNeeded() }
+            if !isActive { drag.finalizeIfNeeded() }
         }
         // If the dragged tile itself vanishes (widget hidden from another window, battery
         // removed), its gesture dies without onEnded; clear the stuck drag.
         .onChange(of: visibleItems) { _, items in
             if let active = drag.active, !items.contains(where: { $0.kind == active.kind }) {
-                endDragIfNeeded()
+                drag.finalizeIfNeeded()
             }
         }
-        .onDisappear { endDragIfNeeded() }
+        .onDisappear { drag.finalizeIfNeeded() }
     }
 
-    /// A drag can end without `onEnded` (Escape, the popover closing, leaving edit mode).
-    /// Drop the floating tile in place and keep whatever order the drag reached.
-    private func endDragIfNeeded() {
-        guard drag.isDragging else { return }
-        drag.reset()
-        layout.persistNow()
+    private func configureDragController() {
+        drag.layout = layout
+        // The stores are app-lifetime singletons; strong captures cannot cycle back
+        // through the controller.
+        let layout = layout
+        let monitor = monitor
+        let calendar = calendar
+        drag.visibleItems = {
+            layout.visibleItems(hasBattery: monitor.hasBattery,
+                                calendarInPopover: calendar.appearsInPopover)
+        }
     }
 
     @ViewBuilder private func widget(for item: WidgetItem) -> some View {
@@ -263,7 +228,7 @@ struct WidgetGrid: View {
                 ForEach(visibleItems) { item in
                     widget(for: item)
                         .layoutValue(key: WidgetSpanKey.self, value: item.size.span)
-                        .widgetTileChrome(item)
+                        .widgetTileChrome(item, customizing: $customizing)
                 }
             }
             // Scoped to the tiles only: the floating tile lives in the overlay ABOVE this
@@ -275,6 +240,7 @@ struct WidgetGrid: View {
                     drag.gridWidth = width
                 }
             })
+            .background(WidgetScrollViewProbe(controller: drag))
             .coordinateSpace(name: WidgetGridMetrics.spaceName)
             .overlay(alignment: .topLeading) { floatingTile }
         }
@@ -294,8 +260,8 @@ struct WidgetGrid: View {
                     .font(.rounded(13, .semibold))
                     .foregroundStyle(.primary)
                 Text(customizing
-                     ? "Drag tiles to reorder. Tap the arrows to resize."
-                     : "Live system signals and controls.")
+                     ? "Drag to reorder. Click the arrows or right-click to resize."
+                     : "Live system signals. Drag a tile to rearrange.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -394,16 +360,22 @@ struct WidgetGrid: View {
 // MARK: - Tile chrome (edit mode, drag, resize)
 
 /// Everything a tile gains from living in the grid: frame reporting, edit-mode chrome
-/// (inert content + resize badge), the reorder drag gesture, and the hole appearance
-/// while its floating copy is being dragged.
+/// (inert content + resize badge), the reorder drag gesture, keyboard reordering, a
+/// context menu for size and placement, and the hole appearance while its floating
+/// copy is being dragged.
 private struct WidgetTileChrome: ViewModifier {
     @EnvironmentObject private var layout: WidgetLayoutStore
     @EnvironmentObject private var monitor: SystemMonitor
     @EnvironmentObject private var calendar: CalendarSettingsStore
-    @EnvironmentObject private var drag: WidgetDragState
-    @Environment(\.widgetCustomizationActive) private var customizing
+    @EnvironmentObject private var drag: WidgetDragController
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Reflected out to the grid so the context menu can enter and leave edit mode.
+    @Binding var customizing: Bool
     let item: WidgetItem
+
+    /// Resets the moment the system kills the gesture without `onEnded` (popover
+    /// closing, view re-identification) — the controller's cleanup safety net.
+    @GestureState private var gestureAlive = false
 
     func body(content: Content) -> some View {
         let isHole = drag.active?.kind == item.kind
@@ -417,7 +389,26 @@ private struct WidgetTileChrome: ViewModifier {
             }
             .background { WidgetFrameRecorder(kind: item.kind) }
             .contentShape(Rectangle())
-            .gesture(dragGesture, including: customizing ? .all : .subviews)
+            // Direct drag everywhere: 10 pt of travel picks the tile up (clicks and
+            // deeper controls stay untouched); edit mode tightens the threshold since
+            // tile content is inert there.
+            .gesture(dragGesture, including: .all)
+            .onChange(of: gestureAlive) { _, alive in
+                if !alive { drag.gestureStateDidReset(item.kind) }
+            }
+            .grabHandCursor(active: customizing && !drag.isDragging)
+            .contextMenu { contextMenuItems }
+            .focusable(customizing)
+            .contentShape(.focusEffect,
+                          RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous))
+            .onMoveCommand { direction in
+                guard customizing else { return }
+                switch direction {
+                case .left, .up: moveEarlier()
+                case .right, .down: moveLater()
+                @unknown default: break
+                }
+            }
             .accessibilityElement(children: customizing ? .ignore : .contain)
             .accessibilityLabel(customizing
                                 ? "\(item.kind.title(hasBattery: monitor.hasBattery)) widget, \(item.size.label)"
@@ -430,8 +421,66 @@ private struct WidgetTileChrome: ViewModifier {
                     if item.kind.canResize {
                         Button("Resize to \(item.size.next.label)") { cycleSize() }
                     }
+                    Button("Hide Widget") { hideWidget() }
                 }
             }
+    }
+
+    // MARK: Context menu
+
+    @ViewBuilder private var contextMenuItems: some View {
+        if item.kind.canResize {
+            Picker("Size", selection: sizeSelection) {
+                ForEach(WidgetSize.allCases, id: \.self) { size in
+                    Text(size.label).tag(size)
+                }
+            }
+            .pickerStyle(.inline)
+        }
+        Divider()
+        Button("Move Earlier") { moveEarlier() }
+            .disabled(visibleIndex == 0)
+        Button("Move Later") { moveLater() }
+            .disabled(visibleIndex == visibleItems.count - 1)
+        if item.kind.metric != nil, visibleIndex != 0 {
+            // The first metric drives the live status item; surfacing the existing
+            // move-to-top behavior makes that discoverable.
+            Button("Show in Menu Bar") { moveToFront() }
+        }
+        Divider()
+        Button("Hide Widget") { hideWidget() }
+        Button(customizing ? "Done Editing" : "Edit Widgets…") {
+            withAnimation(GeraldineMotion.animation(.standard, reduceMotion: reduceMotion)) {
+                customizing.toggle()
+            }
+        }
+    }
+
+    private var sizeSelection: Binding<WidgetSize> {
+        Binding(
+            get: { item.size },
+            set: { size in
+                withAnimation(GeraldineMotion.animation(.gentleSpring, reduceMotion: reduceMotion)) {
+                    layout.setSize(item.kind, size)
+                }
+            }
+        )
+    }
+
+    private var visibleIndex: Int? {
+        visibleItems.firstIndex { $0.kind == item.kind }
+    }
+
+    private func moveToFront() {
+        withAnimation(GeraldineMotion.animation(.gentleSpring, reduceMotion: reduceMotion)) {
+            layout.moveToFront(item.kind)
+        }
+    }
+
+    private func hideWidget() {
+        withAnimation(GeraldineMotion.animation(.gentleSpring, reduceMotion: reduceMotion)) {
+            layout.setShown(item.kind, false)
+        }
     }
 
     private var holePlaceholder: some View {
@@ -469,121 +518,19 @@ private struct WidgetTileChrome: ViewModifier {
 
     // MARK: Reorder drag
 
+    /// Pickup thresholds: 4 pt in edit mode (content is inert, dragging is the point),
+    /// 10 pt otherwise — enough travel that clicks are never eaten, matching iPadOS
+    /// pointer pickup. Deeper controls still win their own gestures, so buttons and
+    /// toggles inside a tile stay clickable; grab any quiet region to drag.
     private var dragGesture: some Gesture {
-        DragGesture(minimumDistance: 4, coordinateSpace: .named(WidgetGridMetrics.spaceName))
-            .onChanged { value in
-                if drag.active == nil {
-                    // A quick second drag can start while the previous drop is still
-                    // settling; finalize that drop instantly instead of eating the drag.
-                    if drag.isSettling { drag.reset() }
-                    // Pick up from the settled slot, not the live frame — grabbing a tile
-                    // mid-reflow would otherwise bake an animation offset into the drag.
-                    guard let frame = settledSlots().first(where: { $0.id == item.kind.id })?.frame
-                            ?? drag.liveFrames[item.kind] else { return }
-                    drag.pointer.location = value.location
-                    drag.active = .init(
-                        kind: item.kind,
-                        grabOffset: CGSize(width: value.startLocation.x - frame.midX,
-                                           height: value.startLocation.y - frame.midY),
-                        size: frame.size
-                    )
-                } else if drag.active?.kind == item.kind, !drag.isSettling {
-                    drag.pointer.location = value.location
-                }
-                retarget(cursor: value.location)
-            }
-            .onEnded { _ in settle() }
+        DragGesture(minimumDistance: customizing ? 4 : 10,
+                    coordinateSpace: .named(WidgetGridMetrics.spaceName))
+            .updating($gestureAlive) { _, state, _ in state = true }
+            .onChanged { value in drag.dragChanged(item.kind, value: value) }
+            .onEnded { value in drag.dragEnded(item.kind, value: value) }
     }
 
-    /// Reorders the array live as the floating tile's center enters another tile's slot.
-    /// Hit-testing runs against the *settled* frames `WidgetGridMetrics` predicts — never
-    /// the animating ones — and a move only commits if the cursor would rest inside the
-    /// dragged tile's new slot afterwards (a fixed point), so mixed-span swaps can't
-    /// ping-pong: hovering a spot that would immediately re-trigger the reverse move
-    /// simply doesn't reorder yet.
-    private func retarget(cursor: CGPoint) {
-        guard let active = drag.active, active.kind == item.kind, !drag.isSettling else { return }
-        let center = CGPoint(x: cursor.x - active.grabOffset.width,
-                             y: cursor.y - active.grabOffset.height)
-
-        let items = visibleItems
-        let slots = settledSlots(for: items)
-        let animation = GeraldineMotion.animation(.gentleSpring, reduceMotion: reduceMotion)
-
-        if let hit = slots.first(where: { slot in
-            slot.id != active.kind.id && slot.frame.insetBy(dx: 10, dy: 10).contains(center)
-        }), let target = WidgetKind(id: hit.id) {
-            guard converges(after: moved(items, dragged: active.kind, toIndexOf: target),
-                            center: center, dragged: active.kind) else { return }
-            withAnimation(animation) {
-                layout.stageMove(active.kind, toIndexOf: target)
-            }
-        } else if let lastSlot = slots.last, lastSlot.id != active.kind.id,
-                  center.y > lastSlot.frame.maxY
-                    || (center.y > lastSlot.frame.minY && center.x > lastSlot.frame.maxX) {
-            withAnimation(animation) {
-                layout.stageMoveToEnd(active.kind)
-            }
-        }
-    }
-
-    /// The fixed-point test: in the candidate order, would the floating center sit inside
-    /// the dragged tile's own predicted slot?
-    private func converges(after items: [WidgetItem], center: CGPoint, dragged: WidgetKind) -> Bool {
-        settledSlots(for: items)
-            .first { $0.id == dragged.id }?
-            .frame.contains(center) ?? false
-    }
-
-    /// `stageMove(_:toIndexOf:)` simulated on a visible-items copy.
-    private func moved(_ items: [WidgetItem], dragged: WidgetKind, toIndexOf target: WidgetKind) -> [WidgetItem] {
-        guard let from = items.firstIndex(where: { $0.kind == dragged }),
-              let to = items.firstIndex(where: { $0.kind == target }),
-              from != to else { return items }
-        var updated = items
-        updated.move(fromOffsets: IndexSet(integer: from), toOffset: to > from ? to + 1 : to)
-        return updated
-    }
-
-    /// Commits the order immediately (the drop is the user's decision — never leave it
-    /// hostage to an animation completing), then springs the floating tile into the hole.
-    private func settle() {
-        guard let active = drag.active, active.kind == item.kind, !drag.isSettling else { return }
-        layout.persistNow()
-        let destination = settledSlots().first { $0.id == active.kind.id }?.frame
-            ?? drag.liveFrames[active.kind]
-            ?? .zero
-        let restingPoint = CGPoint(x: destination.midX + active.grabOffset.width,
-                                   y: destination.midY + active.grabOffset.height)
-        guard let animation = GeraldineMotion.animation(.gentleSpring, reduceMotion: reduceMotion) else {
-            drag.reset()
-            return
-        }
-        withAnimation(animation) {
-            drag.isSettling = true
-            drag.pointer.location = restingPoint
-        } completion: {
-            // A new pickup may have finalized this drop early; don't clobber its state.
-            guard drag.isSettling, drag.active?.kind == active.kind else { return }
-            drag.reset()
-        }
-    }
-
-    /// Where every visible tile will sit once the current order stops animating.
-    private func settledSlots(for items: [WidgetItem]? = nil) -> [WidgetGridMetrics.Slot] {
-        let entries = (items ?? visibleItems).map { item in
-            WidgetGridMetrics.Entry(
-                id: item.kind.id,
-                span: item.size.span,
-                naturalHeight: item.size == .large
-                    ? (drag.settledHeights[item.kind] ?? WidgetGridMetrics.unitHeight)
-                    : WidgetGridMetrics.unitHeight
-            )
-        }
-        return WidgetGridMetrics.slots(for: entries, width: drag.gridWidth)
-    }
-
-    // MARK: Accessibility reorder
+    // MARK: Accessibility & keyboard reorder
 
     private var visibleItems: [WidgetItem] {
         layout.visibleItems(hasBattery: monitor.hasBattery,
@@ -596,6 +543,7 @@ private struct WidgetTileChrome: ViewModifier {
         withAnimation(GeraldineMotion.animation(.gentleSpring, reduceMotion: reduceMotion)) {
             layout.move(item.kind, before: order[index - 1])
         }
+        announcePosition()
     }
 
     private func moveLater() {
@@ -604,21 +552,33 @@ private struct WidgetTileChrome: ViewModifier {
         withAnimation(GeraldineMotion.animation(.gentleSpring, reduceMotion: reduceMotion)) {
             layout.move(order[index + 1], before: item.kind)
         }
+        announcePosition()
+    }
+
+    private func announcePosition() {
+        let order = visibleItems.map(\.kind)
+        guard let index = order.firstIndex(of: item.kind) else { return }
+        let title = item.kind.title(hasBattery: monitor.hasBattery)
+        AccessibilityNotification.Announcement(
+            "\(title) widget moved to position \(index + 1) of \(order.count)"
+        ).post()
     }
 }
 
 extension View {
-    fileprivate func widgetTileChrome(_ item: WidgetItem) -> some View {
-        modifier(WidgetTileChrome(item: item))
+    fileprivate func widgetTileChrome(_ item: WidgetItem, customizing: Binding<Bool>) -> some View {
+        modifier(WidgetTileChrome(customizing: customizing, item: item))
     }
 }
 
 /// The lifted copy of a dragged widget: follows the cursor 1:1, scales up with a shadow
-/// on pickup, and springs into the hole on release. Observes the pointer object directly
-/// so 120 Hz cursor updates re-render only this view, and carries no implicit animation —
-/// the lift and settle transactions drive all motion.
+/// on pickup, and springs into the hole on release — scale and shadow decay with the
+/// same settle transaction, so the tile visibly "lands" rather than snapping flat at
+/// mouse-up. Observes the pointer object directly so 120 Hz cursor updates re-render
+/// only this view, and carries no implicit animation — the lift and settle
+/// transactions drive all motion.
 private struct FloatingWidgetTile<Content: View>: View {
-    @ObservedObject var drag: WidgetDragState
+    @ObservedObject var drag: WidgetDragController
     @ObservedObject var pointer: WidgetDragPointer
     let item: WidgetItem
     @ViewBuilder let content: (WidgetItem) -> Content
@@ -630,15 +590,19 @@ private struct FloatingWidgetTile<Content: View>: View {
             let raised = lifted && !drag.isSettling
             content(item)
                 .frame(width: active.size.width, height: active.size.height)
-                .scaleEffect(raised && !reduceMotion ? 1.04 : 1)
-                .shadow(color: .black.opacity(raised ? 0.28 : 0.10),
-                        radius: raised ? 18 : 8,
-                        y: raised ? 10 : 4)
+                .scaleEffect(raised && !reduceMotion ? 1.05 : 1)
+                .shadow(color: .black.opacity(raised ? 0.26 : 0.10),
+                        radius: raised ? 16 : 8,
+                        y: raised ? 9 : 4)
                 .position(x: pointer.location.x - active.grabOffset.width,
                           y: pointer.location.y - active.grabOffset.height)
                 .allowsHitTesting(false)
                 .onAppear {
-                    withAnimation(GeraldineMotion.animation(.quick, reduceMotion: reduceMotion)) {
+                    guard !reduceMotion else {
+                        lifted = true
+                        return
+                    }
+                    withAnimation(.spring(duration: 0.24, bounce: 0.24)) {
                         lifted = true
                     }
                 }
@@ -724,10 +688,15 @@ struct MetricWidget: View {
     @State private var freeing = false
 
     private var isSmall: Bool { size == .small }
-    private var networkRateFontSize: CGFloat { isSmall ? 11 : 12 }
-    private var networkRateIconWidth: CGFloat { isSmall ? 8 : 10 }
-    private var networkRateSpacing: CGFloat { isSmall ? 2 : 5 }
-    private var networkRateTextWidth: CGFloat { isSmall ? 48 : 56 }
+
+    /// One compact rate style for the small and medium tiles (large renders the
+    /// Now/Avg/Peak table instead), so the pair always fits beside the speed control.
+    private enum NetworkRateStyle {
+        static let fontSize: CGFloat = 11
+        static let iconWidth: CGFloat = 8
+        static let spacing: CGFloat = 2
+        static let textWidth: CGFloat = 48
+    }
 
     var body: some View {
         Group {
@@ -792,6 +761,9 @@ struct MetricWidget: View {
         }
     }
 
+    /// Small = the hero value plus a micro-trend: live metrics get a compact sparkline
+    /// (the same series their larger tiers chart), storage keeps its capacity bar —
+    /// its short-term history is a flat line, so the fraction is the story.
     @ViewBuilder private var standardSmall: some View {
         animatedValueText(size: 16, weight: .semibold)
             .foregroundStyle(chartTint)
@@ -801,8 +773,8 @@ struct MetricWidget: View {
                 .frame(height: 28)
         } else if kind == .storage {
             StatBar(fraction: fraction, tint: chartTint, height: 6)
-        } else if kind != .temperature {
-            StatBar(fraction: fraction, tint: chartTint, height: 5)
+        } else {
+            chart.frame(height: 28)
         }
         Spacer(minLength: 0)
         smallFooter
@@ -845,8 +817,13 @@ struct MetricWidget: View {
     /// strip so every tile's chart resolves to the same height side by side.
     @ViewBuilder private var standardExpanded: some View {
         if kind == .storage {
-            storageCapacitySummary
-                .frame(maxHeight: .infinity)
+            if size == .large {
+                storageCapacityDetail
+                    .frame(maxHeight: .infinity)
+            } else {
+                storageCapacitySummary
+                    .frame(maxHeight: .infinity)
+            }
         } else if size == .large {
             chart.frame(height: 148)
         } else {
@@ -869,6 +846,34 @@ struct MetricWidget: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// The full-width tier earns more than a stretched bar: the same hero fraction,
+    /// then a labeled Used / Free / Capacity readout row.
+    private var storageCapacityDetail: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            StatBar(fraction: monitor.diskFraction, tint: chartTint, height: 10)
+            HStack(alignment: .top, spacing: 24) {
+                storageStat("Used", value: monitor.diskUsed, tint: chartTint)
+                storageStat("Free", value: max(0, monitor.diskTotal - monitor.diskUsed),
+                            tint: .primary)
+                storageStat("Capacity", value: monitor.diskTotal, tint: .secondary)
+                Spacer(minLength: 0)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func storageStat(_ label: String, value: Double, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            AnimatedNumberText(Fmt.size(value), value: value)
+                .font(.rounded(15, .semibold))
+                .monospacedDigit()
+                .foregroundStyle(tint)
+        }
     }
 
     @ViewBuilder private var chart: some View {
@@ -943,11 +948,18 @@ struct MetricWidget: View {
     @ViewBuilder private var largeFooter: some View {
         switch kind {
         case .temperature:
-            let low = monitor.thermalHistory.map(\.value).min()
-            let high = monitor.thermalHistory.map(\.value).max()
+            let values = monitor.thermalHistory.map(\.value)
+            let low = values.min()
+            let high = values.max()
+            let average = values.isEmpty ? nil : values.reduce(0, +) / Double(values.count)
             HStack {
                 caption("Low \(tempString(low))", animationValue: low,
                         tint: low.map(Thermal.chartColor) ?? .secondary)
+                if size == .large, let average {
+                    Spacer()
+                    caption("Avg \(tempString(average))", animationValue: average,
+                            tint: Thermal.chartColor(average))
+                }
                 Spacer()
                 caption("High \(tempString(high))", animationValue: high,
                         tint: high.map(Thermal.chartColor) ?? .secondary)
@@ -964,8 +976,14 @@ struct MetricWidget: View {
             }
         case .storage:
             HStack {
-                caption("\(Fmt.size(monitor.diskTotal)) Total",
-                        animationValue: monitor.diskTotal)
+                if size == .large {
+                    caption("\(Fmt.percent(monitor.diskFraction)) Full",
+                            animationValue: monitor.diskFraction * 100,
+                            tint: chartTint)
+                } else {
+                    caption("\(Fmt.size(monitor.diskTotal)) Total",
+                            animationValue: monitor.diskTotal)
+                }
                 Spacer()
                 actionButton("Open Storage") { state.open(.storage) }
             }
@@ -988,16 +1006,14 @@ struct MetricWidget: View {
     @ViewBuilder private var networkBody: some View {
         switch size {
         case .small:
+            // Small = the network's name and the live rates, stacked so long SSIDs and
+            // wide values never fight for one row. The unit toggle lives in medium+.
             VStack(alignment: .leading, spacing: 6) {
                 networkHeader
-                HStack(spacing: 5) {
-                    networkName(size: 14)
-                    Spacer(minLength: 4)
-                    networkRateUnitToggle
-                }
+                networkName(size: 15)
                 Spacer(minLength: 0)
                 if network.online {
-                    HStack(spacing: 4) {
+                    VStack(alignment: .leading, spacing: 3) {
                         rate("arrow.down", monitor.netDown, Theme.Chart.blue)
                         rate("arrow.up", monitor.netUp, Theme.Chart.purple)
                     }
@@ -1006,20 +1022,29 @@ struct MetricWidget: View {
                 }
             }
         case .medium:
-            // No chart at the unit height — name, security, live rates, and the speed
-            // test spread out instead, like an iOS medium widget.
+            // Medium = small plus the trend: the same dual-series traffic chart the
+            // large tile draws, compressed to the unit height, with rates and the
+            // speed test on one fixed footer line.
             VStack(alignment: .leading, spacing: 6) {
                 networkTitleRows
-                Spacer(minLength: 0)
-                HStack(spacing: 8) {
-                    if network.online {
+                if network.online {
+                    NetworkTimelineGraph(samples: monitor.networkHistory,
+                                         window: SystemMonitor.liveHistoryWindow,
+                                         now: Date(),
+                                         downTint: Theme.Chart.blue,
+                                         upTint: Theme.Chart.purple,
+                                         rateUnit: networkRateUnit)
+                        .frame(maxHeight: .infinity)
+                    HStack(spacing: 8) {
                         rate("arrow.down", monitor.netDown, Theme.Chart.blue)
                         rate("arrow.up", monitor.netUp, Theme.Chart.purple)
-                    } else {
-                        networkOfflineState
+                        Spacer(minLength: 6)
+                        speedControl
                     }
-                    Spacer(minLength: 6)
-                    speedControl
+                    .frame(height: Theme.Layout.compactHitArea)
+                } else {
+                    networkOfflineState
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
         case .large:
@@ -1165,18 +1190,18 @@ struct MetricWidget: View {
     private func rate(_ icon: String, _ value: Double, _ tint: Color) -> some View {
         let animationValue = value.isFinite ? max(0, value) : 0
 
-        return HStack(spacing: networkRateSpacing) {
+        return HStack(spacing: NetworkRateStyle.spacing) {
             Image(systemName: icon)
                 .font(.caption2.weight(.bold))
                 .foregroundStyle(tint)
-                .frame(width: networkRateIconWidth)
+                .frame(width: NetworkRateStyle.iconWidth)
             AnimatedNumberText(Fmt.compactRate(value, unit: networkRateUnit),
                                value: networkRateUnit.displayValue(for: animationValue))
-                .font(.system(size: networkRateFontSize, weight: .semibold).monospacedDigit())
+                .font(.system(size: NetworkRateStyle.fontSize, weight: .semibold).monospacedDigit())
                 .foregroundStyle(tint)
                 .lineLimit(1)
-                .minimumScaleFactor(isSmall ? 0.82 : 0.9)
-                .frame(width: networkRateTextWidth, alignment: .leading)
+                .minimumScaleFactor(0.82)
+                .frame(width: NetworkRateStyle.textWidth, alignment: .leading)
         }
         .fixedSize(horizontal: true, vertical: false)
         .layoutPriority(2)

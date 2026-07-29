@@ -288,6 +288,21 @@ final class WidgetLayoutStore: ObservableObject {
         persist()
     }
 
+    func setSize(_ kind: WidgetKind, _ size: WidgetSize) {
+        guard kind.canResize,
+              let idx = items.firstIndex(where: { $0.kind == kind }),
+              items[idx].size != size else { return }
+        items[idx].size = size
+        persist()
+    }
+
+    /// Move the widget to the very front of the order. For metrics this also makes it
+    /// drive the live menu-bar status item (see `menuBarKind`).
+    func moveToFront(_ kind: WidgetKind) {
+        guard let first = items.first?.kind, first != kind else { return }
+        move(kind, before: first)
+    }
+
     func setShown(_ kind: WidgetKind, _ isShown: Bool) {
         guard let idx = items.firstIndex(where: { $0.kind == kind }) else { return }
         items[idx].isShown = isShown
@@ -307,6 +322,14 @@ final class WidgetLayoutStore: ObservableObject {
 
     func persistNow() {
         persist()
+    }
+
+    /// Abandon every staged (unpersisted) move, restoring the last committed order.
+    /// This is the Escape-cancels-the-drag path: staging never touched
+    /// `committedItems`, so the committed array *is* the pre-drag state.
+    func revertStagedChanges() {
+        guard items != committedItems else { return }
+        items = committedItems
     }
 
     /// Move `dragged` so it sits immediately before `target` in the order.
