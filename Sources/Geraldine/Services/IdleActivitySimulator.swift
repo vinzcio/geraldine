@@ -33,14 +33,12 @@ final class IdleActivitySimulationService {
 
     private static let arrowLeftKeyCode: CGKeyCode = 123
     private static let arrowRightKeyCode: CGKeyCode = 124
-    private static let arrowUpKeyCode: CGKeyCode = 126
-    private static let arrowDownKeyCode: CGKeyCode = 125
-    // Keyboard pulses stay limited to opposing arrow-key pairs.
+    // Keyboard pulses stay limited to opposing horizontal arrow-key pairs. Up
+    // and down are deliberately excluded: they scroll and move list selections
+    // in far more apps than left/right do.
     private static let arrowKeyPairs = [
         [arrowLeftKeyCode, arrowRightKeyCode],
-        [arrowRightKeyCode, arrowLeftKeyCode],
-        [arrowUpKeyCode, arrowDownKeyCode],
-        [arrowDownKeyCode, arrowUpKeyCode]
+        [arrowRightKeyCode, arrowLeftKeyCode]
     ]
     private static let pulseIntervalJitter = 0.6...1.8
     private static let mouseNudgeDistanceRange = 4.0...14.0
