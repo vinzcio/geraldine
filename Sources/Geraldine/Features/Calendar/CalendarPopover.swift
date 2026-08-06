@@ -14,6 +14,8 @@ private func clockAnchor() -> Date {
 struct CalendarWidget: View {
     @EnvironmentObject private var calendar: CalendarSettingsStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.geraldineSurfaceActive) private var surfaceActive
+    @State private var dateRefreshTrigger = Date()
     @State private var displayedMonthOffset = 0
     @State private var outgoingMonthOffset: Int?
     @State private var pagingDirection = 1
@@ -27,19 +29,23 @@ struct CalendarWidget: View {
         return c
     }
 
-    private func monthModel(for offset: Int) -> MonthModel {
-        let anchor = workingCalendar.date(byAdding: .month, value: offset, to: Date()) ?? Date()
+    private func monthModel(for offset: Int, referenceDate: Date = Date()) -> MonthModel {
+        let anchor = workingCalendar.date(byAdding: .month, value: offset, to: referenceDate) ?? referenceDate
         return MonthModel.make(anchor: anchor, calendar: workingCalendar)
     }
 
     var body: some View {
-        let model = monthModel(for: displayedMonthOffset)
-        return VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 8) {
             header
             if calendar.showCalendar {
-                todayLine
-                navigation(monthStart: model.monthStart)
-                monthGrid(model)
+                GeraldinePeriodicTimeline(from: clockAnchor(), by: calendar.tickInterval) { liveDate in
+                    let model = monthModel(for: displayedMonthOffset, referenceDate: liveDate)
+                    VStack(alignment: .leading, spacing: 8) {
+                        todayLine(for: liveDate)
+                        navigation(monthStart: model.monthStart, referenceDate: liveDate)
+                        monthGrid(model, referenceDate: liveDate)
+                    }
+                }
             }
             if calendar.hasVisibleClocks {
                 if calendar.showCalendar { Divider().padding(.top, 2) }
@@ -57,7 +63,27 @@ struct CalendarWidget: View {
         .onChange(of: reduceMotion) { _, isReduced in
             if isReduced { finishMonthTransition() }
         }
+        .onChange(of: surfaceActive) { _, isActive in
+            if isActive {
+                returnToToday(animated: false)
+            } else {
+                finishMonthTransition()
+            }
+        }
+        .onAppear {
+            displayedMonthOffset = 0
+        }
         .onDisappear { finishMonthTransition() }
+        .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged)) { _ in
+            dateRefreshTrigger = Date()
+            returnToToday(animated: false)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name.NSSystemClockDidChange)) { _ in
+            dateRefreshTrigger = Date()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name.NSSystemTimeZoneDidChange)) { _ in
+            dateRefreshTrigger = Date()
+        }
     }
 
     private var header: some View {
@@ -68,23 +94,21 @@ struct CalendarWidget: View {
         }
     }
 
-    private var todayLine: some View {
-        GeraldinePeriodicTimeline(from: clockAnchor(), by: calendar.tickInterval) { date in
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(calendar.dateString(for: date))
-                    .font(.rounded(13, .semibold))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-                Spacer(minLength: 6)
-                Text(calendar.timeString(for: date))
-                    .font(.rounded(13, .semibold))
-                    .monospacedDigit()
-                    .foregroundStyle(Theme.accent)
-            }
+    private func todayLine(for date: Date) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(calendar.dateString(for: date))
+                .font(.rounded(13, .semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+            Spacer(minLength: 6)
+            Text(calendar.timeString(for: date))
+                .font(.rounded(13, .semibold))
+                .monospacedDigit()
+                .foregroundStyle(Theme.accent)
         }
     }
 
-    private func weeks(_ model: MonthModel) -> some View {
+    private func weeks(_ model: MonthModel, referenceDate: Date) -> some View {
         ForEach(Array(model.weeks.enumerated()), id: \.offset) { index, week in
             HStack(spacing: 0) {
                 if calendar.showWeekNumbers {
@@ -96,7 +120,7 @@ struct CalendarWidget: View {
                 ForEach(week, id: \.self) { day in
                     DayCell(date: day,
                             inMonth: workingCalendar.isDate(day, equalTo: model.monthStart, toGranularity: .month),
-                            isToday: workingCalendar.isDateInToday(day),
+                            isToday: workingCalendar.isDate(day, inSameDayAs: referenceDate),
                             isWeekend: calendar.highlightWeekends && workingCalendar.isDateInWeekend(day))
                         .frame(maxWidth: .infinity)
                 }
@@ -104,16 +128,16 @@ struct CalendarWidget: View {
         }
     }
 
-    private func monthGrid(_ model: MonthModel) -> some View {
+    private func monthGrid(_ model: MonthModel, referenceDate: Date) -> some View {
         ZStack {
-            monthGridContent(model)
+            monthGridContent(model, referenceDate: referenceDate)
                 .opacity(incomingMonthVisible ? 1 : 0)
                 .offset(x: reduceMotion || incomingMonthVisible
                         ? 0 : CGFloat(pagingDirection) * 8)
                 .zIndex(0)
 
             if let outgoingMonthOffset {
-                monthGridContent(monthModel(for: outgoingMonthOffset))
+                monthGridContent(monthModel(for: outgoingMonthOffset, referenceDate: referenceDate), referenceDate: referenceDate)
                     .opacity(outgoingMonthVisible ? 1 : 0)
                     .offset(x: reduceMotion || outgoingMonthVisible
                             ? 0 : CGFloat(-pagingDirection) * 4)
@@ -126,14 +150,14 @@ struct CalendarWidget: View {
         .accessibilityLabel("\(monthTitle(model.monthStart)) calendar")
     }
 
-    private func monthGridContent(_ model: MonthModel) -> some View {
+    private func monthGridContent(_ model: MonthModel, referenceDate: Date) -> some View {
         VStack(spacing: 0) {
             weekdayHeader
-            weeks(model)
+            weeks(model, referenceDate: referenceDate)
         }
     }
 
-    private func navigation(monthStart: Date) -> some View {
+    private func navigation(monthStart: Date, referenceDate: Date) -> some View {
         HStack(spacing: 4) {
             ZStack(alignment: .leading) {
                 Text(monthTitle(monthStart))
@@ -143,7 +167,7 @@ struct CalendarWidget: View {
                             ? 0 : CGFloat(pagingDirection) * 8)
 
                 if let outgoingMonthOffset {
-                    Text(monthTitle(monthModel(for: outgoingMonthOffset).monthStart))
+                    Text(monthTitle(monthModel(for: outgoingMonthOffset, referenceDate: referenceDate).monthStart))
                         .font(.rounded(15, .bold))
                         .opacity(outgoingMonthVisible ? 1 : 0)
                         .offset(x: reduceMotion || outgoingMonthVisible
@@ -189,10 +213,15 @@ struct CalendarWidget: View {
                              direction: delta < 0 ? -1 : 1)
     }
 
-    private func returnToToday() {
+    private func returnToToday(animated: Bool = true) {
         guard displayedMonthOffset != 0 else { return }
-        beginMonthTransition(to: 0,
-                             direction: displayedMonthOffset > 0 ? -1 : 1)
+        if animated {
+            beginMonthTransition(to: 0,
+                                 direction: displayedMonthOffset > 0 ? -1 : 1)
+        } else {
+            finishMonthTransition()
+            displayedMonthOffset = 0
+        }
     }
 
     private func beginMonthTransition(to value: Int, direction: Int) {
