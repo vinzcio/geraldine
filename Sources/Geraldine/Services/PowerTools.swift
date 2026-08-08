@@ -22,6 +22,23 @@ enum DockActiveClickBehavior: String, CaseIterable, Identifiable {
     }
 }
 
+enum DockActiveClickInterceptionPolicy {
+    /// A custom active-app action is only safe to intercept when the target
+    /// currently owns a visible window. A windowless, hidden, or fully
+    /// minimized app needs the original Dock click so macOS can reopen it.
+    ///
+    /// The visibility lookup is deliberately deferred: an inactive target and
+    /// the System behavior must pass through without an accessibility query.
+    static func shouldIntercept(
+        behavior: DockActiveClickBehavior,
+        targetIsFrontmost: Bool,
+        hasVisibleWindow: () -> Bool
+    ) -> Bool {
+        guard behavior != .system, targetIsFrontmost else { return false }
+        return hasVisibleWindow()
+    }
+}
+
 enum DockMiddleClickBehavior: String, CaseIterable, Identifiable {
     case system
     case hideApp
@@ -503,8 +520,12 @@ final class DockInteractionService {
 
         let raw = defaults.string(forKey: PowerToolKeys.activeDockClickBehavior) ?? DockActiveClickBehavior.system.rawValue
         let behavior = DockActiveClickBehavior(rawValue: raw) ?? .system
-        guard behavior != .system,
-              target.app.processIdentifier == NSWorkspace.shared.frontmostApplication?.processIdentifier else {
+        let targetIsFrontmost = target.app.processIdentifier == NSWorkspace.shared.frontmostApplication?.processIdentifier
+        guard DockActiveClickInterceptionPolicy.shouldIntercept(
+            behavior: behavior,
+            targetIsFrontmost: targetIsFrontmost,
+            hasVisibleWindow: { WindowActionService.hasVisibleWindow(of: target.app) }
+        ) else {
             return false
         }
 
@@ -818,6 +839,14 @@ final class WindowActionService {
                 AXTools.setMinimized(true, for: window)
             }
         }
+    }
+
+    /// Only consume a custom Dock click when it has a window to operate on.
+    /// If there is no visible window, passing the click through preserves the
+    /// app's native reopen/new-window behavior.
+    static func hasVisibleWindow(of app: NSRunningApplication) -> Bool {
+        guard !app.isHidden else { return false }
+        return AXTools.windows(of: app).contains { !AXTools.isMinimized($0) }
     }
 
     static func unminimizeWindows(of app: NSRunningApplication, firstOnly: Bool) {
