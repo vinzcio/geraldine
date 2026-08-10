@@ -2,7 +2,6 @@ import AppKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var menuBarController: MenuBarController?
-    private var keyboardTransportHUD: KeyboardTransportHUDCoordinator?
     private var clipboardPicker: ClipboardPickerCoordinator?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -15,8 +14,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         state.powerTools.start()
         state.clipboard.start()
         menuBarController = MenuBarController(state: state)
-        keyboardTransportHUD = KeyboardTransportHUDCoordinator()
-        keyboardTransportHUD?.start()
         clipboardPicker = ClipboardPickerCoordinator(clipboard: state.clipboard)
         clipboardPicker?.start()
 
@@ -75,7 +72,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        keyboardTransportHUD?.stop()
         clipboardPicker?.stop()
         AppState.shared.clipboard.stop()
         AppState.shared.monitor.stop()
