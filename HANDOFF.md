@@ -205,7 +205,6 @@ Recommended continuation order:
 ## Current closeout snapshot — 2026-07-14
 
 - Network throughput now has a persistent in-widget `B/s` ↔ `bps` toggle with adaptive B/K/M/G units across live values, chart statistics, inspection, help, and accessibility text. Negotiated link speed and the speed-test result remain Mbps.
-- A local Akko keyboard transport monitor and optional HUD distinguish wired USB, 2.4 GHz, Bluetooth, and disconnect transitions using IORegistry activity counters; Settings includes an enable toggle and preview.
 - CPU, memory, battery, disk, network, and thermal histories now persist through a bounded Application Support snapshot; restart/session boundaries remain visible as chart gaps, and battery history combines real `pmset` events with live readings without drawing through stale gaps.
 - Login Items now resolves friendly app ownership, shows real app icons or monograms, preserves stable identities across enabled/disabled locations, and guards asynchronous rescan ordering.
 - Shared workflow/navigation polish covers stable sidebar selection, explicit loading/empty states, accessible hit targets, and consistent status/outcome presentation across maintenance and cleanup surfaces.

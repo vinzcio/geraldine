@@ -36,9 +36,8 @@ and Finder execution in a thin adapter.
   Option-N, and Command-X/V (`PowerTools.swift:480-548`).
 - Double-tap state is keyed by PID and key code and uses `Date()` with a 1.15s
   acceptance window (`PowerTools.swift:550-564`).
-- `KeyboardTransportReducer` is the repository exemplar: a pure stateful value
-  in `KeyboardTransportMonitor.swift:68-125`, table-tested in
-  `KeyboardTransportReducerTests.swift:24-96`.
+- Existing reducer tests in this repository demonstrate the preferred
+  table-driven style for pure state transitions.
 
 Current double-tap branch:
 
@@ -212,8 +211,7 @@ adapter may snapshot `UserDefaults`, but the marked reducer section may not.
 
 ### Step 5: Complete the exhaustive reducer tests
 
-Create `KeyboardPowerToolsReducerTests.swift`, modeled on
-`KeyboardTransportReducerTests`. Include:
+Create `KeyboardPowerToolsReducerTests.swift` with table-driven coverage. Include:
 
 - first/second/expired Command-Q and Command-W presses;
 - exact `1.15`-second acceptance and `2.0`-second pruning boundaries;
