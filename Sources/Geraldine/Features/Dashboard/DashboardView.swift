@@ -44,36 +44,8 @@ struct DashboardView: View {
             PermissionsBanner()
 
             if !debugHidden("--no-tiles") {
-            LazyVGrid(columns: columns, spacing: Theme.Spacing.md) {
-                StatTile(icon: "cpu", title: "CPU",
-                         value: Fmt.percent(monitor.cpuUsage),
-                         valueAnimationValue: monitor.cpuUsage * 100,
-                         caption: "In Use",
-                         fraction: monitor.cpuUsage,
-                         tint: Theme.Chart.status(for: monitor.cpuUsage),
-                         valueTint: MetricPresentationPolicy.usageReadoutColor(monitor.cpuUsage))
-
-                StatTile(icon: "memorychip", title: "Memory",
-                         value: Fmt.percent(monitor.memoryFraction),
-                         valueAnimationValue: monitor.memoryFraction * 100,
-                         caption: Fmt.size(monitor.memoryUsed),
-                         captionAnimationValue: monitor.memoryUsed,
-                         fraction: monitor.memoryFraction,
-                         tint: Theme.Chart.status(for: monitor.memoryFraction),
-                         valueTint: MetricPresentationPolicy.usageReadoutColor(monitor.memoryFraction))
-
-                StatTile(icon: "internaldrive", title: "Storage",
-                         value: Fmt.percent(monitor.diskFraction),
-                         valueAnimationValue: monitor.diskFraction * 100,
-                         caption: "\(Fmt.size(max(0, monitor.diskTotal - monitor.diskUsed))) Free",
-                         captionAnimationValue: max(0, monitor.diskTotal - monitor.diskUsed),
-                         fraction: monitor.diskFraction,
-                         tint: Theme.Chart.status(for: monitor.diskFraction),
-                         valueTint: MetricPresentationPolicy.usageReadoutColor(monitor.diskFraction))
-
-                batteryTile
-            }
-            .geraldineEntrance(delay: 0.07)
+                statTiles
+                    .geraldineEntrance(delay: 0.07)
             }
 
             if !debugHidden("--no-network") {
@@ -251,6 +223,38 @@ struct DashboardView: View {
     }
 
     // MARK: - Stat tiles
+
+    private var statTiles: some View {
+        LazyVGrid(columns: columns, spacing: Theme.Spacing.md) {
+            StatTile(icon: "cpu", title: "CPU",
+                     value: Fmt.percent(monitor.cpuUsage),
+                     valueAnimationValue: monitor.cpuUsage * 100,
+                     caption: "In Use",
+                     fraction: monitor.cpuUsage,
+                     tint: Theme.Chart.status(for: monitor.cpuUsage),
+                     valueTint: MetricPresentationPolicy.usageReadoutColor(monitor.cpuUsage))
+
+            StatTile(icon: "memorychip", title: "Memory",
+                     value: Fmt.percent(monitor.memoryFraction),
+                     valueAnimationValue: monitor.memoryFraction * 100,
+                     caption: Fmt.size(monitor.memoryUsed),
+                     captionAnimationValue: monitor.memoryUsed,
+                     fraction: monitor.memoryFraction,
+                     tint: Theme.Chart.status(for: monitor.memoryFraction),
+                     valueTint: MetricPresentationPolicy.usageReadoutColor(monitor.memoryFraction))
+
+            StatTile(icon: "internaldrive", title: "Storage",
+                     value: Fmt.percent(monitor.diskFraction),
+                     valueAnimationValue: monitor.diskFraction * 100,
+                     caption: "\(Fmt.size(max(0, monitor.diskTotal - monitor.diskUsed))) Free",
+                     captionAnimationValue: max(0, monitor.diskTotal - monitor.diskUsed),
+                     fraction: monitor.diskFraction,
+                     tint: Theme.Chart.status(for: monitor.diskFraction),
+                     valueTint: MetricPresentationPolicy.usageReadoutColor(monitor.diskFraction))
+
+            batteryTile
+        }
+    }
 
     @ViewBuilder private var batteryTile: some View {
         if let level = monitor.batteryLevel {

@@ -410,17 +410,11 @@ struct AnimatedNumberText: View {
                 // The cadence gate (not the roll's duration) is what keeps live
                 // metrics cheap: rolls play at most once per interval and the
                 // samples in between apply instantly.
-                let now = ProcessInfo.processInfo.systemUptime
-                let cadenceAllows = now - lastAnimatedAt >= GeraldineMotion.liveMetricAnimationInterval
-                if cadenceAllows,
-                   let animation = reduceMotion || !surfaceActive
-                    ? nil
-                    : (animation ?? GeraldineMotion.animation(.standard, reduceMotion: false)) {
-                    lastAnimatedAt = now
-                    withAnimation(animation, update)
-                } else {
-                    update()
-                }
+                GeraldineMotion.withLiveMetricCadence($lastAnimatedAt,
+                                                      reduceMotion: reduceMotion,
+                                                      surfaceActive: surfaceActive,
+                                                      animation: animation,
+                                                      update: update)
             }
     }
 
@@ -607,13 +601,9 @@ struct GaugeRing: View {
             // Live metrics move every second; animating each wiggle kept a
             // window-wide render wave in flight ~continuously. Roll the ring
             // on the shared cadence, apply the in-between samples instantly.
-            let now = ProcessInfo.processInfo.systemUptime
-            if now - lastAnimatedAt >= GeraldineMotion.liveMetricAnimationInterval,
-               surfaceActive, !reduceMotion,
-               let animation = GeraldineMotion.animation(.standard, reduceMotion: false) {
-                lastAnimatedAt = now
-                withAnimation(animation) { displayedValue = newValue }
-            } else {
+            GeraldineMotion.withLiveMetricCadence($lastAnimatedAt,
+                                                  reduceMotion: reduceMotion,
+                                                  surfaceActive: surfaceActive) {
                 displayedValue = newValue
             }
         }
@@ -699,13 +689,9 @@ struct StatBar: View {
         .onChange(of: fraction) { _, newValue in
             // Same live-metric cadence as GaugeRing: the width is a layout
             // attribute, so animating every sample forced continuous re-layout.
-            let now = ProcessInfo.processInfo.systemUptime
-            if now - lastAnimatedAt >= GeraldineMotion.liveMetricAnimationInterval,
-               surfaceActive, !reduceMotion,
-               let animation = GeraldineMotion.animation(.standard, reduceMotion: false) {
-                lastAnimatedAt = now
-                withAnimation(animation) { displayedFraction = newValue }
-            } else {
+            GeraldineMotion.withLiveMetricCadence($lastAnimatedAt,
+                                                  reduceMotion: reduceMotion,
+                                                  surfaceActive: surfaceActive) {
                 displayedFraction = newValue
             }
         }

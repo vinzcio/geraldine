@@ -36,6 +36,25 @@ enum GeraldineMotion {
     /// between animated updates apply instantly.
     static let liveMetricAnimationInterval: TimeInterval = 2.5
 
+    /// Applies a live-metric update on the shared cadence: animated when the
+    /// interval since `lastAnimatedAt` has elapsed (and motion is allowed),
+    /// instantly otherwise. `animation` overrides the standard curve.
+    static func withLiveMetricCadence(_ lastAnimatedAt: Binding<TimeInterval>,
+                                      reduceMotion: Bool,
+                                      surfaceActive: Bool,
+                                      animation: Animation? = nil,
+                                      update: () -> Void) {
+        let now = ProcessInfo.processInfo.systemUptime
+        if now - lastAnimatedAt.wrappedValue >= liveMetricAnimationInterval,
+           surfaceActive, !reduceMotion,
+           let animation = animation ?? GeraldineMotion.animation(.standard, reduceMotion: false) {
+            lastAnimatedAt.wrappedValue = now
+            withAnimation(animation, update)
+        } else {
+            update()
+        }
+    }
+
     static func animation(_ style: Style, reduceMotion: Bool) -> Animation? {
         guard !reduceMotion else { return nil }
         switch style {

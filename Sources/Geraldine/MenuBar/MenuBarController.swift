@@ -201,27 +201,7 @@ final class MenuBarController: NSObject, NSWindowDelegate {
         renderStatusItem()
 
         #if DEBUG
-        // `--shimmer-probe <dir>`: render the shimmer compositor mid-sweep and
-        // write base/shimmer PNGs for byte-level comparison, bypassing timing,
-        // occlusion, and screen capture entirely.
-        if let probeIndex = CommandLine.arguments.firstIndex(of: "--shimmer-probe"),
-           probeIndex + 1 < CommandLine.arguments.count {
-            let dir = CommandLine.arguments[probeIndex + 1]
-            let probePlan = plan()
-            let geometry = statusGeometry(for: probePlan)
-            statusAnimNewNumber = splitLabel(probePlan.label).number
-            let base = drawStatus(probePlan)
-            let mid = composeStatusShimmer(base: base, plan: probePlan,
-                                           geometry: geometry, progress: 0.5)
-            for (name, img) in [("base", base), ("shimmer", mid)] {
-                if let tiff = img.tiffRepresentation,
-                   let rep = NSBitmapImageRep(data: tiff),
-                   let png = rep.representation(using: .png, properties: [:]) {
-                    try? png.write(to: URL(fileURLWithPath: "\(dir)/shimmer-probe-\(name).png"))
-                }
-            }
-            statusAnimNewNumber = ""
-        }
+        runShimmerProbeIfRequested()
 
         if CommandLine.arguments.contains("--show-menu-panel") {
             DispatchQueue.main.async { [weak self, weak button] in
@@ -249,6 +229,31 @@ final class MenuBarController: NSObject, NSWindowDelegate {
             self.renderStatusItem()
         }
     }
+
+    #if DEBUG
+    /// `--shimmer-probe <dir>`: render the shimmer compositor mid-sweep and
+    /// write base/shimmer PNGs for byte-level comparison, bypassing timing,
+    /// occlusion, and screen capture entirely.
+    private func runShimmerProbeIfRequested() {
+        guard let probeIndex = CommandLine.arguments.firstIndex(of: "--shimmer-probe"),
+              probeIndex + 1 < CommandLine.arguments.count else { return }
+        let dir = CommandLine.arguments[probeIndex + 1]
+        let probePlan = plan()
+        let geometry = statusGeometry(for: probePlan)
+        statusAnimNewNumber = splitLabel(probePlan.label).number
+        let base = drawStatus(probePlan)
+        let mid = composeStatusShimmer(base: base, plan: probePlan,
+                                       geometry: geometry, progress: 0.5)
+        for (name, image) in [("base", base), ("shimmer", mid)] {
+            if let tiff = image.tiffRepresentation,
+               let rep = NSBitmapImageRep(data: tiff),
+               let png = rep.representation(using: .png, properties: [:]) {
+                try? png.write(to: URL(fileURLWithPath: "\(dir)/shimmer-probe-\(name).png"))
+            }
+        }
+        statusAnimNewNumber = ""
+    }
+    #endif
 
     @objc private func togglePanel(_ sender: NSStatusBarButton) {
         if panel.isVisible {
