@@ -750,9 +750,10 @@ final class MenuBarController: NSObject, NSWindowDelegate {
     private func ensureStatusDisplayLink(for button: NSStatusBarButton) {
         guard statusDisplayLink == nil else { return }
         let link = button.displayLink(target: self, selector: #selector(stepStatusAnimation(_:)))
-        // 30fps is indistinguishable for a 22pt status glyph, and each tick
-        // composites an NSImage on the main thread — never run at panel rates.
-        link.preferredFrameRateRange = CAFrameRateRange(minimum: 15, maximum: 30, preferred: 30)
+        // No preferredFrameRateRange: constraining it to 15-30 on this fixed
+        // 60Hz display stopped the link from firing at all, silently killing
+        // rolls and shimmers. Animations are short and cadence-gated, so
+        // full-rate frames are cheap.
         link.add(to: .main, forMode: .common)
         link.isPaused = true
         statusDisplayLink = link
