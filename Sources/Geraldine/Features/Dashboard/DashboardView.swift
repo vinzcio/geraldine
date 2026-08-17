@@ -376,6 +376,9 @@ struct DashboardView: View {
                 .font(.rounded(16, .semibold))
                 .foregroundStyle(tint)
         }
+        // Fixed-width slot: rates change every second, and without this the
+        // readout's width jiggle re-laid-out the whole card and page each tick.
+        .frame(minWidth: 100, alignment: .trailing)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(label) \(Fmt.rate(value, unit: networkRateUnit))")
     }

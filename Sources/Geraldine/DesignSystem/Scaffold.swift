@@ -170,7 +170,11 @@ struct ModulePage<Trailing: View, Content: View>: View {
     var body: some View {
         ScrollView {
             ScreenContent(widthRole: widthRole) {
-                LazyVStack(alignment: .leading, spacing: Theme.Layout.pageSpacing) {
+                // Plain VStack, deliberately: pages are bounded, so laziness buys
+                // nothing — and a lazy container re-runs its layout for every
+                // per-second metric text change, which profiling showed as the
+                // dominant visible-window cost, scaling with machine load.
+                VStack(alignment: .leading, spacing: Theme.Layout.pageSpacing) {
                     PageHeader(
                         module: module,
                         title: title,
