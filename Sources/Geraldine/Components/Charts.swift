@@ -246,33 +246,23 @@ struct TimelineSparkGraph: View {
             let points = samples.map { point($0, in: size) }
             let isLatestSegment = index == segments.indices.last
             if samples.count == 1, let sample = samples.first, let point = points.first {
+                // No .id(timestamp): endpoints move to the new sample instead of
+                // being recreated (and re-animated) once per tick.
                 if isLatestSegment, showsLatestEndpoint {
                     ChartEndpoint(point: point, tint: sampleColor?(sample.value) ?? tint)
-                        .id(sample.timestamp)
                 } else {
                     ChartSamplePoint(point: point, tint: sampleColor?(sample.value) ?? tint)
-                        .id(sample.timestamp)
                 }
             } else {
                 SparkPath.area(underSegment: points, baselineY: size.height).fill(areaShading)
-                if isLatestSegment, points.count >= 2 {
-                    if points.count > 2 {
-                        SparkPath.line(through: Array(points.dropLast()))
-                            .stroke(lineShading,
-                                    style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
-                    }
-                    ChartLatestSegment(from: points[points.count - 2],
-                                       to: points[points.count - 1],
-                                       shading: lineShading)
-                        .id(samples.last?.timestamp)
-                } else {
-                    SparkPath.line(through: points)
-                        .stroke(lineShading, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
-                }
+                // One stroked polyline. The old draw-in of the newest segment
+                // recreated an animating view every sample — a permanent ~25%
+                // animation duty cycle for an effect invisible at 1-2px scale.
+                SparkPath.line(through: points)
+                    .stroke(lineShading, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
 
                 if isLatestSegment, showsLatestEndpoint, let last = samples.last {
                     ChartEndpoint(point: point(last, in: size), tint: sampleColor?(last.value) ?? tint)
-                        .id(last.timestamp)
                 }
             }
         }
@@ -297,6 +287,10 @@ struct NetworkTimelineGraph: View {
     var gapThreshold: TimeInterval = SystemMonitor.chartSampleGapThreshold
     var showsInspection = false
     var rateUnit: NetworkRateUnit = .bytesPerSecond
+    /// Cap rendered points per segment. Always-visible charts should downsample:
+    /// path assembly over the full 5-minute history was the hottest app symbol
+    /// in profiles, and the extra points are invisible at chart heights.
+    var maximumPointCount: Int? = nil
 
     @ViewBuilder
     var body: some View {
@@ -416,7 +410,7 @@ struct NetworkTimelineGraph: View {
             samples: visibleSamples,
             timeline: timeline,
             gapThreshold: gapThreshold,
-            maximumPointCount: nil
+            maximumPointCount: maximumPointCount
         )
         let chartScale = scale(for: visibleSamples)
 
@@ -442,7 +436,7 @@ struct NetworkTimelineGraph: View {
             samples: visibleSamples,
             timeline: timeline,
             gapThreshold: gapThreshold,
-            maximumPointCount: nil
+            maximumPointCount: maximumPointCount
         )
     }
 
@@ -454,35 +448,23 @@ struct NetworkTimelineGraph: View {
             let points = samples.map { point($0, value: $0[keyPath: value], scale: scale, in: size) }
             let isLatestSegment = index == segments.indices.last
             if samples.count == 1, let point = points.first {
+                // No .id(timestamp): see TimelineSparkGraph — move, don't recreate.
                 if isLatestSegment {
                     ChartEndpoint(point: point, tint: tint)
-                        .id(samples[0].timestamp)
                 } else {
                     ChartSamplePoint(point: point, tint: tint)
-                        .id(samples[0].timestamp)
                 }
             } else {
                 SparkPath.area(underSegment: points, baselineY: size.height)
                     .fill(LinearGradient(colors: [tint.opacity(0.22), tint.opacity(0.02)],
                                          startPoint: .top, endPoint: .bottom))
-                if isLatestSegment, points.count >= 2 {
-                    if points.count > 2 {
-                        SparkPath.line(through: Array(points.dropLast()))
-                            .stroke(tint,
-                                    style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
-                    }
-                    ChartLatestSegment(from: points[points.count - 2],
-                                       to: points[points.count - 1],
-                                       shading: AnyShapeStyle(tint))
-                        .id(samples.last?.timestamp)
-                } else {
-                    SparkPath.line(through: points)
-                        .stroke(tint,
-                                style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
-                }
+                // One stroked polyline — see TimelineSparkGraph for why the
+                // per-sample draw-in segment was retired.
+                SparkPath.line(through: points)
+                    .stroke(tint,
+                            style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
                 if isLatestSegment, let last = points.last {
                     ChartEndpoint(point: last, tint: tint)
-                        .id(samples.last?.timestamp)
                 }
             }
         }
@@ -570,35 +552,6 @@ private struct ChartEndpoint: View {
                 withAnimation(animation) { revealed = true }
             }
             .accessibilityHidden(true)
-    }
-}
-
-private struct ChartLatestSegment: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.geraldineSurfaceActive) private var surfaceActive
-    @State private var reveal: CGFloat = 0
-
-    let from: CGPoint
-    let to: CGPoint
-    let shading: AnyShapeStyle
-
-    var body: some View {
-        Path { path in
-            path.move(to: from)
-            path.addLine(to: to)
-        }
-        .trim(from: 0, to: reduceMotion || !surfaceActive ? 1 : reveal)
-        .stroke(shading,
-                style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
-        .onAppear {
-            guard surfaceActive, !reduceMotion,
-                  let animation = GeraldineMotion.animation(.standard, reduceMotion: false) else {
-                reveal = 1
-                return
-            }
-            withAnimation(animation) { reveal = 1 }
-        }
-        .accessibilityHidden(true)
     }
 }
 

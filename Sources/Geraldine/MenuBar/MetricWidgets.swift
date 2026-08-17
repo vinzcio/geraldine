@@ -1015,7 +1015,7 @@ struct MetricWidget: View {
                 if network.online {
                     VStack(alignment: .leading, spacing: 3) {
                         rate("arrow.down", monitor.netDown, Theme.Chart.blue)
-                        rate("arrow.up", monitor.netUp, Theme.Chart.purple)
+                        rate("arrow.up", monitor.netUp, Theme.Chart.mint)
                     }
                 } else {
                     networkOfflineState
@@ -1032,12 +1032,12 @@ struct MetricWidget: View {
                                          window: SystemMonitor.liveHistoryWindow,
                                          now: Date(),
                                          downTint: Theme.Chart.blue,
-                                         upTint: Theme.Chart.purple,
+                                         upTint: Theme.Chart.mint,
                                          rateUnit: networkRateUnit)
                         .frame(maxHeight: .infinity)
                     HStack(spacing: 8) {
                         rate("arrow.down", monitor.netDown, Theme.Chart.blue)
-                        rate("arrow.up", monitor.netUp, Theme.Chart.purple)
+                        rate("arrow.up", monitor.netUp, Theme.Chart.mint)
                         Spacer(minLength: 6)
                         speedControl
                     }
@@ -1240,7 +1240,7 @@ struct MetricWidget: View {
                                 AnimatedNumberText("↓\(speedString(down))", value: down)
                                     .foregroundStyle(Theme.Chart.blue)
                                 AnimatedNumberText("↑\(speedString(up))", value: up)
-                                    .foregroundStyle(Theme.Chart.purple)
+                                    .foregroundStyle(Theme.Chart.mint)
                                 Text("Mbps").foregroundStyle(.secondary)
                             }
                         }

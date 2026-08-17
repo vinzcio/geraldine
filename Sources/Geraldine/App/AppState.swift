@@ -71,6 +71,10 @@ final class AppState: ObservableObject {
     @Published private(set) var hasFullDiskAccess = Permissions.hasFullDiskAccess()
     @Published private(set) var hasAccessibility = Permissions.hasAccessibilityAccess()
     @Published private(set) var mainWindowVisible = true
+    /// The window is open on screen (regardless of occlusion). While false the
+    /// shell unmounts its content so a hidden window stops re-evaluating live
+    /// metrics every tick.
+    @Published private(set) var mainWindowPresented = true
     @Published private(set) var menuBarPopoverVisible = false
 
     @Published var appShape: AppShape {
@@ -89,6 +93,7 @@ final class AppState: ObservableObject {
         let raw = UserDefaults.standard.string(forKey: "appShape") ?? AppShape.menuBarAndWindow.rawValue
         appShape = AppShape(rawValue: raw) ?? .menuBarAndWindow
         mainWindowVisible = appShape != .menuBarOnly
+        mainWindowPresented = appShape != .menuBarOnly
     }
 
     // MARK: - Presentation
@@ -184,10 +189,15 @@ final class AppState: ObservableObject {
     private func refreshMainWindowVisibility() {
         guard let mainWindow else {
             mainWindowVisible = false
+            mainWindowPresented = false
             return
         }
-        mainWindowVisible = mainWindow.isVisible &&
-            !mainWindow.isMiniaturized &&
-            mainWindow.occlusionState.contains(.visible)
+        // Presented = the window exists on screen (open, not miniaturized),
+        // regardless of whether other apps currently cover it. Occlusion only
+        // pauses decorative animation; presentation decides whether the shell
+        // content is mounted at all, so it must not flap with window layering.
+        let presented = mainWindow.isVisible && !mainWindow.isMiniaturized
+        if mainWindowPresented != presented { mainWindowPresented = presented }
+        mainWindowVisible = presented && mainWindow.occlusionState.contains(.visible)
     }
 }

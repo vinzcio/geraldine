@@ -42,6 +42,13 @@ enum CardTier {
     case raised
     case floating
     case tinted(Color)
+    /// Calm content surface: solid fill, no border, no shadow. The default for
+    /// secondary dashboard content so only the page's hero carries elevation.
+    case quiet
+    /// The one strong surface per page: material fill, a tinted light wash
+    /// falling in from the leading edge, gradient edge lighting, and a
+    /// tint-colored floating shadow.
+    case hero(Color)
 }
 
 enum AdaptiveMaterialTier {
@@ -79,6 +86,39 @@ private struct AdaptiveMaterialBackground<ShapeType: Shape>: ViewModifier {
     }
 }
 
+/// Behind-window vibrancy for the app shell. SwiftUI materials only blur
+/// content *within* the window; a real translucent sidebar needs AppKit's
+/// behind-window blending so the desktop shows through like native Mac apps.
+struct VibrantSidebarBackground: View {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
+
+    var body: some View {
+        if reduceTransparency || colorSchemeContrast == .increased {
+            Theme.sidebar
+        } else {
+            BehindWindowMaterial(material: .sidebar)
+                .overlay(Theme.sidebar.opacity(0.45))
+        }
+    }
+}
+
+private struct BehindWindowMaterial: NSViewRepresentable {
+    let material: NSVisualEffectView.Material
+
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = material
+        view.blendingMode = .behindWindow
+        view.state = .followsWindowActiveState
+        return view
+    }
+
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
+        nsView.material = material
+    }
+}
+
 struct CardBackground: ViewModifier {
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.colorScheme) private var colorScheme
@@ -102,11 +142,11 @@ struct CardBackground: ViewModifier {
                     .overlay { shape.fill(tintOverlay) }
             }
             .overlay {
-                shape.strokeBorder(outlineColor,
+                shape.strokeBorder(outlineStyle,
                                    lineWidth: hoverActive ? 1.2 : 1)
             }
             .shadow(
-                color: .black.opacity(shadowOpacity),
+                color: shadowColor,
                 radius: shadowRadius,
                 y: shadowY
             )
@@ -126,64 +166,105 @@ struct CardBackground: ViewModifier {
     private var backgroundStyle: AnyShapeStyle {
         if reduceTransparency || colorSchemeContrast == .increased {
             switch tier {
+            case .quiet: return AnyShapeStyle(Theme.surfaceBase)
             case .base: return AnyShapeStyle(Theme.surfaceBase)
             case .raised, .tinted(_): return AnyShapeStyle(Theme.surfaceRaised)
-            case .floating: return AnyShapeStyle(Theme.surfaceFloating)
+            case .floating, .hero(_): return AnyShapeStyle(Theme.surfaceFloating)
             }
         }
 
         switch tier {
+        case .quiet:
+            return AnyShapeStyle(hoverActive ? Theme.surfaceRaised : Theme.surfaceBase)
         case .base:
             return AnyShapeStyle(.ultraThinMaterial)
         case .raised, .tinted(_):
             return AnyShapeStyle(.thinMaterial)
-        case .floating:
+        case .floating, .hero(_):
             return AnyShapeStyle(.regularMaterial)
         }
     }
 
-    private var tintOverlay: Color {
-        if case .tinted(let tint) = tier {
-            return Theme.decorativeFill(tint, strength: colorScheme == .dark ? .standard : .subtle)
+    private var tintOverlay: AnyShapeStyle {
+        switch tier {
+        case .tinted(let tint):
+            return AnyShapeStyle(
+                Theme.decorativeFill(tint, strength: colorScheme == .dark ? .standard : .subtle)
+            )
+        case .hero(let tint):
+            return AnyShapeStyle(
+                RadialGradient(
+                    colors: [tint.opacity(colorScheme == .dark ? 0.20 : 0.13), .clear],
+                    center: UnitPoint(x: 0.10, y: 0.42),
+                    startRadius: 0,
+                    endRadius: 460
+                )
+            )
+        default:
+            return AnyShapeStyle(Color.clear)
         }
-        return .clear
     }
 
-    private var outlineColor: Color {
+    private var outlineStyle: AnyShapeStyle {
         if colorSchemeContrast == .increased {
-            return colorScheme == .dark ? .white.opacity(0.34) : .black.opacity(0.24)
+            return AnyShapeStyle(colorScheme == .dark ? Color.white.opacity(0.34) : Color.black.opacity(0.24))
         }
-        if colorScheme == .dark {
-            return .white.opacity(hoverActive ? 0.15 : 0.09)
+        switch tier {
+        case .quiet:
+            return AnyShapeStyle(hoverActive ? Theme.separator : Color.clear)
+        case .hero(let tint):
+            return AnyShapeStyle(
+                LinearGradient(
+                    colors: [tint.opacity(colorScheme == .dark ? 0.55 : 0.40),
+                             tint.opacity(0.07)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            )
+        default:
+            if colorScheme == .dark {
+                return AnyShapeStyle(Color.white.opacity(hoverActive ? 0.15 : 0.09))
+            }
+            return AnyShapeStyle(Color.black.opacity(hoverActive ? 0.10 : 0.06))
         }
-        return .black.opacity(hoverActive ? 0.10 : 0.06)
+    }
+
+    private var shadowColor: Color {
+        if case .hero(let tint) = tier {
+            return tint.opacity(colorScheme == .dark ? 0.30 : 0.18)
+        }
+        return .black.opacity(shadowOpacity)
     }
 
     private var shadowOpacity: Double {
         let boost = hoverActive ? 0.04 : 0
         switch tier {
+        case .quiet:
+            return hoverActive ? (colorScheme == .dark ? Theme.Shadow.darkBaseOpacity : Theme.Shadow.lightBaseOpacity) : 0
         case .base:
             return (colorScheme == .dark ? Theme.Shadow.darkBaseOpacity : Theme.Shadow.lightBaseOpacity) + boost
         case .raised, .tinted(_):
             return (colorScheme == .dark ? Theme.Shadow.darkRaisedOpacity : Theme.Shadow.lightRaisedOpacity) + boost
-        case .floating:
+        case .floating, .hero(_):
             return (colorScheme == .dark ? Theme.Shadow.darkFloatingOpacity : Theme.Shadow.lightFloatingOpacity) + boost
         }
     }
 
     private var shadowRadius: CGFloat {
         switch tier {
+        case .quiet: hoverActive ? Theme.Shadow.baseRadius : 0
         case .base: Theme.Shadow.baseRadius
         case .raised, .tinted(_): hoverActive ? 12 : Theme.Shadow.raisedRadius
-        case .floating: hoverActive ? 20 : Theme.Shadow.floatingRadius
+        case .floating, .hero(_): hoverActive ? 20 : Theme.Shadow.floatingRadius
         }
     }
 
     private var shadowY: CGFloat {
         switch tier {
+        case .quiet: hoverActive ? Theme.Shadow.baseY : 0
         case .base: Theme.Shadow.baseY
         case .raised, .tinted(_): hoverActive ? 4 : Theme.Shadow.raisedY
-        case .floating: hoverActive ? 8 : Theme.Shadow.floatingY
+        case .floating, .hero(_): hoverActive ? 8 : Theme.Shadow.floatingY
         }
     }
 }
@@ -279,6 +360,7 @@ struct AnimatedNumberText: View {
     @State private var renderedText: String
     @State private var renderedValue: Double
     @State private var reservedRunWidths: [Int: Int]
+    @State private var lastAnimatedAt: TimeInterval = 0
 
     init(_ text: String, value: Double, animation: Animation? = nil) {
         self.text = text
@@ -325,9 +407,16 @@ struct AnimatedNumberText: View {
                     renderedText = text
                     renderedValue = value.isFinite ? value : 0
                 }
-                if let animation = reduceMotion || !surfaceActive
+                // The cadence gate (not the roll's duration) is what keeps live
+                // metrics cheap: rolls play at most once per interval and the
+                // samples in between apply instantly.
+                let now = ProcessInfo.processInfo.systemUptime
+                let cadenceAllows = now - lastAnimatedAt >= GeraldineMotion.liveMetricAnimationInterval
+                if cadenceAllows,
+                   let animation = reduceMotion || !surfaceActive
                     ? nil
                     : (animation ?? GeraldineMotion.animation(.standard, reduceMotion: false)) {
+                    lastAnimatedAt = now
                     withAnimation(animation, update)
                 } else {
                     update()
@@ -488,6 +577,9 @@ enum AnimatedNumberLayout {
 struct GaugeRing: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.geraldineSurfaceActive) private var surfaceActive
+    @State private var revealed = false
+    @State private var displayedValue: Double
+    @State private var lastAnimatedAt: TimeInterval = 0
 
     var value: Double            // 0…1
     var lineWidth: CGFloat = 10
@@ -499,19 +591,40 @@ struct GaugeRing: View {
         self.lineWidth = lineWidth
         self.tint = tint
         self.center = AnyView(center())
+        _displayedValue = State(initialValue: value)
     }
 
     var body: some View {
         ZStack {
-            Circle().stroke(Color.primary.opacity(0.08), lineWidth: lineWidth)
+            Circle().stroke(Color.primary.opacity(0.06), lineWidth: lineWidth)
             Circle()
-                .trim(from: 0, to: max(0.001, min(1, value)))
+                .trim(from: 0, to: revealed ? max(0.001, min(1, displayedValue)) : 0.001)
                 .stroke(tint.gradient, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
                 .rotationEffect(.degrees(-90))
-                .animation(GeraldineMotion.animation(.emphasis,
-                                                     reduceMotion: reduceMotion || !surfaceActive),
-                           value: value)
             center
+        }
+        .onChange(of: value) { _, newValue in
+            // Live metrics move every second; animating each wiggle kept a
+            // window-wide render wave in flight ~continuously. Roll the ring
+            // on the shared cadence, apply the in-between samples instantly.
+            let now = ProcessInfo.processInfo.systemUptime
+            if now - lastAnimatedAt >= GeraldineMotion.liveMetricAnimationInterval,
+               surfaceActive, !reduceMotion,
+               let animation = GeraldineMotion.animation(.standard, reduceMotion: false) {
+                lastAnimatedAt = now
+                withAnimation(animation) { displayedValue = newValue }
+            } else {
+                displayedValue = newValue
+            }
+        }
+        .onAppear {
+            // Draw-in on first appearance; live updates animate via onChange.
+            guard surfaceActive,
+                  let animation = GeraldineMotion.animation(.emphasis, reduceMotion: reduceMotion) else {
+                revealed = true
+                return
+            }
+            withAnimation(animation) { revealed = true }
         }
     }
 }
@@ -537,7 +650,7 @@ struct StatTile: View {
                     .foregroundStyle(.secondary)
                 Spacer()
             }
-            GaugeRing(value: fraction, tint: tint) {
+            GaugeRing(value: fraction, lineWidth: 8, tint: tint) {
                 VStack(spacing: 1) {
                     if let valueAnimationValue {
                         AnimatedNumberText(value, value: valueAnimationValue)
@@ -557,7 +670,7 @@ struct StatTile: View {
             .frame(width: 104, height: 104)
         }
         .frame(maxWidth: .infinity)
-        .card()
+        .card(tier: .quiet)
     }
 }
 
@@ -566,6 +679,9 @@ struct StatTile: View {
 struct StatBar: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.geraldineSurfaceActive) private var surfaceActive
+
+    @State private var displayedFraction: Double?
+    @State private var lastAnimatedAt: TimeInterval = 0
 
     var fraction: Double
     var tint: Color
@@ -576,13 +692,23 @@ struct StatBar: View {
             ZStack(alignment: .leading) {
                 Capsule().fill(Color.primary.opacity(0.08))
                 Capsule().fill(tint.gradient)
-                    .frame(width: max(0, min(1, fraction)) * geo.size.width)
-                    .animation(GeraldineMotion.animation(.emphasis,
-                                                         reduceMotion: reduceMotion || !surfaceActive),
-                               value: fraction)
+                    .frame(width: max(0, min(1, displayedFraction ?? fraction)) * geo.size.width)
             }
         }
         .frame(height: height)
+        .onChange(of: fraction) { _, newValue in
+            // Same live-metric cadence as GaugeRing: the width is a layout
+            // attribute, so animating every sample forced continuous re-layout.
+            let now = ProcessInfo.processInfo.systemUptime
+            if now - lastAnimatedAt >= GeraldineMotion.liveMetricAnimationInterval,
+               surfaceActive, !reduceMotion,
+               let animation = GeraldineMotion.animation(.standard, reduceMotion: false) {
+                lastAnimatedAt = now
+                withAnimation(animation) { displayedFraction = newValue }
+            } else {
+                displayedFraction = newValue
+            }
+        }
     }
 }
 
@@ -886,7 +1012,13 @@ struct SectionHeader: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
-            Text(title).font(.geraldineSection)
+            // Small-caps kicker: section labels frame content quietly instead of
+            // competing with card titles for attention.
+            Text(title)
+                .font(.rounded(11.5, .semibold))
+                .tracking(1.2)
+                .textCase(.uppercase)
+                .foregroundStyle(.secondary)
             if let subtitle {
                 Text(subtitle)
                     .font(.caption)

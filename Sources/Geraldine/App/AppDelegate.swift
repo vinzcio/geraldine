@@ -18,6 +18,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         clipboardPicker?.start()
 
         #if DEBUG
+        // Dev helper: `--appearance dark|light` forces the app's appearance for
+        // design QA without flipping the whole system's setting.
+        if let index = CommandLine.arguments.firstIndex(of: "--appearance"),
+           index + 1 < CommandLine.arguments.count {
+            switch CommandLine.arguments[index + 1] {
+            case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)
+            case "light": NSApp.appearance = NSAppearance(named: .aqua)
+            default: break
+            }
+        }
+
         // Dev helper: `--open-module <rawValue>` opens the full window straight to a module,
         // so a specific page can be inspected/screenshotted without clicking the sidebar.
         if let index = CommandLine.arguments.firstIndex(of: "--open-module"),

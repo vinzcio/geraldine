@@ -66,7 +66,7 @@ struct NetworkTrafficChart<StatsAccessory: View>: View {
                                  window: SystemMonitor.liveHistoryWindow,
                                  now: Date(),
                                  downTint: Theme.Chart.blue,
-                                 upTint: Theme.Chart.purple,
+                                 upTint: Theme.Chart.mint,
                                  downReference: stats.averageDown,
                                  upReference: stats.averageUp,
                                  showsInspection: showsInspection,
@@ -132,7 +132,7 @@ private struct NetworkThroughputStatsTable: View {
                     now: stats.currentDown,
                     average: stats.hasSamples ? stats.averageDown : nil,
                     peak: stats.hasSamples ? stats.peakDown : nil)
-            statRow("arrow.up", "Up", iconTint: Theme.Chart.purple, textTint: Theme.Chart.purple,
+            statRow("arrow.up", "Up", iconTint: Theme.Chart.mint, textTint: Theme.Chart.mint,
                     now: stats.currentUp,
                     average: stats.hasSamples ? stats.averageUp : nil,
                     peak: stats.hasSamples ? stats.peakUp : nil)

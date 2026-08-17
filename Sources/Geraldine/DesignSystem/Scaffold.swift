@@ -36,6 +36,7 @@ struct PageHeader<Trailing: View>: View {
     let systemImage: String
     let style: PageHeaderStyle
     let tint: Color
+    let showsGlyph: Bool
     @ViewBuilder let trailing: Trailing
 
     init(
@@ -45,6 +46,7 @@ struct PageHeader<Trailing: View>: View {
         systemImage: String? = nil,
         style: PageHeaderStyle = .standard,
         tint: Color? = nil,
+        showsGlyph: Bool = true,
         @ViewBuilder trailing: () -> Trailing
     ) {
         self.module = module
@@ -53,13 +55,16 @@ struct PageHeader<Trailing: View>: View {
         self.systemImage = systemImage ?? module.systemImage
         self.style = style
         self.tint = tint ?? module.tint
+        self.showsGlyph = showsGlyph
         self.trailing = trailing()
     }
 
     var body: some View {
         HStack(alignment: .center, spacing: Theme.Spacing.md) {
-            ModuleGlyph(systemImage: systemImage, tint: tint, size: style.iconSize)
-                .geraldineEntrance()
+            if showsGlyph {
+                ModuleGlyph(systemImage: systemImage, tint: tint, size: style.iconSize)
+                    .geraldineEntrance()
+            }
 
             VStack(alignment: .leading, spacing: Theme.Spacing.xxs) {
                 Text(title)
@@ -90,7 +95,8 @@ extension PageHeader where Trailing == EmptyView {
         subtitle: String? = nil,
         systemImage: String? = nil,
         style: PageHeaderStyle = .standard,
-        tint: Color? = nil
+        tint: Color? = nil,
+        showsGlyph: Bool = true
     ) {
         self.init(
             module: module,
@@ -98,7 +104,8 @@ extension PageHeader where Trailing == EmptyView {
             subtitle: subtitle,
             systemImage: systemImage,
             style: style,
-            tint: tint
+            tint: tint,
+            showsGlyph: showsGlyph
         ) { EmptyView() }
     }
 }
@@ -132,6 +139,7 @@ struct ModulePage<Trailing: View, Content: View>: View {
     let headerTint: Color?
     let headerStyle: PageHeaderStyle
     let widthRole: ScreenWidthRole
+    let showsHeaderGlyph: Bool
     @ViewBuilder let trailing: Trailing
     @ViewBuilder let content: Content
 
@@ -143,6 +151,7 @@ struct ModulePage<Trailing: View, Content: View>: View {
         headerTint: Color? = nil,
         headerStyle: PageHeaderStyle = .standard,
         widthRole: ScreenWidthRole = .fluid,
+        showsHeaderGlyph: Bool = true,
         @ViewBuilder trailing: () -> Trailing,
         @ViewBuilder content: () -> Content
     ) {
@@ -153,6 +162,7 @@ struct ModulePage<Trailing: View, Content: View>: View {
         self.headerTint = headerTint
         self.headerStyle = headerStyle
         self.widthRole = widthRole
+        self.showsHeaderGlyph = showsHeaderGlyph
         self.trailing = trailing()
         self.content = content()
     }
@@ -167,7 +177,8 @@ struct ModulePage<Trailing: View, Content: View>: View {
                         subtitle: subtitle,
                         systemImage: systemImage,
                         style: headerStyle,
-                        tint: headerTint
+                        tint: headerTint,
+                        showsGlyph: showsHeaderGlyph
                     ) {
                         trailing
                     }
@@ -188,6 +199,7 @@ extension ModulePage where Trailing == EmptyView {
         headerTint: Color? = nil,
         headerStyle: PageHeaderStyle = .standard,
         widthRole: ScreenWidthRole = .fluid,
+        showsHeaderGlyph: Bool = true,
         @ViewBuilder content: () -> Content
     ) {
         self.init(
@@ -198,6 +210,7 @@ extension ModulePage where Trailing == EmptyView {
             headerTint: headerTint,
             headerStyle: headerStyle,
             widthRole: widthRole,
+            showsHeaderGlyph: showsHeaderGlyph,
             trailing: { EmptyView() },
             content: content
         )

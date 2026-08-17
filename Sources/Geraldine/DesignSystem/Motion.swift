@@ -29,6 +29,13 @@ enum GeraldineMotion {
     static let iconSwapScale: CGFloat = 0.25
     static let iconSwapBlur: CGFloat = 4
 
+    /// Minimum spacing between animated updates of a per-second live metric
+    /// (number rolls, ring trims, bar widths). Every in-flight animation runs
+    /// the full window render pipeline per frame, so a metric that ticked an
+    /// animation every sample kept that pipeline hot ~continuously. Samples
+    /// between animated updates apply instantly.
+    static let liveMetricAnimationInterval: TimeInterval = 2.5
+
     static func animation(_ style: Style, reduceMotion: Bool) -> Animation? {
         guard !reduceMotion else { return nil }
         switch style {

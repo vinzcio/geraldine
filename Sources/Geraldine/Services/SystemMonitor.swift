@@ -82,6 +82,8 @@ final class SystemMonitor: ObservableObject {
     private let sessionID = UUID()
 
     private var timer: Timer?
+    private var lastDiskSampleAt: TimeInterval = -.infinity
+    private static let diskSampleInterval: TimeInterval = 15
     private var prevCPU: host_cpu_load_info?
     private var prevNet: (rx: UInt64, tx: UInt64, time: TimeInterval)?
     private var thermalInFlight = false
@@ -166,8 +168,15 @@ final class SystemMonitor: ObservableObject {
         let mem = Self.sampleMemory()
         memoryUsed = mem.used
         if mem.total > 0 { memoryTotal = mem.total }
-        let disk = Self.sampleDisk()
-        diskUsed = disk.used; diskTotal = disk.total
+        // The important-usage capacity key walks every APFS volume through
+        // CacheDelete to price purgeable space — far too expensive to pay per
+        // second for a number that moves on the scale of minutes.
+        if timestamp - lastDiskSampleAt >= Self.diskSampleInterval {
+            lastDiskSampleAt = timestamp
+            let disk = Self.sampleDisk()
+            if diskUsed != disk.used { diskUsed = disk.used }
+            if diskTotal != disk.total { diskTotal = disk.total }
+        }
         let bat = Self.sampleBattery()
         hasBattery = bat.hasBattery
         batteryLevel = bat.level; batteryCharging = bat.charging

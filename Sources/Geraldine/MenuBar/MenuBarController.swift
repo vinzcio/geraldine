@@ -16,6 +16,16 @@ enum MenuBarTimelineRendering {
     }
 }
 
+enum MenuBarStatusAnimationPolicy {
+    static func shouldShimmer(sameKind: Bool, oldNumber: String, newNumber: String,
+                              hasAnimationValues: Bool) -> Bool {
+        sameKind &&
+        !oldNumber.isEmpty &&
+        oldNumber == newNumber &&
+        hasAnimationValues
+    }
+}
+
 enum MenuBarPanelPlacement {
     static let preferredWidth: CGFloat = 640
     static let edgeInset: CGFloat = 10
@@ -59,11 +69,18 @@ final class MenuBarController: NSObject, NSWindowDelegate {
     private let statusItemHorizontalPadding: CGFloat = 8
     private let statusAnimationDuration: TimeInterval = 0.24
     private let statusCrossfadeDuration: TimeInterval = 0.14
+    private let statusShimmerDuration: TimeInterval = 0.5
+    /// Shimmer is a freshness cue, not a metronome: without a cooldown it fires
+    /// on every unchanged sample (~1/s), keeping the display link compositing
+    /// images half of every second forever.
+    private let statusShimmerCooldown: TimeInterval = 10
+    private var lastShimmerStart: CFTimeInterval = -.infinity
     private var statusRenderPending = false
 
     private enum StatusAnimationMode {
         case digits
         case crossfade
+        case shimmer
     }
 
     // Digit-roll animation state. The roll is paced by a persistent, paused
@@ -184,6 +201,28 @@ final class MenuBarController: NSObject, NSWindowDelegate {
         renderStatusItem()
 
         #if DEBUG
+        // `--shimmer-probe <dir>`: render the shimmer compositor mid-sweep and
+        // write base/shimmer PNGs for byte-level comparison, bypassing timing,
+        // occlusion, and screen capture entirely.
+        if let probeIndex = CommandLine.arguments.firstIndex(of: "--shimmer-probe"),
+           probeIndex + 1 < CommandLine.arguments.count {
+            let dir = CommandLine.arguments[probeIndex + 1]
+            let probePlan = plan()
+            let geometry = statusGeometry(for: probePlan)
+            statusAnimNewNumber = splitLabel(probePlan.label).number
+            let base = drawStatus(probePlan)
+            let mid = composeStatusShimmer(base: base, plan: probePlan,
+                                           geometry: geometry, progress: 0.5)
+            for (name, img) in [("base", base), ("shimmer", mid)] {
+                if let tiff = img.tiffRepresentation,
+                   let rep = NSBitmapImageRep(data: tiff),
+                   let png = rep.representation(using: .png, properties: [:]) {
+                    try? png.write(to: URL(fileURLWithPath: "\(dir)/shimmer-probe-\(name).png"))
+                }
+            }
+            statusAnimNewNumber = ""
+        }
+
         if CommandLine.arguments.contains("--show-menu-panel") {
             DispatchQueue.main.async { [weak self, weak button] in
                 guard let self, let button else { return }
@@ -311,21 +350,38 @@ final class MenuBarController: NSObject, NSWindowDelegate {
     private func renderStatusItem() {
         guard let button = statusItem?.button else { return }
         let nextPlan = plan()
-        let nextImage = drawStatus(nextPlan)
+        // Drawn lazily: the digit-roll and shimmer branches render their own
+        // frames, so an eager draw here would be thrown away on those paths.
+        var cachedNextImage: NSImage?
+        func nextImage() -> NSImage {
+            if let cachedNextImage { return cachedNextImage }
+            let image = drawStatus(nextPlan)
+            cachedNextImage = image
+            return image
+        }
         applyAccessibility(for: nextPlan, to: button)
 
         if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             statusDisplayLink?.isPaused = true
             clearStatusAnimation()
-            applyStatusImage(nextImage, to: button)
+            applyStatusImage(nextImage(), to: button)
             self.currentStatusPlan = nextPlan
             return
         }
 
         guard let currentStatusPlan else {
-            applyStatusImage(nextImage, to: button)
+            applyStatusImage(nextImage(), to: button)
             self.currentStatusPlan = nextPlan
             return
+        }
+
+        // A decorative shimmer must never occupy the animation slot a real value
+        // change needs: renders arrive ~2x per second, so an in-flight shimmer
+        // would otherwise demote every digit change to the retarget crossfade
+        // below and the digit roll would never be seen.
+        if statusAnimMode == .shimmer {
+            statusDisplayLink?.isPaused = true
+            clearStatusAnimation()
         }
 
         // A new sample can arrive before a digit roll finishes. Retarget from the
@@ -335,7 +391,7 @@ final class MenuBarController: NSObject, NSWindowDelegate {
         if statusAnimMode != nil {
             animateStatusCrossfade(button: button,
                                    from: button.image ?? drawStatus(currentStatusPlan),
-                                   to: nextImage,
+                                   to: nextImage(),
                                    targetPlan: nextPlan)
             self.currentStatusPlan = nextPlan
             return
@@ -346,7 +402,7 @@ final class MenuBarController: NSObject, NSWindowDelegate {
             || statusColorChanged(from: currentStatusPlan, to: nextPlan)) {
             animateStatusCrossfade(button: button,
                                    from: button.image ?? drawStatus(currentStatusPlan),
-                                   to: nextImage,
+                                   to: nextImage(),
                                    targetPlan: nextPlan)
             self.currentStatusPlan = nextPlan
             return
@@ -358,10 +414,17 @@ final class MenuBarController: NSObject, NSWindowDelegate {
             return
         }
 
+        if shouldShimmerStatus(from: currentStatusPlan, to: nextPlan),
+           CACurrentMediaTime() - lastShimmerStart >= statusShimmerCooldown {
+            animateStatusShimmer(button: button, from: currentStatusPlan, to: nextPlan)
+            self.currentStatusPlan = nextPlan
+            return
+        }
+
         if currentStatusPlan.kind != nextPlan.kind {
             animateStatusCrossfade(button: button,
                                    from: button.image ?? drawStatus(currentStatusPlan),
-                                   to: nextImage,
+                                   to: nextImage(),
                                    targetPlan: nextPlan)
             self.currentStatusPlan = nextPlan
             return
@@ -369,7 +432,7 @@ final class MenuBarController: NSObject, NSWindowDelegate {
 
         statusDisplayLink?.isPaused = true
         clearStatusAnimation()
-        applyStatusImage(nextImage, to: button)
+        applyStatusImage(nextImage(), to: button)
         self.currentStatusPlan = nextPlan
     }
 
@@ -571,6 +634,15 @@ final class MenuBarController: NSObject, NSWindowDelegate {
         return oldParts.prefix != newParts.prefix || oldParts.suffix != newParts.suffix
     }
 
+    private func shouldShimmerStatus(from old: StatusPlan, to new: StatusPlan) -> Bool {
+        MenuBarStatusAnimationPolicy.shouldShimmer(
+            sameKind: old.kind == new.kind,
+            oldNumber: splitLabel(old.label).number,
+            newNumber: splitLabel(new.label).number,
+            hasAnimationValues: old.animationValue != nil && new.animationValue != nil
+        )
+    }
+
     /// Rolling old digits over a newly colored chart creates a brief false state at
     /// threshold crossings. A whole-image crossfade keeps each rendered frame's
     /// readout and chart together instead.
@@ -643,12 +715,39 @@ final class MenuBarController: NSObject, NSWindowDelegate {
         statusDisplayLink?.isPaused = false
     }
 
+    private func animateStatusShimmer(button: NSStatusBarButton, from oldPlan: StatusPlan,
+                                      to newPlan: StatusPlan) {
+        let geometry = statusGeometry(for: newPlan, comparing: oldPlan)
+        statusAnimMode = .shimmer
+        statusAnimDuration = statusShimmerDuration
+        statusAnimBase = drawStatus(newPlan)
+        statusAnimGeometry = geometry
+        statusAnimFrom = oldPlan
+        statusAnimTo = newPlan
+        statusAnimFromImage = nil
+        statusAnimToImage = nil
+        statusAnimOldNumber = ""
+        statusAnimNewNumber = splitLabel(newPlan.label).number
+        statusAnimCompletion = nil
+        statusAnimStart = CACurrentMediaTime()
+        lastShimmerStart = statusAnimStart
+
+        let targetWidth = max(24, ceil(geometry.size.width + statusItemHorizontalPadding))
+        if statusItem?.length != targetWidth { statusItem?.length = targetWidth }
+
+        ensureStatusDisplayLink(for: button)
+        statusDisplayLink?.isPaused = false
+    }
+
     /// A persistent, paused display link tied to the status button (an NSView). Created
     /// lazily, runs only while a roll is in flight, and is invalidated when the status
     /// item goes away (see syncVisibility) to break the link's strong ref to its target.
     private func ensureStatusDisplayLink(for button: NSStatusBarButton) {
         guard statusDisplayLink == nil else { return }
         let link = button.displayLink(target: self, selector: #selector(stepStatusAnimation(_:)))
+        // 30fps is indistinguishable for a 22pt status glyph, and each tick
+        // composites an NSImage on the main thread — never run at panel rates.
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: 15, maximum: 30, preferred: 30)
         link.add(to: .main, forMode: .common)
         link.isPaused = true
         statusDisplayLink = link
@@ -680,6 +779,14 @@ final class MenuBarController: NSObject, NSWindowDelegate {
                 return
             }
             renderedImage = composeStatusCrossfade(from: oldImage, to: newImage, progress: progress)
+        case .shimmer:
+            guard let base = statusAnimBase,
+                  let geometry = statusAnimGeometry else {
+                link.isPaused = true
+                return
+            }
+            renderedImage = composeStatusShimmer(base: base, plan: newPlan,
+                                                  geometry: geometry, progress: progress)
         }
         applyStatusImage(renderedImage, to: button)
         if progress >= 1 {
@@ -720,6 +827,41 @@ final class MenuBarController: NSObject, NSWindowDelegate {
         oldImage.draw(in: oldRect, from: .zero, operation: .sourceOver, fraction: 1 - eased)
         newImage.draw(in: NSRect(origin: .zero, size: size),
                       from: .zero, operation: .sourceOver, fraction: eased)
+        image.unlockFocus()
+        image.isTemplate = false
+        return image
+    }
+
+    private func composeStatusShimmer(base: NSImage, plan: StatusPlan,
+                                      geometry: StatusGeometry, progress: Double) -> NSImage {
+        guard !statusAnimNewNumber.isEmpty else { return base }
+
+        let image = NSImage(size: geometry.size)
+        image.lockFocus()
+        NSGraphicsContext.current?.imageInterpolation = .none
+        base.draw(at: .zero, from: .zero, operation: .sourceOver, fraction: 1)
+
+        let numberStart = geometry.valueOriginX + geometry.samplePrefixWidth
+        let bandWidth = max(6, min(12, geometry.numberWidth * 0.55))
+        let travel = geometry.numberWidth + bandWidth * 2
+        let bandStart = numberStart - bandWidth + travel * CGFloat(progress)
+        let highlightColor = plan.color.blended(withFraction: 0.72, of: .white) ?? .white
+        let sliceCount = 9
+        let sliceWidth = bandWidth / CGFloat(sliceCount)
+
+        if let context = NSGraphicsContext.current?.cgContext {
+            for slice in 0..<sliceCount {
+                let position = (CGFloat(slice) + 0.5) / CGFloat(sliceCount)
+                let alpha = sin(position * .pi) * 0.82
+                context.saveGState()
+                context.clip(to: NSRect(x: bandStart + CGFloat(slice) * sliceWidth,
+                                        y: 0, width: sliceWidth + 0.5, height: geometry.height))
+                drawStaticStatusNumber(statusAnimNewNumber, color: highlightColor,
+                                       alpha: alpha, geometry: geometry)
+                context.restoreGState()
+            }
+        }
+
         image.unlockFocus()
         image.isTemplate = false
         return image
@@ -853,11 +995,13 @@ final class MenuBarController: NSObject, NSWindowDelegate {
         }
     }
 
-    private func drawStaticStatusNumber(_ number: String, color: NSColor, geometry: StatusGeometry) {
+    private func drawStaticStatusNumber(_ number: String, color: NSColor,
+                                        alpha: CGFloat = 1, geometry: StatusGeometry) {
         let characters = rightAlignedCharacters(in: number, count: geometry.numberColumnWidths.count)
         for index in characters.indices {
             if let character = characters[index] {
-                drawStatusNumberCharacter(character, at: index, color: color, alpha: 1, yOffset: 0, geometry: geometry)
+                drawStatusNumberCharacter(character, at: index, color: color, alpha: alpha,
+                                          yOffset: 0, geometry: geometry)
             }
         }
     }

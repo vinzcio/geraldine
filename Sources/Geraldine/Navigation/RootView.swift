@@ -5,6 +5,26 @@ struct RootView: View {
     @AppStorage("didOnboard") private var didOnboard = false
 
     var body: some View {
+        Group {
+            // While the window is closed the shell is unmounted entirely, so
+            // the monitor's per-second publishes stop re-evaluating an
+            // invisible sidebar and dashboard. Module view state resets on
+            // reopen — the deliberate cost of an idle-quiet hidden window.
+            if state.mainWindowPresented {
+                shell
+            } else {
+                Color.clear
+            }
+        }
+        .geraldineSurfaceActive(state.mainWindowVisible)
+        .background(WindowAccessor { window in state.bind(window: window) })
+        .sheet(isPresented: Binding(get: { !didOnboard }, set: { if !$0 { didOnboard = true } })) {
+            WelcomeView { didOnboard = true }
+                .environmentObject(state.layout)
+        }
+    }
+
+    private var shell: some View {
         HStack(spacing: 0) {
             // Swallow nil writes: clicking empty sidebar space deselects the
             // List, which would drop the highlight while a module stays open.
@@ -28,12 +48,6 @@ struct RootView: View {
             }
             .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
             .ignoresSafeArea(.container, edges: .top)
-        }
-        .geraldineSurfaceActive(state.mainWindowVisible)
-        .background(WindowAccessor { window in state.bind(window: window) })
-        .sheet(isPresented: Binding(get: { !didOnboard }, set: { if !$0 { didOnboard = true } })) {
-            WelcomeView { didOnboard = true }
-                .environmentObject(state.layout)
         }
     }
 }
@@ -63,24 +77,37 @@ struct Sidebar: View {
                 .listRowInsets(EdgeInsets(top: 10, leading: 8, bottom: 14, trailing: 8))
 
             ForEach(Module.Group.allCases) { group in
-                Section(group.rawValue) {
+                Section {
                     ForEach(Module.modules(in: group)) { module in
                         SidebarRow(module: module, isSelected: selection == module)
                             .tag(module)
                             .listRowBackground(Color.clear)
                     }
+                } header: {
+                    Text(group.rawValue)
+                        .font(.rounded(10, .semibold))
+                        .tracking(1.2)
+                        .textCase(.uppercase)
+                        .foregroundStyle(.tertiary)
                 }
             }
 
-            SidebarFooter()
-                .listRowSeparator(.hidden)
-                .listRowInsets(EdgeInsets(top: 12, leading: 6, bottom: 6, trailing: 6))
-                .listRowBackground(Color.clear)
-                .selectionDisabled()
+            #if DEBUG
+            let hideFooter = ProcessInfo.processInfo.arguments.contains("--no-sidebar-footer")
+            #else
+            let hideFooter = false
+            #endif
+            if !hideFooter {
+                SidebarFooter()
+                    .listRowSeparator(.hidden)
+                    .listRowInsets(EdgeInsets(top: 12, leading: 6, bottom: 6, trailing: 6))
+                    .listRowBackground(Color.clear)
+                    .selectionDisabled()
+            }
         }
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
-        .background(Theme.sidebar)
+        .background(VibrantSidebarBackground().ignoresSafeArea())
         .frame(maxHeight: .infinity)
     }
 }
@@ -120,16 +147,29 @@ private struct SidebarRow: View {
         module == .keepAwake && keepAwake.isActive ? Theme.bad : module.tint
     }
 
+    /// Module color is reserved for the row you're on (and Keep Awake's live
+    /// warning); resting rows stay monochrome so the sidebar reads as one
+    /// calm column instead of eighteen competing colors.
+    private var iconColor: Color {
+        if module == .keepAwake && keepAwake.isActive { return Theme.bad }
+        if isSelected { return tint }
+        return isHovered ? Color.primary : Color.secondary
+    }
+
     var body: some View {
         HStack(spacing: Theme.Spacing.sm) {
-            ModuleGlyph(systemImage: systemImage, tint: tint, size: 28)
+            Image(systemName: systemImage)
+                .font(.system(size: 14, weight: .medium))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(iconColor)
+                .frame(width: 22, height: 22)
             Text(title)
                 .font(.rounded(13, isSelected ? .semibold : .medium))
                 .foregroundStyle(.primary)
             Spacer(minLength: 0)
         }
         .padding(.horizontal, Theme.Spacing.xs)
-        .padding(.vertical, Theme.Spacing.xxs)
+        .padding(.vertical, 5)
         .background {
             RoundedRectangle(cornerRadius: Theme.Radius.control, style: .continuous)
                 .fill(isHovered && !isSelected ? tint.opacity(0.065) : .clear)
@@ -274,18 +314,18 @@ struct WindowBackground: View {
         ZStack {
             Theme.canvas
             RadialGradient(
-                colors: [auraTint.opacity(0.12), .clear],
-                center: UnitPoint(x: 0.82, y: 0.14),
+                colors: [auraTint.opacity(0.17), .clear],
+                center: UnitPoint(x: 0.82, y: 0.10),
                 startRadius: 0,
-                endRadius: 440
+                endRadius: 520
             )
             LinearGradient(
-                colors: [Theme.accent.opacity(0.065), .clear],
+                colors: [Theme.accent.opacity(0.10), .clear],
                 startPoint: .topLeading,
                 endPoint: .center
             )
             LinearGradient(
-                colors: [Theme.accent2.opacity(0.045), .clear],
+                colors: [Theme.accent2.opacity(0.07), .clear],
                 startPoint: .topTrailing,
                 endPoint: .center
             )

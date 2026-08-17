@@ -117,16 +117,28 @@ final class NetworkMonitor: NSObject, ObservableObject {
 
     func refreshWiFi() {
         guard let iface = wifiClient.interface() else {
-            ssid = nil; rssi = nil; linkRateMbps = nil; security = .unknown
+            setIfChanged(nil, nil, nil, .unknown)
             return
         }
         // SSID only resolves with Location authorization on macOS 14+.
-        ssid = (connection == .wifi && locationAuthorized) ? iface.ssid() : nil
+        let newSSID = (connection == .wifi && locationAuthorized) ? iface.ssid() : nil
         let r = iface.rssiValue()
-        rssi = (connection == .wifi && r != 0) ? r : nil
+        let newRSSI = (connection == .wifi && r != 0) ? r : nil
         let rate = iface.transmitRate()
-        linkRateMbps = (connection == .wifi && rate > 0) ? rate : nil
-        security = connection == .wifi ? Self.security(from: iface.security()) : .unknown
+        let newRate = (connection == .wifi && rate > 0) ? rate : nil
+        let newSecurity = connection == .wifi ? Self.security(from: iface.security()) : .unknown
+        setIfChanged(newSSID, newRSSI, newRate, newSecurity)
+    }
+
+    /// Assigning an unchanged value to an @Published property still fires
+    /// objectWillChange, which re-renders every observing view and redraws the
+    /// status item. Wi-Fi facts rarely change, so publish only real changes.
+    private func setIfChanged(_ newSSID: String?, _ newRSSI: Int?,
+                              _ newRate: Double?, _ newSecurity: Security) {
+        if ssid != newSSID { ssid = newSSID }
+        if rssi != newRSSI { rssi = newRSSI }
+        if linkRateMbps != newRate { linkRateMbps = newRate }
+        if security != newSecurity { security = newSecurity }
     }
 
     // MARK: - Wi-Fi name access (Location)
