@@ -48,7 +48,6 @@ final class AppState: ObservableObject {
     let layout = WidgetLayoutStore()
     let keepAwake = KeepAwakeController()
     let powerTools = PowerToolsController()
-    let clipboard = ClipboardHistoryController()
     let calendar = CalendarSettingsStore()
     let hardware = HardwareInfo.current
 
