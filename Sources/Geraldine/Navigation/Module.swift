@@ -11,7 +11,6 @@ enum Module: String, CaseIterable, Identifiable {
     case battery
     case keepAwake
     case calendar
-    case clipboard
     case cleanup
     case largeFiles
     case uninstaller
@@ -34,7 +33,6 @@ enum Module: String, CaseIterable, Identifiable {
         case .battery:     return "Battery"
         case .keepAwake:   return "Keep Awake"
         case .calendar:    return "Calendar & Clocks"
-        case .clipboard:   return "Clipboard"
         case .powerTools:  return "Power Tools"
         case .cleanup:     return "Cleanup"
         case .largeFiles:  return "Large & Old Files"
@@ -57,7 +55,6 @@ enum Module: String, CaseIterable, Identifiable {
         case .battery:     return "battery.100"
         case .keepAwake:   return "eye.fill"
         case .calendar:    return "calendar"
-        case .clipboard:   return "clipboard.fill"
         case .powerTools:  return "bolt.horizontal.circle.fill"
         case .cleanup:     return "sparkles"
         case .largeFiles:  return "doc.text.magnifyingglass"
@@ -80,7 +77,6 @@ enum Module: String, CaseIterable, Identifiable {
         case .battery:     return Theme.green
         case .keepAwake:   return Theme.orange
         case .calendar:    return Theme.indigo
-        case .clipboard:   return Theme.aqua
         case .powerTools:  return Theme.indigo
         case .cleanup:     return Theme.accent2
         case .largeFiles:  return Theme.orange
@@ -107,7 +103,6 @@ enum Module: String, CaseIterable, Identifiable {
         case .battery:     return "Charge history, consumers & health"
         case .keepAwake:   return "Prevent idle sleep and display dimming"
         case .calendar:    return "Month calendar, world clocks & date format"
-        case .clipboard:   return "Encrypted history with a global picker"
         case .powerTools:  return "Dock, window, keyboard, and Finder controls"
         case .cleanup:     return "Clear caches, logs, and junk"
         case .largeFiles:  return "Find big and forgotten files"
@@ -130,7 +125,7 @@ enum Module: String, CaseIterable, Identifiable {
 
     var group: Group {
         switch self {
-        case .dashboard, .smartCare, .activity, .storage, .battery, .keepAwake, .calendar, .clipboard: return .overview
+        case .dashboard, .smartCare, .activity, .storage, .battery, .keepAwake, .calendar: return .overview
         case .cleanup, .largeFiles, .uninstaller: return .clean
         case .powerTools, .privacy, .loginItems, .maintenance, .updater, .permissions, .settings: return .tune
         }

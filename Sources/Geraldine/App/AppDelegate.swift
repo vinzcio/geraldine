@@ -2,7 +2,6 @@ import AppKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var menuBarController: MenuBarController?
-    private var clipboardPicker: ClipboardPickerCoordinator?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let state = AppState.shared
@@ -12,10 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         state.network.start()
         state.devices.start()
         state.powerTools.start()
-        state.clipboard.start()
         menuBarController = MenuBarController(state: state)
-        clipboardPicker = ClipboardPickerCoordinator(clipboard: state.clipboard)
-        clipboardPicker?.start()
 
         #if DEBUG
         // Dev helper: `--appearance dark|light` forces the app's appearance for
@@ -42,14 +38,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     state.mainWindow?.setContentSize(NSSize(width: 1280, height: 820))
                     state.mainWindow?.center()
                 }
-            }
-        }
-
-        // Dev helper: `--open-picker` shows the clipboard picker panel without
-        // needing the global shortcut, so it can be inspected/screenshotted.
-        if CommandLine.arguments.contains("--open-picker") {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
-                self?.clipboardPicker?.show()
             }
         }
         #endif
@@ -83,8 +71,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        clipboardPicker?.stop()
-        AppState.shared.clipboard.stop()
         AppState.shared.monitor.stop()
         AppState.shared.monitor.flushHistory()
         AppState.shared.keepAwake.shutdown()
