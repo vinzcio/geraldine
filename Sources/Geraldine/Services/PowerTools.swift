@@ -84,6 +84,7 @@ struct PowerToolResult {
 
 private enum PowerToolKeys {
     static let dockActionsEnabled = "powerTools.dock.actionsEnabled"
+    static let dockWindowPreviewsEnabled = "powerTools.dock.windowPreviewsEnabled"
     static let activeDockClickBehavior = "powerTools.dock.activeClickBehavior"
     static let middleClickBehavior = "powerTools.dock.middleClickBehavior"
     static let shiftClickNewWindow = "powerTools.dock.shiftClickNewWindow"
@@ -102,8 +103,15 @@ private enum PowerToolKeys {
 @MainActor
 final class PowerToolsController: ObservableObject {
     @Published private(set) var accessibilityTrusted = Permissions.hasAccessibilityAccess()
+    @Published private(set) var screenRecordingTrusted = Permissions.hasScreenRecordingAccess()
     @Published var lastResult: PowerToolResult?
 
+    @Published var dockWindowPreviewsEnabled: Bool {
+        didSet {
+            defaults.set(dockWindowPreviewsEnabled, forKey: PowerToolKeys.dockWindowPreviewsEnabled)
+            applyHooks()
+        }
+    }
     @Published var dockActionsEnabled: Bool {
         didSet { defaults.set(dockActionsEnabled, forKey: PowerToolKeys.dockActionsEnabled); applyHooks() }
     }
@@ -155,6 +163,7 @@ final class PowerToolsController: ObservableObject {
 
     private let defaults: UserDefaults
     private let dockService = DockInteractionService()
+    private let dockPreviewService = DockWindowPreviewService()
     private let trafficLightService = TrafficLightButtonService()
     private let missionControlCloseService = MissionControlCloseService()
     private let keyboardService = KeyboardPowerToolsService()
@@ -162,6 +171,7 @@ final class PowerToolsController: ObservableObject {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        dockWindowPreviewsEnabled = defaults.bool(forKey: PowerToolKeys.dockWindowPreviewsEnabled)
         dockActionsEnabled = defaults.bool(forKey: PowerToolKeys.dockActionsEnabled)
         let activeRaw = defaults.string(forKey: PowerToolKeys.activeDockClickBehavior) ?? DockActiveClickBehavior.system.rawValue
         activeDockClickBehavior = DockActiveClickBehavior(rawValue: activeRaw) ?? .system
@@ -187,6 +197,7 @@ final class PowerToolsController: ObservableObject {
 
     func stop() {
         dockService.stop()
+        dockPreviewService.stop()
         trafficLightService.stop()
         missionControlCloseService.stop()
         keyboardService.stop()
@@ -195,7 +206,17 @@ final class PowerToolsController: ObservableObject {
 
     func refreshAccessibility(prompt: Bool = false) {
         accessibilityTrusted = prompt ? Permissions.requestAccessibilityAccess() : Permissions.hasAccessibilityAccess()
+        screenRecordingTrusted = Permissions.hasScreenRecordingAccess()
+        dockPreviewService.updateScreenRecordingAccess(screenRecordingTrusted)
         applyHooks()
+    }
+
+    func requestDockPreviewThumbnails() {
+        screenRecordingTrusted = Permissions.requestScreenRecordingAccess()
+        dockPreviewService.updateScreenRecordingAccess(screenRecordingTrusted)
+        if !screenRecordingTrusted {
+            Permissions.openScreenRecordingSettings()
+        }
     }
 
     func hideAllWindows() {
@@ -261,6 +282,7 @@ final class PowerToolsController: ObservableObject {
         let needsDockTap = dockActionsEnabled &&
             (activeDockClickBehavior != .system || middleClickBehavior != .system || shiftClickNewWindow)
         needsDockTap ? dockService.start() : dockService.stop()
+        dockWindowPreviewsEnabled ? dockPreviewService.start() : dockPreviewService.stop()
 
         let needsTrafficTap = greenButtonFillsWindow || yellowButtonHidesApp
         needsTrafficTap ? trafficLightService.start() : trafficLightService.stop()
@@ -428,10 +450,13 @@ final class EventTapService {
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private let mask: CGEventMask
+    private let options: CGEventTapOptions
     private let handler: (CGEventType, CGEvent) -> Bool
 
-    init(mask: CGEventMask, handler: @escaping (CGEventType, CGEvent) -> Bool) {
+    init(mask: CGEventMask, options: CGEventTapOptions = .defaultTap,
+         handler: @escaping (CGEventType, CGEvent) -> Bool) {
         self.mask = mask
+        self.options = options
         self.handler = handler
     }
 
@@ -440,17 +465,20 @@ final class EventTapService {
         guard eventTap == nil else { return true }
         guard let tap = CGEvent.tapCreate(tap: .cgSessionEventTap,
                                           place: .headInsertEventTap,
-                                          options: .defaultTap,
+                                          options: options,
                                           eventsOfInterest: mask,
                                           callback: Self.callback,
                                           userInfo: Unmanaged.passUnretained(self).toOpaque()) else {
             return false
         }
         eventTap = tap
-        runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
-        if let runLoopSource {
-            CFRunLoopAddSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
+        guard let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0) else {
+            CFMachPortInvalidate(tap)
+            eventTap = nil
+            return false
         }
+        runLoopSource = source
+        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
         return true
     }
@@ -776,6 +804,7 @@ private enum KeyCode {
 
 final class WindowActionService {
     private var activationObserver: NSObjectProtocol?
+    private static var dockActivationSelection = DockPreviewActivationSelection()
 
     func startActivationObserver() {
         guard activationObserver == nil else { return }
@@ -788,7 +817,11 @@ final class WindowActionService {
                   let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else {
                 return
             }
+            let selected = Self.dockActivationSelection.take(afterActivating: app.processIdentifier)
             Self.unminimizeWindows(of: app, firstOnly: false)
+            if let selected, AXTools.windows(of: app).contains(where: { CFEqual($0, selected.element) }) {
+                AXTools.perform(selected.element, kAXRaiseAction)
+            }
         }
     }
 
@@ -797,6 +830,27 @@ final class WindowActionService {
             NSWorkspace.shared.notificationCenter.removeObserver(activationObserver)
         }
         activationObserver = nil
+        Self.dockActivationSelection = DockPreviewActivationSelection()
+    }
+
+    @MainActor
+    static func activate(_ app: NSRunningApplication, selecting window: DockPreviewWindow) -> Bool {
+        // The existing "unminimize on activation" preference may raise several
+        // windows in its notification callback. Preserve the user's exact
+        // preview selection after that callback, without changing the preference.
+        dockActivationSelection = DockPreviewActivationSelection()
+        if !app.isActive, UserDefaults.standard.bool(forKey: PowerToolKeys.unminimizeOnActivation) {
+            dockActivationSelection.prepare(window, processIdentifier: app.processIdentifier)
+        }
+        // The preview deliberately leaves Geraldine inactive. A generic app
+        // activation request can be ignored in that context; use the existing
+        // Accessibility grant for the user's explicit window selection.
+        let appElement = AXUIElementCreateApplication(app.processIdentifier)
+        let focused = AXUIElementSetAttributeValue(appElement, kAXFrontmostAttribute as CFString,
+                                                   kCFBooleanTrue) == .success
+        let activated = focused || app.activate(options: [])
+        if !activated { dockActivationSelection = DockPreviewActivationSelection() }
+        return activated
     }
 
     static func hideAllWindows() {
@@ -1196,13 +1250,19 @@ private func shortErrorText(_ output: String) -> String {
     return trimmed.isEmpty ? "unknown error" : trimmed
 }
 
-private enum AXTools {
+enum AXTools {
     private struct RestoreFrame {
         let window: AXUIElement
         let frame: CGRect
     }
 
     private static var restoreFrames: [RestoreFrame] = []
+    private static let windowIDFunction: AXUIElementGetWindowFunction? = {
+        guard let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "_AXUIElementGetWindow") else {
+            return nil
+        }
+        return unsafeBitCast(symbol, to: AXUIElementGetWindowFunction.self)
+    }()
 
     static func element(at point: CGPoint) -> AXUIElement? {
         let systemWide = AXUIElementCreateSystemWide()
@@ -1222,6 +1282,13 @@ private enum AXTools {
     static func windows(of app: NSRunningApplication) -> [AXUIElement] {
         let appElement = AXUIElementCreateApplication(app.processIdentifier)
         return array(appElement, kAXWindowsAttribute)
+    }
+
+    static func windowID(of window: AXUIElement) -> CGWindowID? {
+        guard let windowIDFunction else { return nil }
+        var windowID: CGWindowID = 0
+        guard windowIDFunction(window, &windowID) == .success else { return nil }
+        return windowID
     }
 
     static func focusedWindow() -> AXUIElement? {
@@ -1336,6 +1403,16 @@ private enum AXTools {
 
     static func string(_ element: AXUIElement, _ attribute: String) -> String? {
         value(element, attribute, as: String.self)
+    }
+
+    static func parent(of element: AXUIElement) -> AXUIElement? {
+        value(element, kAXParentAttribute, as: AXUIElement.self)
+    }
+
+    static func fileURL(of element: AXUIElement) -> URL? {
+        let url = value(element, kAXURLAttribute, as: URL.self) ??
+            string(element, kAXURLAttribute).flatMap(URL.init(string:))
+        return url?.isFileURL == true ? url : nil
     }
 
     private static func isTextEntryElement(_ element: AXUIElement) -> Bool {

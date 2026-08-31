@@ -67,7 +67,7 @@ struct PowerToolsView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(powerTools.accessibilityTrusted ? "Input Controls Are Ready" : "Accessibility Is Required")
                     .font(.geraldineSection)
-                Text("Dock clicks, traffic-light rewrites, keyboard safety, and Finder key handling need Accessibility permission.")
+                Text("Dock previews and clicks, traffic-light rewrites, keyboard safety, and Finder key handling need Accessibility permission.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -93,6 +93,46 @@ struct PowerToolsView: View {
             result: result(for: .dock),
             cancellationMessage: cancellation(for: .dock)
         ) {
+            Toggle("Preview Windows On Dock Hover",
+                   isOn: tracking($powerTools.dockWindowPreviewsEnabled, section: .dock))
+                .toggleStyle(.switch)
+                .accessibilityIdentifier("powerTools.dock.windowPreviews")
+            Text("Hover over a running app in the Dock, then click the window you want. Minimized windows can be restored, too.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            if powerTools.dockWindowPreviewsEnabled {
+                if !powerTools.accessibilityTrusted {
+                    Text("Grant Accessibility access above to list and select windows.")
+                        .font(.caption)
+                        .foregroundStyle(Theme.warn)
+                }
+                HStack(spacing: Theme.Spacing.sm) {
+                    Label(
+                        powerTools.screenRecordingTrusted
+                            ? "Window thumbnails are available."
+                            : "Screen Recording access adds live window thumbnails.",
+                        systemImage: powerTools.screenRecordingTrusted ? "checkmark.shield" : "rectangle.on.rectangle"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                    if !powerTools.screenRecordingTrusted {
+                        Button("Enable Thumbnails…") {
+                            powerTools.requestDockPreviewThumbnails()
+                        }
+                        .buttonStyle(.quiet(tint))
+                    }
+                }
+                Text(powerTools.screenRecordingTrusted
+                     ? "Previews stay on this Mac and are not saved."
+                     : "Previews stay on this Mac and are not saved. macOS may ask you to restart Geraldine after granting access.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            Divider()
+
             Toggle("Enable Dock Click Actions",
                    isOn: tracking($powerTools.dockActionsEnabled, section: .dock))
                 .toggleStyle(.switch)

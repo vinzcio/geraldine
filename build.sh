@@ -152,6 +152,7 @@ cat > "$CONTENTS/Info.plist" <<PLIST
     <key>NSDownloadsFolderUsageDescription</key><string>Geraldine scans your Downloads to find junk and old files you can clean up.</string>
     <key>NSRemovableVolumesUsageDescription</key><string>Geraldine can scan external volumes for files you can clean up.</string>
     <key>NSAppleEventsUsageDescription</key><string>Geraldine uses authorized commands to run system maintenance tasks you request.</string>
+    <key>NSScreenCaptureUsageDescription</key><string>Geraldine shows window thumbnails when you hover over Dock apps. Previews stay on this Mac and are not saved.</string>
     <key>NSLocationUsageDescription</key><string>Geraldine uses your location only to read the name of the Wi-Fi network you're connected to. macOS requires this permission to reveal the network name.</string>
     <key>NSLocationWhenInUseUsageDescription</key><string>Geraldine uses your location only to read the name of the Wi-Fi network you're connected to. macOS requires this permission to reveal the network name.</string>
 </dict>
