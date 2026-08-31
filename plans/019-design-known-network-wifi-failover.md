@@ -446,8 +446,10 @@ Use this exact table schema:
 Rows use IDs `D01` through `D16` in the order above. A selected row records a
 nonempty value, plus `Vincent approval: YYYY-MM-DD - <direct source reference>`
 and status `APPROVED`. During review, all three cells may say `UNRESOLVED`; a GO
-gate may not. Record exactly one `Persistence contract: NONE` or `Persistence
-contract: LOCAL` line. Under NONE, D14-D16 must each select the literal `N/A -
+gate may not. Record exactly one `Persistence contract: NONE`, `Persistence
+contract: LOCAL`, or `Persistence contract: UNRESOLVED` line. UNRESOLVED is
+valid only under NO-GO and leaves D14-D16 unresolved rather than inventing a
+storage policy. Under NONE, D14-D16 must each select the literal `N/A -
 Persistence contract NONE`; under LOCAL, none may select N/A. Cloud, sync,
 telemetry, and network transmission are never alternatives. Do not recommend
 numeric values or silently convert the current three-second display refresh
@@ -487,7 +489,7 @@ for id in D01 D02 D03 D04 D05 D06 D07 D08 D09 D10 D11 D12 D13 D14 D15 D16; do
       if (options == "" || options ~ /TBD|UNRESOLVED/ || selected == "" || source == "" || status == "") exit 1
     }' || exit 1
 done
-test "$(rg -c '^Persistence contract: (NONE|LOCAL)$' "$DOC")" -eq 1
+test "$(rg -c '^Persistence contract: (NONE|LOCAL|UNRESOLVED)$' "$DOC")" -eq 1
 ```
 
 ### Step 4: Threat-model, decide GO/NO-GO, and stop before code
@@ -652,7 +654,8 @@ GO is impossible while any product policy is unresolved.
       is marked for Vincent.
 - [ ] Persisted-state choices include explicit retention/deletion, schema
       evolution, and corrupt/incompatible recovery; otherwise all three are N/A
-      under `Persistence contract: NONE`.
+      under `Persistence contract: NONE`, or remain explicitly unresolved under
+      a NO-GO `Persistence contract: UNRESOLVED` gate.
 - [ ] The threat model covers identity ambiguity and rollback failure.
 - [ ] The terminal gate is exactly GO or NO-GO; GO has Vincent's explicit
       approval and contains no unresolved decision.
