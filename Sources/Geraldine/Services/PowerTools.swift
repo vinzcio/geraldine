@@ -59,13 +59,13 @@ enum DockMiddleClickBehavior: String, CaseIterable, Identifiable {
     }
 }
 
-enum PowerToolResultStatus: Equatable {
+enum PowerToolResultStatus: Equatable, Sendable {
     case success
     case warning
     case failure
 }
 
-struct PowerToolResult {
+struct PowerToolResult: Equatable, Sendable {
     let message: String
     let status: PowerToolResultStatus
 
@@ -79,6 +79,76 @@ struct PowerToolResult {
 
     static func failure(_ message: String) -> PowerToolResult {
         PowerToolResult(message: message, status: .failure)
+    }
+}
+
+enum PowerToolAction {
+    case hideAllWindows
+    case isolateFrontWindow
+    case minimizeAllWindows
+    case newFinderTextFile(markdown: Bool)
+    case copyFinderPaths
+    case copyFinderSHA256
+    case openFinderTerminal
+    case copyFinderSelectionToFolder
+    case moveFinderSelectionToFolder
+    case clearClipboard
+    case sleepDisplays
+    case ejectDisks
+    case emptyTrash
+}
+
+struct PowerToolsOperationCoordinator {
+    struct Ownership: Equatable, Sendable {
+        let identifier: UUID
+        let actionID: String
+    }
+
+    private(set) var ownership: Ownership?
+    private(set) var latestResult: PowerToolResult?
+    private(set) var latestResultOwnership: Ownership?
+
+    var runningActionID: String? { ownership?.actionID }
+
+    mutating func begin(actionID: String, identifier: UUID = UUID()) -> Ownership? {
+        guard ownership == nil else { return nil }
+        let newOwnership = Ownership(identifier: identifier, actionID: actionID)
+        ownership = newOwnership
+        latestResult = nil
+        latestResultOwnership = nil
+        return newOwnership
+    }
+
+    @discardableResult
+    mutating func finish(_ finishingOwnership: Ownership, result: PowerToolResult) -> Bool {
+        guard ownership == finishingOwnership else { return false }
+        ownership = nil
+        latestResult = result
+        latestResultOwnership = finishingOwnership
+        return true
+    }
+
+    mutating func invalidate() {
+        ownership = nil
+    }
+
+    mutating func clearResult() {
+        latestResult = nil
+        latestResultOwnership = nil
+    }
+
+    func isLatestResult(ownedBy completedOwnership: Ownership) -> Bool {
+        latestResultOwnership == completedOwnership
+    }
+}
+
+enum PowerToolsEffectRunner {
+    static func run<Output: Sendable>(
+        _ effect: @escaping @Sendable () -> Output
+    ) async -> Output {
+        await Task.detached(priority: .userInitiated) {
+            effect()
+        }.value
     }
 }
 
@@ -104,7 +174,8 @@ private enum PowerToolKeys {
 final class PowerToolsController: ObservableObject {
     @Published private(set) var accessibilityTrusted = Permissions.hasAccessibilityAccess()
     @Published private(set) var screenRecordingTrusted = Permissions.hasScreenRecordingAccess()
-    @Published var lastResult: PowerToolResult?
+    @Published private(set) var runningActionID: String?
+    @Published private(set) var lastResult: PowerToolResult?
 
     @Published var dockWindowPreviewsEnabled: Bool {
         didSet {
@@ -168,6 +239,7 @@ final class PowerToolsController: ObservableObject {
     private let missionControlCloseService = MissionControlCloseService()
     private let keyboardService = KeyboardPowerToolsService()
     private let windowService = WindowActionService()
+    private var operationCoordinator = PowerToolsOperationCoordinator()
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -219,58 +291,68 @@ final class PowerToolsController: ObservableObject {
         }
     }
 
-    func hideAllWindows() {
-        WindowActionService.hideAllWindows()
-        lastResult = .success("Hid visible app windows.")
+    func beginAction(actionID: String) -> PowerToolsOperationCoordinator.Ownership? {
+        guard let ownership = operationCoordinator.begin(actionID: actionID) else { return nil }
+        publishOperationState()
+        return ownership
     }
 
-    func isolateFrontWindow() {
-        lastResult = WindowActionService.isolateFrontWindow()
+    @discardableResult
+    func perform(
+        ownership: PowerToolsOperationCoordinator.Ownership,
+        action: PowerToolAction
+    ) async -> Bool {
+        let result = await result(for: action)
+        guard operationCoordinator.finish(ownership, result: result) else { return false }
+        publishOperationState()
+        return true
     }
 
-    func minimizeAllWindows() {
-        WindowActionService.minimizeWindows()
-        lastResult = .success("Minimized visible windows.")
+    func clearResult() {
+        operationCoordinator.clearResult()
+        publishOperationState()
     }
 
-    func newFinderTextFile(markdown: Bool = false) {
-        lastResult = finder.createTextFile(markdown: markdown)
+    func isLatestResult(ownedBy ownership: PowerToolsOperationCoordinator.Ownership) -> Bool {
+        operationCoordinator.isLatestResult(ownedBy: ownership)
     }
 
-    func copyFinderPaths() {
-        lastResult = finder.copySelectedPaths()
+    private func result(for action: PowerToolAction) async -> PowerToolResult {
+        switch action {
+        case .hideAllWindows:
+            WindowActionService.hideAllWindows()
+            return .success("Hid visible app windows.")
+        case .isolateFrontWindow:
+            return WindowActionService.isolateFrontWindow()
+        case .minimizeAllWindows:
+            WindowActionService.minimizeWindows()
+            return .success("Minimized visible windows.")
+        case .newFinderTextFile(let markdown):
+            return await finder.createTextFile(markdown: markdown)
+        case .copyFinderPaths:
+            return finder.copySelectedPaths()
+        case .copyFinderSHA256:
+            return await finder.copyChecksumSHA256()
+        case .openFinderTerminal:
+            return await finder.openTerminalHere()
+        case .copyFinderSelectionToFolder:
+            return await finder.chooseDestinationAndTransfer(copy: true)
+        case .moveFinderSelectionToFolder:
+            return await finder.chooseDestinationAndTransfer(copy: false)
+        case .clearClipboard:
+            return system.clearClipboard()
+        case .sleepDisplays:
+            return await system.sleepDisplays()
+        case .ejectDisks:
+            return await system.ejectAllDisks()
+        case .emptyTrash:
+            return await system.emptyTrash()
+        }
     }
 
-    func copyFinderSHA256() {
-        lastResult = finder.copyChecksumSHA256()
-    }
-
-    func openFinderTerminal() {
-        lastResult = finder.openTerminalHere()
-    }
-
-    func copyFinderSelectionToFolder() {
-        lastResult = finder.chooseDestinationAndTransfer(copy: true)
-    }
-
-    func moveFinderSelectionToFolder() {
-        lastResult = finder.chooseDestinationAndTransfer(copy: false)
-    }
-
-    func clearClipboard() {
-        lastResult = system.clearClipboard()
-    }
-
-    func sleepDisplays() {
-        lastResult = system.sleepDisplays()
-    }
-
-    func ejectDisks() {
-        lastResult = system.ejectAllDisks()
-    }
-
-    func emptyTrash() {
-        lastResult = system.emptyTrash()
+    private func publishOperationState() {
+        runningActionID = operationCoordinator.runningActionID
+        lastResult = operationCoordinator.latestResult
     }
 
     private func applyHooks() {
@@ -596,37 +678,13 @@ private struct DockTarget {
     let app: NSRunningApplication
 
     static func target(at point: CGPoint) -> DockTarget? {
-        guard let element = AXTools.element(at: point),
-              let app = AXTools.runningApplication(for: element),
-              app.bundleIdentifier == "com.apple.dock" else {
-            return nil
-        }
-
-        let title = AXTools.string(element, kAXTitleAttribute) ??
-            AXTools.string(element, kAXDescriptionAttribute) ??
-            AXTools.string(element, kAXHelpAttribute)
-        guard let title, !title.isEmpty else { return nil }
-
-        if title == "Finder",
-           let finder = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.finder").first {
-            return DockTarget(app: finder)
-        }
-
-        let cleanedTitle = title
-            .replacingOccurrences(of: "\n", with: " ")
-            .replacingOccurrences(of: "  ", with: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-
-        guard let target = NSWorkspace.shared.runningApplications.first(where: { running in
-            guard running.activationPolicy == .regular || running.bundleIdentifier == "com.apple.finder" else { return false }
-            if running.localizedName == cleanedTitle { return true }
-            if running.bundleURL?.deletingPathExtension().lastPathComponent == cleanedTitle { return true }
-            return false
-        }) else {
-            return nil
-        }
-
-        return DockTarget(app: target)
+        guard let dockProcessIdentifier = DockWindowPreviewAccessibility.dockProcessIdentifier(),
+              let target = DockWindowPreviewAccessibility.target(
+                  at: point,
+                  dockProcessIdentifier: dockProcessIdentifier,
+                  candidates: DockWindowPreviewAccessibility.applicationCandidates()
+              ) else { return nil }
+        return DockTarget(app: target.app)
     }
 }
 
@@ -669,13 +727,230 @@ final class TrafficLightButtonService {
     }
 }
 
-final class KeyboardPowerToolsService {
+// MARK: - Keyboard Power Tools Reducer
+
+enum KeyboardPowerToolsKeyCode {
+    static let q: Int64 = 12
+    static let w: Int64 = 13
+    static let x: Int64 = 7
+    static let v: Int64 = 9
+    static let n: Int64 = 45
+    static let returnKey: Int64 = 36
+    static let delete: Int64 = 51
+}
+
+struct KeyboardPowerToolsModifiers: OptionSet, Equatable, Sendable {
+    let rawValue: UInt8
+
+    static let command = KeyboardPowerToolsModifiers(rawValue: 1 << 0)
+    static let shift = KeyboardPowerToolsModifiers(rawValue: 1 << 1)
+    static let control = KeyboardPowerToolsModifiers(rawValue: 1 << 2)
+    static let option = KeyboardPowerToolsModifiers(rawValue: 1 << 3)
+}
+
+struct KeyboardPowerToolsPreferences: Equatable, Sendable {
+    let commandQDoubleTap: Bool
+    let commandWDoubleTap: Bool
+    let finderReturnOpens: Bool
+    let finderCutPaste: Bool
+    let finderOptionNNewFile: Bool
+    let finderBackspaceMovesToTrash: Bool
+}
+
+struct KeyboardPowerToolsInput: Equatable, Sendable {
+    let keyCode: Int64
+    let modifiers: KeyboardPowerToolsModifiers
+    let isAutorepeat: Bool
+    let timestamp: TimeInterval
+    let frontmostProcessIdentifier: pid_t?
+    let frontmostBundleIdentifier: String?
+    let finderCanHandleFileShortcut: Bool
+    let hasFinderCutSession: Bool
+}
+
+enum KeyboardPowerToolsEffect: Equatable, Sendable {
+    case beep
+    case openFinderSelection
+    case createTextFile
+    case moveFinderSelectionToTrash
+    case prepareCut
+    case pasteCut
+}
+
+enum KeyboardPowerToolsFileEffect: Equatable, Sendable {
+    case createTextFile
+    case moveFinderSelectionToTrash
+    case prepareCut
+    case pasteCut
+}
+
+struct KeyboardPowerToolsFileEffectCoordinator {
+    struct Ownership: Equatable, Sendable {
+        let identifier: UUID
+        let effect: KeyboardPowerToolsFileEffect
+    }
+
+    private(set) var ownership: Ownership?
+    private var queuedOwnerships: [Ownership] = []
+
+    var queuedEffects: [KeyboardPowerToolsFileEffect] {
+        queuedOwnerships.map(\.effect)
+    }
+
+    mutating func enqueue(
+        _ effect: KeyboardPowerToolsFileEffect,
+        identifier: UUID = UUID()
+    ) -> Ownership {
+        let newOwnership = Ownership(identifier: identifier, effect: effect)
+        if ownership == nil {
+            ownership = newOwnership
+        } else {
+            queuedOwnerships.append(newOwnership)
+        }
+        return newOwnership
+    }
+
+    func isActive(_ candidate: Ownership) -> Bool {
+        ownership == candidate
+    }
+
+    mutating func complete(_ completedOwnership: Ownership) -> Ownership? {
+        guard ownership == completedOwnership else { return nil }
+        guard !queuedOwnerships.isEmpty else {
+            ownership = nil
+            return nil
+        }
+        let nextOwnership = queuedOwnerships.removeFirst()
+        ownership = nextOwnership
+        return nextOwnership
+    }
+
+    mutating func invalidate() {
+        ownership = nil
+        queuedOwnerships.removeAll()
+    }
+}
+
+struct KeyboardPowerToolsDecision: Equatable, Sendable {
+    let suppress: Bool
+    let effect: KeyboardPowerToolsEffect?
+
+    static let pass = KeyboardPowerToolsDecision(suppress: false, effect: nil)
+
+    static func suppressing(_ effect: KeyboardPowerToolsEffect? = nil) -> Self {
+        KeyboardPowerToolsDecision(suppress: true, effect: effect)
+    }
+}
+
+struct KeyboardPowerToolsReducer {
     private struct SafetyPressKey: Hashable {
         let processIdentifier: pid_t
         let keyCode: Int64
     }
 
-    private var lastSafetyPress: [SafetyPressKey: Date] = [:]
+    private var pendingSafetyPresses: [SafetyPressKey: TimeInterval] = [:]
+
+    var pendingSafetyPressCount: Int { pendingSafetyPresses.count }
+
+    mutating func reduce(
+        input: KeyboardPowerToolsInput,
+        preferences: KeyboardPowerToolsPreferences
+    ) -> KeyboardPowerToolsDecision {
+        if input.modifiers == .command {
+            if input.keyCode == KeyboardPowerToolsKeyCode.q, preferences.commandQDoubleTap {
+                return safetyDecision(for: input)
+            }
+            if input.keyCode == KeyboardPowerToolsKeyCode.w, preferences.commandWDoubleTap {
+                return safetyDecision(for: input)
+            }
+        }
+
+        guard input.frontmostBundleIdentifier == "com.apple.finder",
+              input.finderCanHandleFileShortcut else {
+            return .pass
+        }
+
+        if input.keyCode == KeyboardPowerToolsKeyCode.returnKey,
+           input.modifiers.isEmpty,
+           preferences.finderReturnOpens {
+            return handledDecision(effect: .openFinderSelection, isAutorepeat: input.isAutorepeat)
+        }
+
+        if input.keyCode == KeyboardPowerToolsKeyCode.n,
+           input.modifiers == .option,
+           preferences.finderOptionNNewFile {
+            return handledDecision(effect: .createTextFile, isAutorepeat: input.isAutorepeat)
+        }
+
+        if input.keyCode == KeyboardPowerToolsKeyCode.delete,
+           input.modifiers.isEmpty,
+           preferences.finderBackspaceMovesToTrash {
+            return handledDecision(effect: .moveFinderSelectionToTrash, isAutorepeat: input.isAutorepeat)
+        }
+
+        if input.modifiers == .command, preferences.finderCutPaste {
+            if input.keyCode == KeyboardPowerToolsKeyCode.x {
+                return handledDecision(effect: .prepareCut, isAutorepeat: input.isAutorepeat)
+            }
+            if input.keyCode == KeyboardPowerToolsKeyCode.v, input.hasFinderCutSession {
+                return handledDecision(effect: .pasteCut, isAutorepeat: input.isAutorepeat)
+            }
+        }
+
+        return .pass
+    }
+
+    mutating func reset() {
+        pendingSafetyPresses.removeAll()
+    }
+
+    private mutating func safetyDecision(
+        for input: KeyboardPowerToolsInput
+    ) -> KeyboardPowerToolsDecision {
+        guard !input.isAutorepeat else { return .suppressing() }
+
+        let safetyKey = SafetyPressKey(
+            processIdentifier: input.frontmostProcessIdentifier ?? 0,
+            keyCode: input.keyCode
+        )
+        pendingSafetyPresses = pendingSafetyPresses.filter {
+            input.timestamp - $0.value < 2
+        }
+        let previous = pendingSafetyPresses[safetyKey]
+        pendingSafetyPresses[safetyKey] = input.timestamp
+        if let previous, input.timestamp - previous < 1.15 {
+            pendingSafetyPresses[safetyKey] = nil
+            return .pass
+        }
+        return .suppressing(.beep)
+    }
+
+    private func handledDecision(
+        effect: KeyboardPowerToolsEffect,
+        isAutorepeat: Bool
+    ) -> KeyboardPowerToolsDecision {
+        .suppressing(isAutorepeat ? nil : effect)
+    }
+}
+
+// MARK: - Keyboard Power Tools Service
+
+extension KeyboardPowerToolsModifiers {
+    static func normalized(from flags: CGEventFlags) -> Self {
+        var modifiers: Self = []
+        if flags.contains(.maskCommand) { modifiers.insert(.command) }
+        if flags.contains(.maskShift) { modifiers.insert(.shift) }
+        if flags.contains(.maskControl) { modifiers.insert(.control) }
+        if flags.contains(.maskAlternate) { modifiers.insert(.option) }
+        return modifiers
+    }
+}
+
+final class KeyboardPowerToolsService {
+    @MainActor
+    private static var fileEffectCoordinator = KeyboardPowerToolsFileEffectCoordinator()
+
+    private var reducer = KeyboardPowerToolsReducer()
 
     private lazy var tap = EventTapService(
         mask: CGEventMask(1 << CGEventType.keyDown.rawValue)
@@ -687,119 +962,115 @@ final class KeyboardPowerToolsService {
 
     func stop() {
         tap.stop()
-        lastSafetyPress.removeAll()
+        reducer.reset()
     }
 
     private func handle(event: CGEvent) -> Bool {
         let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
-        let flags = event.flags
+        let modifiers = KeyboardPowerToolsModifiers.normalized(from: event.flags)
         let defaults = UserDefaults.standard
         let isAutorepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
-
-        if flags.contains(.maskCommand), !flags.contains(.maskShift), !flags.contains(.maskControl), !flags.contains(.maskAlternate) {
-            if keyCode == KeyCode.q, defaults.bool(forKey: PowerToolKeys.commandQDoubleTap) {
-                if isAutorepeat { return true }
-                return blockFirstTap(keyCode: keyCode, app: NSWorkspace.shared.frontmostApplication)
-            }
-            if keyCode == KeyCode.w, defaults.bool(forKey: PowerToolKeys.commandWDoubleTap) {
-                if isAutorepeat { return true }
-                return blockFirstTap(keyCode: keyCode, app: NSWorkspace.shared.frontmostApplication)
-            }
+        let preferences = KeyboardPowerToolsPreferences(
+            commandQDoubleTap: defaults.bool(forKey: PowerToolKeys.commandQDoubleTap),
+            commandWDoubleTap: defaults.bool(forKey: PowerToolKeys.commandWDoubleTap),
+            finderReturnOpens: defaults.bool(forKey: PowerToolKeys.finderReturnOpens),
+            finderCutPaste: defaults.bool(forKey: PowerToolKeys.finderCutPaste),
+            finderOptionNNewFile: defaults.bool(forKey: PowerToolKeys.finderOptionNNewFile),
+            finderBackspaceMovesToTrash: defaults.bool(forKey: PowerToolKeys.finderBackspaceMovesToTrash)
+        )
+        let frontmostApp = NSWorkspace.shared.frontmostApplication
+        let isProtectedSafetyShortcut = modifiers == .command && (
+            (keyCode == KeyboardPowerToolsKeyCode.q && preferences.commandQDoubleTap) ||
+            (keyCode == KeyboardPowerToolsKeyCode.w && preferences.commandWDoubleTap)
+        )
+        let finderCanHandleFileShortcut: Bool
+        if !isProtectedSafetyShortcut,
+           let frontmostApp,
+           frontmostApp.bundleIdentifier == "com.apple.finder" {
+            finderCanHandleFileShortcut = AXTools.canHandleFinderFileShortcut(in: frontmostApp)
+        } else {
+            finderCanHandleFileShortcut = false
         }
 
-        guard let frontmostApp = NSWorkspace.shared.frontmostApplication,
-              frontmostApp.bundleIdentifier == "com.apple.finder",
-              AXTools.canHandleFinderFileShortcut(in: frontmostApp) else {
-            return false
+        let input = KeyboardPowerToolsInput(
+            keyCode: keyCode,
+            modifiers: modifiers,
+            isAutorepeat: isAutorepeat,
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            frontmostProcessIdentifier: frontmostApp?.processIdentifier,
+            frontmostBundleIdentifier: frontmostApp?.bundleIdentifier,
+            finderCanHandleFileShortcut: finderCanHandleFileShortcut,
+            hasFinderCutSession: FinderPowerToolsService.shared.hasCutSession
+        )
+        let decision = reducer.reduce(input: input, preferences: preferences)
+        if let effect = decision.effect {
+            dispatch(effect)
         }
-
-        if keyCode == KeyCode.returnKey,
-           flags.intersection([.maskCommand, .maskShift, .maskControl, .maskAlternate]).isEmpty,
-           defaults.bool(forKey: PowerToolKeys.finderReturnOpens) {
-            if isAutorepeat { return true }
-            DispatchQueue.main.async {
-                _ = FinderPowerToolsService.openFinderSelection()
-            }
-            return true
-        }
-
-        if flags.contains(.maskAlternate),
-           !flags.contains(.maskCommand),
-           !flags.contains(.maskShift),
-           !flags.contains(.maskControl),
-           keyCode == KeyCode.n,
-           defaults.bool(forKey: PowerToolKeys.finderOptionNNewFile) {
-            if isAutorepeat { return true }
-            DispatchQueue.main.async {
-                _ = FinderPowerToolsService().createTextFile(markdown: false)
-            }
-            return true
-        }
-
-        if Self.isFinderTrashShortcut(keyCode: keyCode, flags: flags),
-           defaults.bool(forKey: PowerToolKeys.finderBackspaceMovesToTrash) {
-            if isAutorepeat { return true }
-            DispatchQueue.main.async {
-                _ = FinderPowerToolsService.moveFinderSelectionToTrash()
-            }
-            return true
-        }
-
-        if flags.contains(.maskCommand),
-           !flags.contains(.maskShift),
-           !flags.contains(.maskControl),
-           !flags.contains(.maskAlternate),
-           defaults.bool(forKey: PowerToolKeys.finderCutPaste) {
-            if keyCode == KeyCode.x {
-                if isAutorepeat { return true }
-                DispatchQueue.main.async {
-                    _ = FinderPowerToolsService.shared.prepareCut()
-                }
-                return true
-            }
-            if keyCode == KeyCode.v, FinderPowerToolsService.shared.hasCutSession {
-                if isAutorepeat { return true }
-                DispatchQueue.main.async {
-                    _ = FinderPowerToolsService.shared.pasteCut()
-                }
-                return true
-            }
-        }
-
-        return false
+        return decision.suppress
     }
 
     static func isFinderTrashShortcut(keyCode: Int64, flags: CGEventFlags) -> Bool {
-        keyCode == KeyCode.delete &&
-            flags.intersection([.maskCommand, .maskShift, .maskControl, .maskAlternate]).isEmpty
+        keyCode == KeyboardPowerToolsKeyCode.delete &&
+            KeyboardPowerToolsModifiers.normalized(from: flags).isEmpty
     }
 
-    private func blockFirstTap(keyCode: Int64, app: NSRunningApplication?) -> Bool {
-        let appPID = app?.processIdentifier ?? 0
-        let safetyKey = SafetyPressKey(processIdentifier: appPID, keyCode: keyCode)
-        let now = Date()
-        lastSafetyPress = lastSafetyPress.filter { now.timeIntervalSince($0.value) < 2 }
-        let previous = lastSafetyPress[safetyKey]
-        lastSafetyPress[safetyKey] = now
-        if let previous, now.timeIntervalSince(previous) < 1.15 {
-            lastSafetyPress[safetyKey] = nil
-            return false
+    private func dispatch(_ effect: KeyboardPowerToolsEffect) {
+        switch effect {
+        case .beep:
+            Task { @MainActor in
+                NSSound.beep()
+            }
+        case .openFinderSelection:
+            Task { @MainActor in
+                _ = FinderPowerToolsService.openFinderSelection()
+            }
+        case .createTextFile:
+            dispatch(KeyboardPowerToolsFileEffect.createTextFile)
+        case .moveFinderSelectionToTrash:
+            dispatch(KeyboardPowerToolsFileEffect.moveFinderSelectionToTrash)
+        case .prepareCut:
+            dispatch(KeyboardPowerToolsFileEffect.prepareCut)
+        case .pasteCut:
+            dispatch(KeyboardPowerToolsFileEffect.pasteCut)
         }
+    }
+
+    private func dispatch(_ effect: KeyboardPowerToolsFileEffect) {
         DispatchQueue.main.async {
-            NSSound.beep()
+            Self.enqueueFileEffect(effect)
         }
-        return true
     }
-}
 
-private enum KeyCode {
-    static let q: Int64 = 12
-    static let w: Int64 = 13
-    static let x: Int64 = 7
-    static let v: Int64 = 9
-    static let n: Int64 = 45
-    static let returnKey: Int64 = 36
-    static let delete: Int64 = 51
+    @MainActor
+    private static func enqueueFileEffect(_ effect: KeyboardPowerToolsFileEffect) {
+        let ownership = fileEffectCoordinator.enqueue(effect)
+        guard fileEffectCoordinator.isActive(ownership) else { return }
+        Task { @MainActor in
+            await drainFileEffects(startingWith: ownership)
+        }
+    }
+
+    @MainActor
+    private static func drainFileEffects(
+        startingWith initialOwnership: KeyboardPowerToolsFileEffectCoordinator.Ownership
+    ) async {
+        var ownership = initialOwnership
+        while true {
+            switch ownership.effect {
+            case .createTextFile:
+                _ = await FinderPowerToolsService().createTextFile(markdown: false)
+            case .moveFinderSelectionToTrash:
+                _ = await FinderPowerToolsService.moveFinderSelectionToTrash()
+            case .prepareCut:
+                _ = FinderPowerToolsService.shared.prepareCut()
+            case .pasteCut:
+                _ = await FinderPowerToolsService.shared.pasteCut()
+            }
+
+            guard let nextOwnership = fileEffectCoordinator.complete(ownership) else { return }
+            ownership = nextOwnership
+        }
+    }
 }
 
 final class WindowActionService {
@@ -923,7 +1194,7 @@ final class WindowActionService {
             app.activate(options: [])
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
-            KeyboardPoster.post(keyCode: KeyCode.n, flags: .maskCommand)
+            KeyboardPoster.post(keyCode: KeyboardPowerToolsKeyCode.n, flags: .maskCommand)
         }
     }
 
@@ -946,27 +1217,50 @@ final class WindowActionService {
 }
 
 final class FinderPowerToolsService {
+    private struct FileCreationOutput: Sendable {
+        let result: PowerToolResult
+        let createdURL: URL?
+    }
+
+    private struct PasteboardEffectOutput: Sendable {
+        let result: PowerToolResult
+        let text: String?
+    }
+
     static let shared = FinderPowerToolsService()
     private(set) var cutItems: [URL] = []
 
     var hasCutSession: Bool { !cutItems.isEmpty }
 
-    func createTextFile(markdown: Bool) -> PowerToolResult {
+    @MainActor
+    func createTextFile(markdown: Bool) async -> PowerToolResult {
         guard let directory = Self.frontFinderDirectory() else {
             return .failure("Could not find the current Finder folder.")
         }
         let ext = markdown ? "md" : "txt"
-        let url = Self.uniqueFileURL(in: directory, base: "Untitled", ext: ext)
         let contents = markdown ? "# Untitled\n" : ""
-        do {
-            try contents.write(to: url, atomically: true, encoding: .utf8)
-            NSWorkspace.shared.activateFileViewerSelecting([url])
-            return .success("Created \(url.lastPathComponent).")
-        } catch {
-            return .failure("Could not create file: \(error.localizedDescription)")
+        let output = await PowerToolsEffectRunner.run {
+            let url = Self.uniqueFileURL(in: directory, base: "Untitled", ext: ext)
+            do {
+                try contents.write(to: url, atomically: true, encoding: .utf8)
+                return FileCreationOutput(
+                    result: .success("Created \(url.lastPathComponent)."),
+                    createdURL: url
+                )
+            } catch {
+                return FileCreationOutput(
+                    result: .failure("Could not create file: \(error.localizedDescription)"),
+                    createdURL: nil
+                )
+            }
         }
+        if let url = output.createdURL {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        }
+        return output.result
     }
 
+    @MainActor
     func copySelectedPaths() -> PowerToolResult {
         let urls = Self.selectedFileURLs()
         guard !urls.isEmpty else { return .warning("No Finder selection.") }
@@ -975,32 +1269,50 @@ final class FinderPowerToolsService {
         return .success("Copied \(urls.count) path\(urls.count == 1 ? "" : "s").")
     }
 
-    func copyChecksumSHA256() -> PowerToolResult {
+    @MainActor
+    func copyChecksumSHA256() async -> PowerToolResult {
         let urls = Self.selectedFileURLs().filter { !$0.hasDirectoryPath }
         guard !urls.isEmpty else { return .warning("Select one or more files in Finder.") }
 
-        var lines: [String] = []
-        for url in urls {
-            let result = Shell.run("/usr/bin/shasum", ["-a", "256", url.path])
-            guard result.status == 0 else {
-                return .failure("Checksum failed for \(url.lastPathComponent).")
+        let output = await PowerToolsEffectRunner.run {
+            var lines: [String] = []
+            for url in urls {
+                let result = Shell.run("/usr/bin/shasum", ["-a", "256", url.path])
+                guard result.status == 0 else {
+                    return PasteboardEffectOutput(
+                        result: .failure("Checksum failed for \(url.lastPathComponent)."),
+                        text: nil
+                    )
+                }
+                lines.append(result.output.trimmingCharacters(in: .whitespacesAndNewlines))
             }
-            lines.append(result.output.trimmingCharacters(in: .whitespacesAndNewlines))
+            return PasteboardEffectOutput(
+                result: .success("Copied SHA-256 for \(urls.count) file\(urls.count == 1 ? "" : "s")."),
+                text: lines.joined(separator: "\n")
+            )
         }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(lines.joined(separator: "\n"), forType: .string)
-        return .success("Copied SHA-256 for \(urls.count) file\(urls.count == 1 ? "" : "s").")
+        if let text = output.text {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+        }
+        return output.result
     }
 
-    func openTerminalHere() -> PowerToolResult {
+    @MainActor
+    func openTerminalHere() async -> PowerToolResult {
         guard let directory = Self.frontFinderDirectory() else {
             return .failure("Could not find the current Finder folder.")
         }
-        let status = Shell.run("/usr/bin/open", ["-a", "Terminal", directory.path]).status
-        return status == 0 ? .success("Opened Terminal in \(directory.lastPathComponent).") : .failure("Could not open Terminal.")
+        return await PowerToolsEffectRunner.run {
+            let status = Shell.run("/usr/bin/open", ["-a", "Terminal", directory.path]).status
+            return status == 0
+                ? PowerToolResult.success("Opened Terminal in \(directory.lastPathComponent).")
+                : PowerToolResult.failure("Could not open Terminal.")
+        }
     }
 
-    func chooseDestinationAndTransfer(copy: Bool) -> PowerToolResult {
+    @MainActor
+    func chooseDestinationAndTransfer(copy: Bool) async -> PowerToolResult {
         let urls = Self.selectedFileURLs()
         guard !urls.isEmpty else { return .warning("No Finder selection.") }
 
@@ -1014,9 +1326,12 @@ final class FinderPowerToolsService {
             return .warning("Transfer cancelled.")
         }
 
-        return Self.transfer(urls, to: destination, copy: copy)
+        return await PowerToolsEffectRunner.run {
+            Self.transfer(urls, to: destination, copy: copy)
+        }
     }
 
+    @MainActor
     func prepareCut() -> PowerToolResult {
         let urls = Self.selectedFileURLs()
         guard !urls.isEmpty else { return .warning("No Finder selection.") }
@@ -1026,16 +1341,21 @@ final class FinderPowerToolsService {
         return .success("Cut \(urls.count) item\(urls.count == 1 ? "" : "s").")
     }
 
-    func pasteCut() -> PowerToolResult {
+    @MainActor
+    func pasteCut() async -> PowerToolResult {
         guard !cutItems.isEmpty else { return .warning("Nothing to paste.") }
         guard let directory = Self.frontFinderDirectory() else {
             return .failure("Could not find the current Finder folder.")
         }
-        let message = Self.transfer(cutItems, to: directory, copy: false)
+        let items = cutItems
+        let message = await PowerToolsEffectRunner.run {
+            Self.transfer(items, to: directory, copy: false)
+        }
         cutItems.removeAll()
         return message
     }
 
+    @MainActor
     static func openFinderSelection() -> PowerToolResult {
         let script = """
         tell application "Finder"
@@ -1052,8 +1372,12 @@ final class FinderPowerToolsService {
         return .failure("Could not open Finder selection: \(shortErrorText(result.output))")
     }
 
-    static func moveFinderSelectionToTrash() -> PowerToolResult {
-        moveToTrash(selectedFileURLs())
+    @MainActor
+    static func moveFinderSelectionToTrash() async -> PowerToolResult {
+        let urls = selectedFileURLs()
+        return await PowerToolsEffectRunner.run {
+            moveToTrash(urls)
+        }
     }
 
     static func moveToTrash(
@@ -1073,6 +1397,7 @@ final class FinderPowerToolsService {
         return result.trashed > 0 ? .warning(summary) : .failure(summary)
     }
 
+    @MainActor
     private static func selectedFileURLs() -> [URL] {
         let script = """
         tell application "Finder"
@@ -1101,6 +1426,7 @@ final class FinderPowerToolsService {
         }
     }
 
+    @MainActor
     private static func frontFinderDirectory() -> URL? {
         let script = """
         tell application "Finder"
@@ -1166,81 +1492,87 @@ final class FinderPowerToolsService {
     }
 }
 
+private struct PowerToolsTrashRootResolver: TrashRootResolving {
+    let root: URL
+
+    func trashRoots() -> [URL] { [root] }
+}
+
 final class SystemPowerToolsService {
+    @MainActor
     func clearClipboard() -> PowerToolResult {
         NSPasteboard.general.clearContents()
         return .success("Cleared the clipboard.")
     }
 
-    func sleepDisplays() -> PowerToolResult {
-        let result = Shell.run("/usr/bin/pmset", ["displaysleepnow"])
-        return result.status == 0 ? .success("Put displays to sleep.") : .failure("Could not sleep displays: \(shortErrorText(result.output))")
+    @MainActor
+    func sleepDisplays() async -> PowerToolResult {
+        await PowerToolsEffectRunner.run {
+            let result = Shell.run("/usr/bin/pmset", ["displaysleepnow"])
+            return result.status == 0
+                ? PowerToolResult.success("Put displays to sleep.")
+                : PowerToolResult.failure("Could not sleep displays: \(shortErrorText(result.output))")
+        }
     }
 
-    func ejectAllDisks() -> PowerToolResult {
-        let keys: [URLResourceKey] = [.volumeIsRemovableKey, .volumeIsEjectableKey, .volumeNameKey]
-        let urls = FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: keys,
-                                                         options: [.skipHiddenVolumes]) ?? []
-        var ejected = 0
-        var failed = 0
-        for url in urls {
-            let values = try? url.resourceValues(forKeys: Set(keys))
-            guard values?.volumeIsEjectable == true || values?.volumeIsRemovable == true else { continue }
-            let result = Shell.run("/usr/sbin/diskutil", ["eject", url.path])
-            if result.status == 0 { ejected += 1 } else { failed += 1 }
-        }
-        if ejected == 0 && failed == 0 { return .warning("No ejectable disks found.") }
-        return failed == 0 ? .success("Ejected \(ejected) disk\(ejected == 1 ? "" : "s").") : .warning("Ejected \(ejected); \(failed) failed.")
-    }
-
-    func emptyTrash() -> PowerToolResult {
-        let trash = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".Trash")
-        let contents: [URL]
-        do {
-            contents = try FileManager.default.contentsOfDirectory(at: trash,
-                                                                   includingPropertiesForKeys: nil,
-                                                                   options: [])
-        } catch {
-            return .failure("Could not read the Trash: \(error.localizedDescription)")
-        }
-        guard !contents.isEmpty else { return .warning("Trash is already empty.") }
-
-        var removed = 0
-        var failures: [(name: String, error: String)] = []
-        for url in contents {
-            do {
-                try FileManager.default.removeItem(at: url)
-                removed += 1
-            } catch {
-                if Self.destroyWithWorkspace(url) {
-                    removed += 1
-                } else {
-                    failures.append((url.lastPathComponent, error.localizedDescription))
-                }
+    @MainActor
+    func ejectAllDisks() async -> PowerToolResult {
+        await PowerToolsEffectRunner.run {
+            let keys: [URLResourceKey] = [.volumeIsRemovableKey, .volumeIsEjectableKey, .volumeNameKey]
+            let urls = FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: keys,
+                                                             options: [.skipHiddenVolumes]) ?? []
+            var ejected = 0
+            var failed = 0
+            for url in urls {
+                let values = try? url.resourceValues(forKeys: Set(keys))
+                guard values?.volumeIsEjectable == true || values?.volumeIsRemovable == true else { continue }
+                let result = Shell.run("/usr/sbin/diskutil", ["eject", url.path])
+                if result.status == 0 { ejected += 1 } else { failed += 1 }
             }
+            if ejected == 0 && failed == 0 {
+                return PowerToolResult.warning("No ejectable disks found.")
+            }
+            return failed == 0
+                ? PowerToolResult.success("Ejected \(ejected) disk\(ejected == 1 ? "" : "s").")
+                : PowerToolResult.warning("Ejected \(ejected); \(failed) failed.")
         }
-        if failures.isEmpty {
-            return .success("Emptied \(removed) Trash item\(removed == 1 ? "" : "s").")
-        }
-
-        let failed = failures.count
-        let first = failures[0]
-        let message = "Could not empty \(failed) Trash item\(failed == 1 ? "" : "s")" +
-            " (\(first.name): \(first.error))."
-        if removed > 0 {
-            return .warning("Emptied \(removed); \(message)")
-        }
-        return .failure(message)
     }
 
-    private static func destroyWithWorkspace(_ url: URL) -> Bool {
-        var tag = 0
-        let parent = url.deletingLastPathComponent()
-        return NSWorkspace.shared.performFileOperation(.destroyOperation,
-                                                       source: parent.path,
-                                                       destination: "",
-                                                       files: [url.lastPathComponent],
-                                                       tag: &tag)
+    @MainActor
+    func emptyTrash() async -> PowerToolResult {
+        let trash = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".Trash")
+        return await PowerToolsEffectRunner.run {
+            let contents: [URL]
+            do {
+                contents = try FileManager.default.contentsOfDirectory(at: trash,
+                                                                       includingPropertiesForKeys: nil,
+                                                                       options: [])
+            } catch {
+                return PowerToolResult.failure("Could not read the Trash: \(error.localizedDescription)")
+            }
+            guard !contents.isEmpty else {
+                return PowerToolResult.warning("Trash is already empty.")
+            }
+
+            let result = TrashService.clean(
+                contents.map { ScanItem(url: $0, size: 0) },
+                rootResolver: PowerToolsTrashRootResolver(root: trash)
+            )
+            if result.failures.isEmpty {
+                return PowerToolResult.success(
+                    "Emptied \(result.removed) Trash item\(result.removed == 1 ? "" : "s")."
+                )
+            }
+
+            let failed = result.failures.count
+            let first = result.failures[0]
+            let message = "Could not empty \(failed) Trash item\(failed == 1 ? "" : "s")" +
+                " (\(first.url.lastPathComponent): \(first.message))."
+            if result.removed > 0 {
+                return PowerToolResult.warning("Emptied \(result.removed); \(message)")
+            }
+            return PowerToolResult.failure(message)
+        }
     }
 }
 

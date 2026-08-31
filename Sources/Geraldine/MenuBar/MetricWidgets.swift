@@ -1208,6 +1208,10 @@ struct MetricWidget: View {
         .help(Fmt.rate(value, unit: networkRateUnit))
     }
 
+    private var speedTestDisclosureText: String {
+        NetworkSpeedTestDisclosure.current.text
+    }
+
     @ViewBuilder private var speedControl: some View {
         WorkflowPhaseHost(phase: speedPhaseKey) {
             Group {
@@ -1221,6 +1225,8 @@ struct MetricWidget: View {
                             Label("Test Speed", systemImage: "gauge.with.dots.needle.67percent")
                         }
                         .buttonStyle(.quiet(Theme.accent, compact: true))
+                        .help(speedTestDisclosureText)
+                        .accessibilityHint(speedTestDisclosureText)
                     case .running(let phase):
                         HStack(spacing: 6) {
                             ProgressView().controlSize(.mini)
@@ -1245,12 +1251,15 @@ struct MetricWidget: View {
                             }
                         }
                         .buttonStyle(.quiet(Theme.accent, compact: true))
-                        .help("Run the speed test again")
+                        .help(speedTestDisclosureText)
+                        .accessibilityHint(speedTestDisclosureText)
                     case .failed:
                         Button { network.runSpeedTest() } label: {
                             Label("Retry Test", systemImage: "exclamationmark.arrow.circlepath")
                         }
                         .buttonStyle(.quiet(Theme.accent, compact: true))
+                        .help(speedTestDisclosureText)
+                        .accessibilityHint(speedTestDisclosureText)
                     }
                 }
             }

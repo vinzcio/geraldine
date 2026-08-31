@@ -1,272 +1,352 @@
 # Plan 005: Extract the global keyboard policy into a reducer
 
-> **Executor instructions**: Complete Plan 004 first. Follow each step and
-> verify exact pass/suppress behavior; a global event-tap regression can affect
-> every app. Stop on any STOP condition and update Plan 005's README row when
-> complete unless a reviewer owns the index.
+> **Executor instructions**: Execute serially after Plan 004 is integrated and
+> its focused tests pass. Preserve every pass/suppress/effect decision exactly;
+> a global event-tap regression affects every app. The dispatcher owns
+> `plans/README.md`, the checkout/worktree, commits, and integration.
 >
-> **Drift check (run first)**:
-> `git diff --stat c8aeca4 -- Sources/Geraldine/Services/PowerTools.swift Tests/GeraldineTests/KeyboardPowerToolsReducerTests.swift`
-> Planned changes from Plans 003 and 004 are expected. Reconcile them, but stop
-> if `KeyboardPowerToolsService.handle` semantics changed independently.
+> **Current handoff**: refreshed in the source-only export
+> `/private/tmp/geraldine-power-tools-lane-01a05441`. It has no `.git`, so source
+> and tests may be implemented and statically reviewed there, but the Git/build
+> gates below remain mandatory for the integration owner and must not be
+> reported as run from the export.
 
 ## Status
 
 - **Priority**: P2
 - **Effort**: M
-- **Risk**: LOW
-- **Depends on**: `plans/004-async-power-tools-effects.md`
-- **Category**: tests, tech-debt
-- **Planned at**: commit `c8aeca4`, 2026-07-15
+- **Risk**: MED (global suppression policy)
+- **Depends on**: completed `plans/004-async-power-tools-effects.md`
+- **Also preserves**: Plan 007 Dock targeting in the same source file and Plan
+  001's Finder Backspace-to-Trash boundary
+- **Category**: correctness, tests, maintainability
+- **Prepared from**: repository commit `cd1d60403c1221a8be104c4c11567b40ad816062`
+  plus the post-Plan-007 source fingerprint documented in Plan 004,
+  2026-08-31
 
 ## Why this matters
 
-The event tap suppresses a global key whenever its callback returns true.
-Today modifier checks, UserDefaults reads, frontmost-app/focus checks,
-double-tap timing, mutable history, beeps, and Finder side effects are
-interleaved in one untested method. Extracting a deterministic reducer makes
-every pass/suppress decision table-testable while leaving `CGEvent`, AppKit,
-and Finder execution in a thin adapter.
+The event tap suppresses a global key whenever its callback returns `true`.
+The current handler interleaves raw flags, defaults, frontmost/focus checks,
+wall-clock state, beeps, and Finder effects. A pure reducer makes that policy
+deterministic while leaving `CGEvent`, AppKit, Accessibility, and async Finder
+execution in a thin adapter.
 
-## Current state
+## Verified current decision contract
 
-- `EventTapService.callback` returns `nil` when the handler says to suppress the
-  event (`PowerTools.swift:288-300`).
-- `KeyboardPowerToolsService.handle` handles Command-Q/W safety, Finder Return,
-  Option-N, and Command-X/V (`PowerTools.swift:480-548`).
-- Double-tap state is keyed by PID and key code and uses `Date()` with a 1.15s
-  acceptance window (`PowerTools.swift:550-564`).
-- Existing reducer tests in this repository demonstrate the preferred
-  table-driven style for pure state transitions.
+The current pre-Plan-004 keyboard service slice has SHA-256
+`f0e2e36f2ebd1382f2641984fea4500e38de94ad3e56b0a0efe79bc235ff09b4`.
+Plan 004 is expected to alter only effect dispatch/API shapes, so Plan 005 must
+recon the post-004 handler rather than require this old whole-slice hash.
 
-Current double-tap branch:
+There are **six preferences and seven effectful branches**, not the obsolete
+five-preference contract:
+
+1. Command-Q double-tap safety;
+2. Command-W double-tap safety;
+3. Finder Return opens selection;
+4. Finder Option-N creates a text file;
+5. Finder unmodified Backspace/Delete (`keyCode 51`) moves selection to Trash;
+6. Finder Command-X prepares a cut session; and
+7. Finder Command-V transfers only when a cut session exists.
+
+Current protected-key behavior is load-bearing:
 
 ```swift
-if keyCode == KeyCode.q, defaults.bool(forKey: PowerToolKeys.commandQDoubleTap) {
-    if isAutorepeat { return true }
-    return blockFirstTap(keyCode: keyCode,
-                         app: NSWorkspace.shared.frontmostApplication)
+if isAutorepeat { return true }
+let appPID = app?.processIdentifier ?? 0
+lastSafetyPress = lastSafetyPress.filter { now.timeIntervalSince($0.value) < 2 }
+let previous = lastSafetyPress[safetyKey]
+lastSafetyPress[safetyKey] = now
+if let previous, now.timeIntervalSince(previous) < 1.15 {
+    lastSafetyPress[safetyKey] = nil
+    return false
 }
 ```
 
-## Commands you will need
-
-| Purpose | Command | Expected on success |
-|---|---|---|
-| Prerequisite | `git ls-files --error-unmatch Tests/GeraldineTests/PowerToolsOperationCoordinatorTests.swift && git diff --quiet HEAD -- Sources/Geraldine/Services/PowerTools.swift Sources/Geraldine/Features/PowerTools/PowerToolsView.swift Tests/GeraldineTests/PowerToolsOperationCoordinatorTests.swift && git diff --cached --quiet HEAD -- Sources/Geraldine/Services/PowerTools.swift Sources/Geraldine/Features/PowerTools/PowerToolsView.swift Tests/GeraldineTests/PowerToolsOperationCoordinatorTests.swift && swift test --scratch-path /tmp/geraldine-plan-005-prerequisite --filter PowerToolsOperationCoordinatorTests` | exit 0; committed base contains completed Plan 004 |
-| Focused tests | `swift test --scratch-path /tmp/geraldine-plan-005-tests --filter KeyboardPowerToolsReducerTests` | exit 0 |
-| Full tests | `swift test --scratch-path /tmp/geraldine-plan-005-full` | exit 0 |
-| Old helper | `! rg -n 'blockFirstTap' Sources/Geraldine/Services/PowerTools.swift` | exit 0, no output |
-| Marker shape | `test "$(rg -c '^// MARK: - Keyboard Power Tools Reducer$' Sources/Geraldine/Services/PowerTools.swift)" -eq 1 && test "$(rg -c '^// MARK: - Keyboard Power Tools Service$' Sources/Geraldine/Services/PowerTools.swift)" -eq 1` | exit 0 |
-| Reducer slice | `sed -n '/MARK: - Keyboard Power Tools Reducer/,/MARK: - Keyboard Power Tools Service/p' Sources/Geraldine/Services/PowerTools.swift > /tmp/geraldine-keyboard-reducer.swift` | exit 0 |
-| Pure reducer | `test -s /tmp/geraldine-keyboard-reducer.swift && ! rg -e 'UserDefaults' -e 'NSWorkspace' -e 'NSSound' -e 'Date\(' /tmp/geraldine-keyboard-reducer.swift` | exit 0, no output |
-| Hygiene | `git diff --check` | exit 0 |
-
-**User-patch guard (run before and after implementation):**
-
-```sh
-test "$(git diff -- Sources/Geraldine/MenuBar/MetricWidgets.swift | shasum -a 256 | cut -d ' ' -f 1)" = da9ee6c4eafd807623c825613e33929a61f9966d00981be10ca9f8739c56c5c3
-```
-
-**Plan-base and scope guard:** after the prerequisite command and before any
-edit, run:
-
-```sh
-git rev-parse HEAD > /tmp/geraldine-plan-005-base
-unexpected="$({ git diff --name-only HEAD -- Sources Tests; git diff --cached --name-only HEAD -- Sources Tests; git ls-files --others --exclude-standard -- Sources Tests; } | sort -u | rg -v -e '^Sources/Geraldine/MenuBar/MetricWidgets\.swift$' || true)"
-test -z "$unexpected"
-```
-
-If the base file goes missing after edits, STOP. At closeout run:
-
-```sh
-test -s /tmp/geraldine-plan-005-base
-unexpected="$({ git diff --name-only "$(</tmp/geraldine-plan-005-base)" -- Sources Tests; git diff --cached --name-only "$(</tmp/geraldine-plan-005-base)" -- Sources Tests; git ls-files --others --exclude-standard -- Sources Tests; } | sort -u | rg -v -e '^Sources/Geraldine/Services/PowerTools\.swift$' -e '^Tests/GeraldineTests/KeyboardPowerToolsReducerTests\.swift$' -e '^Sources/Geraldine/MenuBar/MetricWidgets\.swift$' || true)"
-test -z "$unexpected"
-```
+Finder handling is entered only for frontmost bundle
+`com.apple.finder` when `AXTools.canHandleFinderFileShortcut` is true. Primary
+modifiers are Command, Shift, Control, and Option. Caps Lock, Numeric Pad,
+Function, and device-dependent bits are ignored exactly as the current flag
+tests ignore them. Every otherwise-handled autorepeat is suppressed with no
+effect. Command-V without a cut session passes through.
 
 ## Scope
 
-**In scope**:
+**Only implementation/test files in scope**:
 
 - `Sources/Geraldine/Services/PowerTools.swift`
-- `Tests/GeraldineTests/KeyboardPowerToolsReducerTests.swift` (create)
-- `plans/README.md` (Plan 005 status cell only)
+- `Tests/GeraldineTests/KeyboardPowerToolsReducerTests.swift` (new)
+
+**Plan-maintenance file in scope before implementation only**:
+
+- `plans/005-keyboard-power-tools-reducer.md`
 
 **Out of scope**:
 
-- Event-tap creation, timeout re-enabling, Dock/traffic-light behavior, or
-  Accessibility permission flows.
-- Changing existing shortcuts, timing windows, sounds, or Finder actions.
-- Live global keyboard automation in the unit tests.
-- Power Tools async file/process work completed by Plan 004.
-- `MetricWidgets.swift` and jj metadata.
+- `plans/README.md` and `Sources/Geraldine/MenuBar/MetricWidgets.swift`
+- `PowerToolsView.swift` and Plan 004 coordinator/runner semantics
+- Plan 007 `DockTarget`, Dock/traffic-light/Mission Control behavior
+- event-tap creation, timeout recovery, run-loop ownership, Accessibility
+  permission flow, shortcut/preferences/default values, sound choice, timing
+  thresholds, Finder action/result semantics, or cut-session lifecycle
+- live event posting, Finder/UI automation, build/install/launch, commit/push/PR
+  in the source-only handoff
 
-## Git workflow
+## Fail-closed post-Plan-004 preflight
 
-- Start only from a commit where Plan 004 is complete and its focused tests
-  pass; do not carry Plan 004 source edits uncommitted.
-- Branch: `codex/005-keyboard-power-tools-reducer`, created from that verified
-  prerequisite commit.
-- Suggested commit: `Test global keyboard policy`.
-- Do not push or open a PR unless instructed.
+Run from the same clean isolated integration checkout after Plan 004 has been
+committed or otherwise made the clean `HEAD`. This plan deliberately does not
+guess the post-004 `PowerTools.swift` hash.
+
+```sh
+set -e
+set -o pipefail
+PRIMARY_REPO='/Users/vincent/Library/CloudStorage/OneDrive-Personal/Coding Projects/Geraldine'
+CHECKOUT_ROOT="$(git rev-parse --show-toplevel)"
+test "$(cd "$CHECKOUT_ROOT" && pwd -P)" != "$(cd "$PRIMARY_REPO" && pwd -P)"
+test -z "$(git status --porcelain=v1 --untracked-files=all)"
+git merge-base --is-ancestor c1f51ea HEAD
+git ls-files --error-unmatch \
+  Tests/GeraldineTests/PowerToolsOperationCoordinatorTests.swift \
+  Tests/GeraldineTests/FinderTrashShortcutTests.swift \
+  Tests/GeraldineTests/DockTargetResolutionTests.swift
+rg -n '^struct PowerToolsOperationCoordinator|^enum PowerToolsEffectRunner|runningActionID' \
+  Sources/Geraldine/Services/PowerTools.swift
+rg -n 'finderBackspaceMovesToTrash|KeyCode\.delete|moveFinderSelectionToTrash' \
+  Sources/Geraldine/Services/PowerTools.swift
+rg -n 'KeyCode\.q|KeyCode\.w|KeyCode\.returnKey|KeyCode\.n|KeyCode\.x|KeyCode\.v' \
+  Sources/Geraldine/Services/PowerTools.swift
+
+dock_slice="$(sed -n '/^private struct DockTarget {/,/^}$/p' Sources/Geraldine/Services/PowerTools.swift)"
+test "$(printf '%s\n' "$dock_slice" | shasum -a 256 | awk '{print $1}')" = \
+  'b3b79935ac8ac84c3b741d12d9fba31d5cc8dea770a953f4aa6b7d593057c6ac'
+```
+
+Expected: exact clean checkout, Plan 004 types/tests exist, all seven current
+branches print, and the Plan 007 slice matches. Otherwise STOP and refresh this
+plan against the post-004 source.
+
+## CLAYGO and verification substrate
+
+```sh
+PLAN005_OWNER='<current-thread-or-session-id>'
+test "$PLAN005_OWNER" != '<current-thread-or-session-id>'
+PLAN005_ROOT="/private/tmp/geraldine-plan-005-$(/usr/bin/uuidgen | /usr/bin/tr '[:upper:]' '[:lower:]')"
+PLAN005_RECEIPT="/tmp/$(basename "$PLAN005_ROOT")-receipt.json"
+test ! -e "$PLAN005_ROOT"
+test ! -e "$PLAN005_RECEIPT"
+/Users/vincent/.codex/skills/claygo/scripts/claygo.py init \
+  --path "$PLAN005_ROOT" --temp-root /private/tmp --receipt "$PLAN005_RECEIPT" \
+  --owner "$PLAN005_OWNER" --purpose "Geraldine Plan 005 SwiftPM verification" \
+  --profile swiftpm
+git rev-parse HEAD > "$PLAN005_ROOT/executor-base"
+df -Pk /private/tmp
+pgrep -afil 'swift-build|swift-test|xcodebuild' || true
+
+test "$(DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer /usr/bin/xcrun --sdk macosx --show-sdk-version)" = '26.5'
+test -d /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk
+```
+
+If disk/concurrent-build inspection says a heavy gate is unsafe, defer only the
+build/test commands. The dispatcher owns the checkout lifecycle; this executor
+owns only the registered SwiftPM root.
 
 ## Steps
 
-### Step 1: Define normalized input, preferences, and decisions
+### Step 1: Define pure snapshots and explicit decisions
 
-Add internal value types under explicit
-`// MARK: - Keyboard Power Tools Reducer` and
-`// MARK: - Keyboard Power Tools Service` boundaries containing only the
-reducer inputs:
+Under exactly one `// MARK: - Keyboard Power Tools Reducer`, add internal value
+types for:
 
-- key code, normalized modifier flags, and autorepeat. Normalize by intersecting
-  raw flags with Command, Shift, Control, and Option only; Caps Lock, Numeric
-  Pad, Function, and device-dependent flags remain ignored exactly as today;
-- monotonic timestamp;
-- optional frontmost PID and bundle identifier. For Command-Q/W history, map a
-  missing application snapshot to PID `0`, preserving current protection when
-  `NSWorkspace.frontmostApplication` is nil;
-- whether Finder focus can accept file shortcuts;
-- whether a Finder cut session exists;
-- a snapshot of the five relevant feature preferences.
+- key code, normalized primary modifiers, autorepeat, and monotonic timestamp;
+- optional frontmost PID/bundle identifier, Finder-focus eligibility, and cut
+  session presence;
+- a snapshot of all six relevant preferences; and
+- a decision containing `suppress` plus optional effect: beep, open Finder
+  selection, create text file, move Finder selection to Trash, prepare cut, or
+  paste cut.
 
-Define an explicit decision containing `suppress: Bool` and an optional effect:
-beep, open Finder selection, create text file, prepare cut, or paste cut. Effects
-are descriptions only; the reducer must not call AppKit, defaults, sound, or
-Finder services.
+The reducer section must contain no `CGEvent`, `UserDefaults`, `NSWorkspace`,
+`NSSound`, Finder service call, Accessibility call, or `Date()`. Modifier
+normalization from `CGEventFlags` belongs in the service adapter section.
 
-Create `KeyboardPowerToolsReducerTests.swift` in this step with a compile-smoke
-test. Steps 2 and 3 add their named behavior cases immediately; Step 5 completes
-the remaining matrix.
+### Step 2: Move double-tap state into the reducer
 
-**Verify**:
-`swift test --scratch-path /tmp/geraldine-plan-005-tests --filter KeyboardPowerToolsReducerTests`
-compiles; zero tests is acceptable only at this intermediate step.
+Use the injected monotonic timestamp. Preserve exactly:
 
-### Step 2: Move double-tap state and policy into the reducer
+- enabled Command-Q/W first press: suppress + beep;
+- same PID/key with elapsed time strictly `< 1.15`: pass and clear;
+- exactly `1.15`: suppress + beep as a new first press;
+- prune ages not strictly `< 2`; exactly `2.0` is removed;
+- Q/W and different PIDs have independent histories;
+- missing frontmost app uses PID `0`;
+- protected autorepeat suppresses without beep or state mutation; and
+- `reset()` removes all history when the service stops.
 
-Create `KeyboardPowerToolsReducer` as a value type. Preserve existing behavior:
+Expose only a narrow read-only pending-history count if needed to directly test
+the otherwise unobservable `1.999`/`2.0` pruning boundary.
 
-- first enabled Command-Q/W for a PID/key suppresses and requests a beep;
-- the same PID/key with elapsed time strictly `< 1.15` seconds passes through
-  and clears that key; exactly `1.15` is a new blocked first tap;
-- entries are retained only while age is strictly `< 2`; exactly `2.0` is
-  pruned;
-- Q and W and different PIDs have independent state;
-- autorepeat for protected shortcuts is suppressed without triggering effects;
-- `reset()` clears timing state when the service stops.
+### Step 3: Encode the full Finder decision table
 
-Use the injected monotonic timestamp, not `Date()` inside the reducer.
+After the safety branch, require exact Finder identity and focus. Preserve:
 
-**Verify**:
-add `testDoubleTapTimingBoundaries`, then run:
+- no-primary Return -> suppress/open when enabled;
+- Option-only N -> suppress/create when enabled;
+- no-primary Backspace/Delete 51 -> suppress/move-to-Trash when enabled;
+- Command-only X -> suppress/prepare cut when enabled;
+- Command-only V -> suppress/paste only when enabled and a cut session exists;
+- autorepeat for any otherwise-handled Finder shortcut -> suppress/no effect;
+- extra primary modifiers, disabled preferences, unrelated keys, non-Finder,
+  unfocused Finder, and Command-V without cut state -> pass/no effect; and
+- ignored non-primary flags do not change the decision.
+
+### Step 4: Make the live service a thin adapter
+
+Under exactly one `// MARK: - Keyboard Power Tools Service`, the handler must:
+
+1. read one raw event snapshot;
+2. normalize modifiers;
+3. snapshot all six defaults, frontmost identity/focus, cut-session state, and
+   `ProcessInfo.processInfo.systemUptime` (monotonic);
+4. invoke the reducer exactly once;
+5. dispatch the described effect on `@MainActor`; and
+6. return `decision.suppress`.
+
+Keep Plan 004's async effect split: Backspace Trash and Command-V transfer are
+awaited async from a main-actor task, never executed synchronously inside the
+event-tap callback. Other Finder/AppKit effects retain their current actor and
+result semantics. Preserve the old main-queue FIFO behavior for Option-N,
+Backspace, Command-X, and Command-V with one token-safe serial queue: a shortcut
+that the reducer suppresses must not be silently dropped merely because an
+earlier file effect is awaiting. `stop()` stops the tap and calls
+`reducer.reset()`.
+
+Keep `KeyboardPowerToolsService.isFinderTrashShortcut(keyCode:flags:)` as a
+compatibility policy seam for the existing `FinderTrashShortcutTests`; it must
+agree with normalized no-primary Delete behavior and must not execute effects.
+
+### Step 5: Add exhaustive reducer tests
+
+Create `KeyboardPowerToolsReducerTests.swift` using plain inputs and numeric
+timestamps only. No real `CGEvent`, event posting, AppKit, Finder, sound, or
+live permissions. Cover:
+
+- Q and W first/second/expired presses, `1.149`, `1.15`, `1.999`, and `2.0`;
+- PID/key independence, PID `0`, protected autorepeat, and reset;
+- every Finder pass/suppress/effect branch, including Backspace-to-Trash;
+- FIFO file-effect admission, stale-completion rejection, and queue
+  invalidation without a live Finder or event tap;
+- Command-V with and without cut state;
+- disabled preferences, unrelated key, non-Finder, and Finder focus rejection;
+- extra primary modifier rejection; and
+- ignored Caps Lock, Numeric Pad, and Function flag normalization.
+
+Every effect row must assert both the effect and `suppress` value.
+
+### Step 6: Static and executable gates
+
+Static gates:
 
 ```sh
-swift test --scratch-path /tmp/geraldine-plan-005-tests --filter KeyboardPowerToolsReducerTests/testDoubleTapTimingBoundaries > /tmp/geraldine-plan-005-timing.log 2>&1
-rg -q 'Executed 1 test' /tmp/geraldine-plan-005-timing.log
+test "$(rg -c '^// MARK: - Keyboard Power Tools Reducer$' Sources/Geraldine/Services/PowerTools.swift)" -eq 1
+test "$(rg -c '^// MARK: - Keyboard Power Tools Service$' Sources/Geraldine/Services/PowerTools.swift)" -eq 1
+sed -n '/MARK: - Keyboard Power Tools Reducer/,/MARK: - Keyboard Power Tools Service/p' \
+  Sources/Geraldine/Services/PowerTools.swift > "$PLAN005_ROOT/reducer-slice.swift"
+test -s "$PLAN005_ROOT/reducer-slice.swift"
+! rg -n 'CGEvent|UserDefaults|NSWorkspace|NSSound|FinderPowerToolsService|AXTools|Date\(' \
+  "$PLAN005_ROOT/reducer-slice.swift"
+! rg -n 'blockFirstTap|lastSafetyPress' Sources/Geraldine/Services/PowerTools.swift
+test "$(rg -c 'reducer\.reduce' Sources/Geraldine/Services/PowerTools.swift)" -eq 1
+
+dock_slice="$(sed -n '/^private struct DockTarget {/,/^}$/p' Sources/Geraldine/Services/PowerTools.swift)"
+test "$(printf '%s\n' "$dock_slice" | shasum -a 256 | awk '{print $1}')" = \
+  'b3b79935ac8ac84c3b741d12d9fba31d5cc8dea770a953f4aa6b7d593057c6ac'
+git diff --check
 ```
 
-The case must cover `1.149`, `1.15`, `1.999`, and `2.0`, plus a nil-frontmost
-snapshot using the PID-`0` bucket.
-
-### Step 3: Encode Finder shortcut policy as pure decisions
-
-Preserve exact modifier and context rules:
-
-- unmodified Return in focused Finder may suppress and request Open;
-- Option-N alone may suppress and request Create Text File;
-- Command-X alone may suppress and request Prepare Cut;
-- Command-V alone suppresses only when a cut session exists;
-- non-Finder apps, unfocused Finder contexts, extra primary modifiers, disabled
-  preferences, and unrelated keys pass through; ignored non-primary flags such
-  as Caps Lock do not change the current decision;
-- autorepeat suppresses an otherwise handled Finder shortcut without executing
-  its effect.
-
-**Verify**:
-add `testFinderDecisionTable`, then run:
+After the dispatcher clears the heavy-build gate:
 
 ```sh
-swift test --scratch-path /tmp/geraldine-plan-005-tests --filter KeyboardPowerToolsReducerTests/testFinderDecisionTable > /tmp/geraldine-plan-005-finder.log 2>&1
-rg -q 'Executed 1 test' /tmp/geraldine-plan-005-finder.log
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk \
+/usr/bin/xcrun --sdk macosx swift test --scratch-path "$PLAN005_ROOT/swiftpm" \
+  --filter KeyboardPowerToolsReducerTests
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk \
+/usr/bin/xcrun --sdk macosx swift test --scratch-path "$PLAN005_ROOT/swiftpm" \
+  --filter FinderTrashShortcutTests
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk \
+/usr/bin/xcrun --sdk macosx swift test --scratch-path "$PLAN005_ROOT/swiftpm" \
+  --filter PowerToolsOperationCoordinatorTests
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk \
+/usr/bin/xcrun --sdk macosx swift test --scratch-path "$PLAN005_ROOT/swiftpm"
 ```
 
-The table must include every pass/suppress/effect branch, extra primary
-modifiers, and ignored-flag rows.
+Perform a scoped local review. If an accepted fix changes code, rerun all
+focused/full tests, static gates, hygiene, and review.
 
-### Step 4: Reduce the live handler to an adapter
+## Closeout scope guard
 
-`KeyboardPowerToolsService.handle` should read `CGEvent`, preferences,
-frontmost-app identity/focus, and cut-session presence; call the reducer once;
-dispatch the returned effect on main; and return `decision.suppress`.
+```sh
+set -e
+set -o pipefail
+BASE="$(<"$PLAN005_ROOT/executor-base")"
+git cat-file -e "$BASE^{commit}"
+test "$(git rev-parse HEAD)" = "$BASE"
+unstaged="$(git diff --name-only "$BASE" -- .)"
+staged="$(git diff --cached --name-only "$BASE" -- .)"
+untracked="$(git ls-files --others --exclude-standard)"
+changed="$(printf '%s\n%s\n%s\n' "$unstaged" "$staged" "$untracked" | sort -u)"
+unexpected="$(printf '%s\n' "$changed" | /usr/bin/awk 'NF && $0 != "Sources/Geraldine/Services/PowerTools.swift" && $0 != "Tests/GeraldineTests/KeyboardPowerToolsReducerTests.swift" { print }')"
+test -z "$unexpected"
+test -z "$(git status --short -- plans/README.md Sources/Geraldine/MenuBar/MetricWidgets.swift Sources/Geraldine/Features/PowerTools/PowerToolsView.swift)"
+```
 
-`stop()` must call reducer reset. Keep Plan 004's async/background ownership for
-effects that may be slow; this adapter must not reintroduce synchronous copy,
-move, checksum, or paste work on the event-tap callback.
+Finalize only the registered scratch root:
 
-**Verify**:
-run the “Old helper” and “Pure reducer” commands above; both exit 0. The live
-adapter may snapshot `UserDefaults`, but the marked reducer section may not.
-
-### Step 5: Complete the exhaustive reducer tests
-
-Create `KeyboardPowerToolsReducerTests.swift` with table-driven coverage. Include:
-
-- first/second/expired Command-Q and Command-W presses;
-- exact `1.15`-second acceptance and `2.0`-second pruning boundaries;
-- PID and key independence;
-- missing frontmost application uses the protected PID-`0` history bucket;
-- autorepeat, extra primary modifiers, and ignored Caps Lock/device flags;
-- disabled preference behavior;
-- Finder Return, Option-N, Command-X, and Command-V with and without cut state;
-- non-Finder and Finder-focus rejection;
-- reset behavior;
-- every effect paired with its expected suppress flag.
-
-**Verify**:
-`swift test --scratch-path /tmp/geraldine-plan-005-tests --filter KeyboardPowerToolsReducerTests`
-passes.
-
-### Step 6: Run the full gate
-
-**Verify**:
-
-- `swift test --scratch-path /tmp/geraldine-plan-005-full` exits 0.
-- `git diff --check` exits 0.
-- the scope allowlist emits no output, and the recorded `MetricWidgets.swift`
-  diff hash is unchanged.
-
-## Test plan
-
-Step 5 is the required matrix. Tests must use numeric monotonic timestamps and
-plain context values; never synthesize or post real `CGEvent`s. A later
-installed-app pass should manually verify one protected Command-W sequence and
-one Finder shortcut only after explicit authorization.
+```sh
+/Users/vincent/.codex/skills/claygo/scripts/claygo.py mark \
+  --receipt "$PLAN005_RECEIPT" --state disposable \
+  --reason "Plan 005 verification complete; proof retained in task transcript"
+/Users/vincent/.codex/skills/claygo/scripts/claygo.py finalize \
+  --receipt "$PLAN005_RECEIPT" --check-open-files
+test ! -e "$PLAN005_ROOT"
+/Users/vincent/.codex/skills/claygo/scripts/claygo.py closeout \
+  --owner "$PLAN005_OWNER" --finalize-disposable
+test ! -e "$PLAN005_RECEIPT"
+```
 
 ## Done criteria
 
+- [ ] Plan 004 is integrated, clean, and its focused test passes.
 - [ ] Every global keyboard decision comes from the pure reducer.
-- [ ] Reducer code has no AppKit, UserDefaults, sound, Finder, or wall-clock calls.
-- [ ] Live handler is a thin snapshot/effect adapter.
-- [ ] Full decision matrix, reset behavior, full suite, and hygiene checks pass.
-- [ ] Only in-scope files changed.
-- [ ] The pre-existing `MetricWidgets.swift` diff hash is unchanged.
-- [ ] Plan 005's README status is updated.
+- [ ] All six preferences and all seven effectful branches are represented,
+      including Finder Backspace-to-Trash.
+- [ ] Exact timing, autorepeat, modifier, Finder-focus, and cut-session
+      semantics are unchanged.
+- [ ] The live adapter invokes the reducer once and preserves Plan 004 async
+      execution for slow effects.
+- [ ] Reducer, Finder Trash, Plan 004, and full tests pass under macOS SDK 26.5.
+- [ ] Plan 007 Dock slice, README, `MetricWidgets.swift`, `PowerToolsView.swift`,
+      and all other out-of-scope files are unchanged.
+- [ ] Static gates, hygiene, scope guard, local review, and CLAYGO closeout pass.
 
 ## STOP conditions
 
-Stop and report if:
-
-- Plan 004 is incomplete or live effect APIs no longer match these assumptions;
-- tests expose ambiguity in current pass/suppress behavior; preserve current
-  behavior and request a product decision rather than choosing silently;
-- extraction would modify event-tap lifecycle or Accessibility permissions;
-- source drift, repeated verification failure, or out-of-scope edits occur.
+STOP if Plan 004 is incomplete/dirty; the post-004 handler lacks or adds a
+shortcut branch; current pass/suppress semantics are ambiguous; exact modifier
+or timing behavior would have to change; the adapter would run slow effects
+synchronously; the Dock slice changes; event-tap lifecycle or permissions would
+need modification; SDK 26.5 is unavailable; a gate fails twice after one narrow
+in-scope correction; another file changes; or the registered temporary root
+cannot be safely closed.
 
 ## Maintenance notes
 
-Any new global shortcut must add reducer cases and pass/suppress tests before it
-is connected to the event tap. Reviewers should scrutinize autorepeat,
-modifier normalization, stale timing entries, PID reuse, and effect execution
-on the correct actor.
+Any future global shortcut must add a reducer input/effect and table row before
+the live adapter is changed. Reviewers should treat suppression, autorepeat,
+modifier normalization, PID bucketing, monotonic timing, and actor-correct
+effect dispatch as security-sensitive behavior.

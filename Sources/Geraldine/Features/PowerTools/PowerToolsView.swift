@@ -6,7 +6,6 @@ struct PowerToolsView: View {
     @State private var showEmptyTrashConfirmation = false
     @State private var activeSection: ToolSectionID?
     @State private var activeActionID: String?
-    @State private var workingActionID: String?
     @State private var cancellationMessage: String?
     @State private var permissionHandoffPending = false
     @State private var permissionReturnTone: OutcomeTone?
@@ -29,9 +28,7 @@ struct PowerToolsView: View {
         }
         .alert("Empty Trash Permanently?", isPresented: $showEmptyTrashConfirmation) {
             Button("Empty Trash", role: .destructive) {
-                perform(section: .utilities, actionID: "emptyTrash") {
-                    powerTools.emptyTrash()
-                }
+                perform(section: .utilities, actionID: "emptyTrash", action: .emptyTrash)
             }
             Button("Cancel", role: .cancel) {
                 noteCancellation(section: .utilities, message: "Cancelled · Trash was not changed.")
@@ -185,15 +182,15 @@ struct PowerToolsView: View {
                       spacing: Theme.Spacing.sm) {
                 ToolButton(title: "Hide All", icon: "rectangle.compress.vertical",
                            state: actionState("hideAll"), tint: tint) {
-                    perform(section: .windows, actionID: "hideAll") { powerTools.hideAllWindows() }
+                    perform(section: .windows, actionID: "hideAll", action: .hideAllWindows)
                 }
                 ToolButton(title: "Isolate", icon: "rectangle.on.rectangle.slash",
                            state: actionState("isolate"), tint: tint) {
-                    perform(section: .windows, actionID: "isolate") { powerTools.isolateFrontWindow() }
+                    perform(section: .windows, actionID: "isolate", action: .isolateFrontWindow)
                 }
                 ToolButton(title: "Minimize All", icon: "arrow.down.right.and.arrow.up.left",
                            state: actionState("minimizeAll"), tint: tint) {
-                    perform(section: .windows, actionID: "minimizeAll") { powerTools.minimizeAllWindows() }
+                    perform(section: .windows, actionID: "minimizeAll", action: .minimizeAllWindows)
                 }
             }
 
@@ -270,31 +267,31 @@ struct PowerToolsView: View {
                       spacing: Theme.Spacing.sm) {
                 ToolButton(title: "New Text File", icon: "doc.badge.plus",
                            state: actionState("newText"), tint: tint) {
-                    perform(section: .finder, actionID: "newText") { powerTools.newFinderTextFile() }
+                    perform(section: .finder, actionID: "newText", action: .newFinderTextFile(markdown: false))
                 }
                 ToolButton(title: "New Markdown", icon: "doc.plaintext",
                            state: actionState("newMarkdown"), tint: tint) {
-                    perform(section: .finder, actionID: "newMarkdown") { powerTools.newFinderTextFile(markdown: true) }
+                    perform(section: .finder, actionID: "newMarkdown", action: .newFinderTextFile(markdown: true))
                 }
                 ToolButton(title: "Copy Paths", icon: "doc.on.doc",
                            state: actionState("copyPaths"), tint: tint) {
-                    perform(section: .finder, actionID: "copyPaths") { powerTools.copyFinderPaths() }
+                    perform(section: .finder, actionID: "copyPaths", action: .copyFinderPaths)
                 }
                 ToolButton(title: "Copy SHA-256", icon: "number",
                            state: actionState("copyHash"), tint: tint) {
-                    perform(section: .finder, actionID: "copyHash") { powerTools.copyFinderSHA256() }
+                    perform(section: .finder, actionID: "copyHash", action: .copyFinderSHA256)
                 }
                 ToolButton(title: "Open Terminal", icon: "terminal",
                            state: actionState("terminal"), tint: tint) {
-                    perform(section: .finder, actionID: "terminal") { powerTools.openFinderTerminal() }
+                    perform(section: .finder, actionID: "terminal", action: .openFinderTerminal)
                 }
                 ToolButton(title: "Copy To", icon: "arrowshape.turn.up.right",
                            state: actionState("copyTo"), tint: tint) {
-                    perform(section: .finder, actionID: "copyTo") { powerTools.copyFinderSelectionToFolder() }
+                    perform(section: .finder, actionID: "copyTo", action: .copyFinderSelectionToFolder)
                 }
                 ToolButton(title: "Move To", icon: "arrow.right.doc.on.clipboard",
                            state: actionState("moveTo"), tint: tint) {
-                    perform(section: .finder, actionID: "moveTo") { powerTools.moveFinderSelectionToFolder() }
+                    perform(section: .finder, actionID: "moveTo", action: .moveFinderSelectionToFolder)
                 }
             }
         }
@@ -314,22 +311,23 @@ struct PowerToolsView: View {
                       spacing: Theme.Spacing.sm) {
                 ToolButton(title: "Clear Clipboard", icon: "clipboard",
                            state: actionState("clearClipboard"), tint: tint) {
-                    perform(section: .utilities, actionID: "clearClipboard") { powerTools.clearClipboard() }
+                    perform(section: .utilities, actionID: "clearClipboard", action: .clearClipboard)
                 }
                 ToolButton(title: "Sleep Displays", icon: "display",
                            state: actionState("sleepDisplays"), tint: tint) {
-                    perform(section: .utilities, actionID: "sleepDisplays") { powerTools.sleepDisplays() }
+                    perform(section: .utilities, actionID: "sleepDisplays", action: .sleepDisplays)
                 }
                 ToolButton(title: "Eject Disks", icon: "externaldrive.badge.eject",
                            state: actionState("ejectDisks"), tint: tint) {
-                    perform(section: .utilities, actionID: "ejectDisks") { powerTools.ejectDisks() }
+                    perform(section: .utilities, actionID: "ejectDisks", action: .ejectDisks)
                 }
                 ToolButton(title: "Empty Trash…", icon: "trash",
                            state: actionState("emptyTrash"), tint: tint, role: .destructive) {
+                    guard powerTools.runningActionID == nil else { return }
                     activeSection = .utilities
                     activeActionID = "emptyTrash"
                     cancellationMessage = nil
-                    powerTools.lastResult = nil
+                    powerTools.clearResult()
                     showEmptyTrashConfirmation = true
                 }
             }
@@ -347,34 +345,36 @@ struct PowerToolsView: View {
     }
 
     private func markActive(_ section: ToolSectionID) {
+        guard powerTools.runningActionID == nil else { return }
         activeSection = section
         activeActionID = nil
-        workingActionID = nil
         cancellationMessage = nil
-        powerTools.lastResult = nil
+        powerTools.clearResult()
     }
 
-    private func perform(section: ToolSectionID, actionID: String, action: @escaping () -> Void) {
+    private func perform(section: ToolSectionID, actionID: String, action: PowerToolAction) {
+        guard powerTools.runningActionID == nil else { return }
         activeSection = section
         activeActionID = actionID
-        workingActionID = actionID
         cancellationMessage = nil
-        powerTools.lastResult = nil
+        guard let ownership = powerTools.beginAction(actionID: actionID) else { return }
 
         Task { @MainActor in
             await Task.yield()
-            action()
-            workingActionID = nil
-            if powerTools.lastResult?.status == .success {
-                clearSuccessfulActionLater(actionID)
+            let completed = await powerTools.perform(ownership: ownership, action: action)
+            if completed, powerTools.lastResult?.status == .success {
+                clearSuccessfulActionLater(actionID, ownership: ownership)
             }
         }
     }
 
-    private func clearSuccessfulActionLater(_ id: String) {
+    private func clearSuccessfulActionLater(
+        _ id: String,
+        ownership: PowerToolsOperationCoordinator.Ownership
+    ) {
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 2_000_000_000)
-            if activeActionID == id, powerTools.lastResult?.status == .success {
+            if activeActionID == id, powerTools.isLatestResult(ownedBy: ownership) {
                 activeActionID = nil
             }
         }
@@ -383,9 +383,8 @@ struct PowerToolsView: View {
     private func noteCancellation(section: ToolSectionID, message: String) {
         activeSection = section
         activeActionID = nil
-        workingActionID = nil
         cancellationMessage = message
-        powerTools.lastResult = nil
+        powerTools.clearResult()
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 1_800_000_000)
             if cancellationMessage == message { cancellationMessage = nil }
@@ -393,7 +392,7 @@ struct PowerToolsView: View {
     }
 
     private func actionState(_ id: String) -> StatefulActionState {
-        if workingActionID == id { return .working }
+        if powerTools.runningActionID == id { return .working }
         guard activeActionID == id, let result = powerTools.lastResult else { return .idle }
         switch result.status {
         case .success: return .success
@@ -501,6 +500,8 @@ private struct ToolSection<Content: View>: View {
 }
 
 private struct ToolButton: View {
+    @EnvironmentObject private var powerTools: PowerToolsController
+
     let title: String
     let icon: String
     let state: StatefulActionState
@@ -552,7 +553,7 @@ private struct ToolButton: View {
                 .frame(maxWidth: .infinity, minHeight: 42)
             }
             .buttonStyle(.quiet(resolvedTint))
-            .disabled(state == .working)
+            .disabled(state == .working || powerTools.runningActionID != nil)
             .accessibilityLabel(label)
         }
     }

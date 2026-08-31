@@ -134,7 +134,10 @@ final class KeepAwakeController: ObservableObject {
     }
 
     private static let screenLockPauseReason = "Screen Locked"
+    static let batteryPolicyRefusalMessage =
+        "Keep Awake is off while Deactivate On Battery is enabled."
     private let defaults: UserDefaults
+    private let currentPowerSourceIsBattery: () -> Bool
     private let idleActivitySimulator = IdleActivitySimulationService()
     private var activeSince: Date?
     private var idleAssertion: IOPMAssertionID = 0
@@ -144,8 +147,10 @@ final class KeepAwakeController: ObservableObject {
     private var powerSourceRunLoopSource: CFRunLoopSource?
     private var workspaceObservers: [NSObjectProtocol] = []
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard,
+         currentPowerSourceIsBattery: @escaping () -> Bool = KeepAwakeController.isOnBatteryPower) {
         self.defaults = defaults
+        self.currentPowerSourceIsBattery = currentPowerSourceIsBattery
 
         let rawDuration = defaults.string(forKey: DefaultsKey.defaultDuration) ?? KeepAwakeDuration.oneHour.rawValue
         defaultDuration = KeepAwakeDuration(rawValue: rawDuration) ?? .oneHour
@@ -250,6 +255,14 @@ final class KeepAwakeController: ObservableObject {
     }
 
     func activate(duration: TimeInterval?) {
+        if deactivateOnBattery, currentPowerSourceIsBattery() {
+            if isActive {
+                endSession()
+            }
+            lastError = Self.batteryPolicyRefusalMessage
+            return
+        }
+
         lastError = nil
         isActive = true
         isPaused = false
@@ -428,7 +441,7 @@ final class KeepAwakeController: ObservableObject {
     }
 
     private func handlePowerSourceChange() {
-        guard deactivateOnBattery, isActive, Self.isOnBatteryPower() else { return }
+        guard deactivateOnBattery, isActive, currentPowerSourceIsBattery() else { return }
         deactivate()
     }
 
@@ -519,7 +532,7 @@ final class KeepAwakeController: ObservableObject {
         assertion = 0
     }
 
-    private static func isOnBatteryPower() -> Bool {
+    nonisolated static func isOnBatteryPower() -> Bool {
         guard let info = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
               let source = IOPSGetProvidingPowerSourceType(info)?.takeUnretainedValue() else { return false }
         return (source as String) == (kIOPSBatteryPowerValue as String)

@@ -35,6 +35,52 @@ struct BrewCommandFeedback: Equatable {
     let checkedAt: Date
 }
 
+struct UpdaterCommandResult: Equatable, Sendable {
+    let status: Int32
+    let stdout: String
+    let output: String
+    let finishedAt: Date
+}
+
+protocol UpdaterCommandRunning: Sendable {
+    func locateBrew() async -> String?
+    func run(_ launchPath: String, arguments: [String]) async -> UpdaterCommandResult
+}
+
+struct LiveUpdaterCommandRunner: UpdaterCommandRunning {
+    func locateBrew() async -> String? {
+        await Task.detached(priority: .userInitiated) {
+            Shell.which("brew")
+        }.value
+    }
+
+    func run(_ launchPath: String, arguments: [String]) async -> UpdaterCommandResult {
+        await Task.detached {
+            let result = Shell.run(launchPath, arguments)
+            return UpdaterCommandResult(
+                status: result.status,
+                stdout: result.stdout,
+                output: result.output,
+                finishedAt: result.finishedAt
+            )
+        }.value
+    }
+}
+
+protocol UpdaterClock: Sendable {
+    func now() -> Date
+}
+
+struct SystemUpdaterClock: UpdaterClock {
+    func now() -> Date { Date() }
+}
+
+struct UpdaterCaskRecord: Equatable, Sendable {
+    let token: String
+    let current: String
+    let latest: String
+}
+
 @MainActor
 final class UpdaterViewModel: ObservableObject {
     /// Starts true: the view checks on appear, so the first frame should read
@@ -47,6 +93,17 @@ final class UpdaterViewModel: ObservableObject {
     @Published var completed: [OutdatedApp] = []
     @Published var checked = false
     @Published var checkState: BrewCheckState = .unchecked
+
+    private let runner: any UpdaterCommandRunning
+    private let clock: any UpdaterClock
+
+    init(
+        runner: any UpdaterCommandRunning = LiveUpdaterCommandRunner(),
+        clock: any UpdaterClock = SystemUpdaterClock()
+    ) {
+        self.runner = runner
+        self.clock = clock
+    }
 
     var hasBrew: Bool { brewPath != nil }
     var displayPhase: UpdaterDisplayPhase {
@@ -74,7 +131,7 @@ final class UpdaterViewModel: ObservableObject {
         upgradeFeedback = [:]
         completed = []
         Task {
-            let report = await Task.detached(priority: .userInitiated) { Self.checkForUpdates() }.value
+            let report = await Self.checkForUpdates(runner: runner, clock: clock)
             self.brewPath = report.brewPath
             self.outdated = report.outdated
             self.checkState = report.state
@@ -88,17 +145,18 @@ final class UpdaterViewModel: ObservableObject {
         upgrading.insert(app.token)
         upgradeFeedback[app.token] = nil
         Task {
-            let feedback = await Task.detached { () -> BrewCommandFeedback in
-                let result = Shell.run(brew, ["upgrade", "--cask", app.token])
-                let output = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
-                let ok = result.status == 0
-                return BrewCommandFeedback(
-                    ok: ok,
-                    message: ok ? "Updated \(app.name)." : "Homebrew could not update \(app.name).",
-                    output: output,
-                    checkedAt: result.finishedAt
-                )
-            }.value
+            let result = await runner.run(
+                brew,
+                arguments: ["upgrade", "--cask", app.token]
+            )
+            let output = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
+            let ok = result.status == 0
+            let feedback = BrewCommandFeedback(
+                ok: ok,
+                message: ok ? "Updated \(app.name)." : "Homebrew could not update \(app.name).",
+                output: output,
+                checkedAt: result.finishedAt
+            )
             self.upgrading.remove(app.token)
             self.upgradeFeedback[app.token] = feedback
             if feedback.ok {
@@ -118,21 +176,25 @@ final class UpdaterViewModel: ObservableObject {
         NSPasteboard.general.setString(cmd, forType: .string)
     }
 
-    private nonisolated static func checkForUpdates() -> UpdaterCheckReport {
-        guard let brew = Shell.which("brew") else {
+    private nonisolated static func checkForUpdates(
+        runner: any UpdaterCommandRunning,
+        clock: any UpdaterClock
+    ) async -> UpdaterCheckReport {
+        guard let brew = await runner.locateBrew() else {
             return UpdaterCheckReport(brewPath: nil,
                                       outdated: [],
-                                      state: .unavailable(checkedAt: Date()))
+                                      state: .unavailable(checkedAt: clock.now()))
         }
 
-        let result = Shell.run(brew, ["outdated", "--cask", "--json=v2"])
+        let result = await runner.run(
+            brew,
+            arguments: ["outdated", "--cask", "--json=v2"]
+        )
 
         // Parse stdout only: brew routes progress and warnings to stderr, and
         // some versions exit non-zero simply because updates exist. Valid JSON
         // is authoritative; the exit code only matters when there is none.
-        guard let data = result.stdout.data(using: .utf8),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let casks = root["casks"] as? [[String: Any]] else {
+        guard let casks = parseCasks(stdout: result.stdout) else {
             let message = result.status == 0
                 ? "Homebrew returned output Geraldine could not read."
                 : "Homebrew outdated check failed with exit code \(result.status)."
@@ -145,17 +207,14 @@ final class UpdaterViewModel: ObservableObject {
             )
         }
 
-        let apps: [OutdatedApp] = casks.compactMap { (entry: [String: Any]) -> OutdatedApp? in
-            guard let token = entry["name"] as? String else { return nil }
-            let current = (entry["installed_versions"] as? [String])?.last ?? "-"
-            let latest = (entry["current_version"] as? String) ?? "-"
-            let fallbackName = token.replacingOccurrences(of: "-", with: " ").capitalized
-            let applicationURL = installedApplicationURL(token: token, fallbackName: fallbackName)
+        let apps: [OutdatedApp] = casks.map { cask in
+            let fallbackName = cask.token.replacingOccurrences(of: "-", with: " ").capitalized
+            let applicationURL = installedApplicationURL(token: cask.token, fallbackName: fallbackName)
             let displayName = applicationURL.flatMap(applicationDisplayName) ?? fallbackName
-            return OutdatedApp(token: token,
+            return OutdatedApp(token: cask.token,
                                name: displayName,
-                               current: current,
-                               latest: latest,
+                               current: cask.current,
+                               latest: cask.latest,
                                applicationURL: applicationURL)
         }
         .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
@@ -166,6 +225,23 @@ final class UpdaterViewModel: ObservableObject {
             state: apps.isEmpty ? .noUpdates(checkedAt: result.finishedAt)
                                 : .updatesAvailable(checkedAt: result.finishedAt)
         )
+    }
+
+    nonisolated static func parseCasks(stdout: String) -> [UpdaterCaskRecord]? {
+        guard let data = stdout.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let casks = root["casks"] as? [[String: Any]] else {
+            return nil
+        }
+
+        return casks.compactMap { entry in
+            guard let token = entry["name"] as? String else { return nil }
+            return UpdaterCaskRecord(
+                token: token,
+                current: (entry["installed_versions"] as? [String])?.last ?? "-",
+                latest: (entry["current_version"] as? String) ?? "-"
+            )
+        }
     }
 
     private nonisolated static func installedApplicationURL(token: String, fallbackName: String) -> URL? {

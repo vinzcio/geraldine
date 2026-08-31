@@ -4,8 +4,8 @@ import AppKit
 /// One device attached to this Mac — an external drive, a Bluetooth peripheral,
 /// or a USB-connected iPhone/iPad. Mirrors CleanMyMac's "Connected Devices" module
 /// (peripherals attached to the Mac), not a scan of the local network.
-struct ConnectedDevice: Identifiable, Equatable {
-    enum Kind: Equatable {
+struct ConnectedDevice: Identifiable, Equatable, Sendable {
+    enum Kind: Equatable, Sendable {
         case drive, iosDevice, bluetooth
 
         var icon: String {
@@ -40,14 +40,54 @@ struct ConnectedDevice: Identifiable, Equatable {
     var ejectable: Bool { volumeURL != nil }
 }
 
+struct DeviceRefreshCoordinator {
+    private(set) var isRunning = false
+    private(set) var hasPendingRequest = false
+
+    mutating func requestRefresh() -> Bool {
+        guard !isRunning else {
+            hasPendingRequest = true
+            return false
+        }
+        isRunning = true
+        return true
+    }
+
+    mutating func completeRefresh() -> Bool {
+        guard isRunning else { return false }
+        guard hasPendingRequest else {
+            isRunning = false
+            return false
+        }
+        hasPendingRequest = false
+        return true
+    }
+}
+
 @MainActor
 final class DeviceMonitor: ObservableObject {
+    typealias Scanner = @Sendable () async -> [ConnectedDevice]
+    typealias PublicationObserver = @MainActor ([ConnectedDevice], Bool) -> Void
+
     @Published private(set) var devices: [ConnectedDevice] = []
     @Published private(set) var scanning = false
     @Published private(set) var ejectErrors: [String: String] = [:]
     @Published private(set) var ejectingIDs: Set<String> = []
 
     private var observing = false
+    private var refreshCoordinator = DeviceRefreshCoordinator()
+    private let scanner: Scanner
+    private let onScanPublication: PublicationObserver
+
+    init(
+        scanner: @escaping Scanner = { await DeviceMonitor.scanAllDevices() },
+        initialEjectErrors: [String: String] = [:],
+        onScanPublication: @escaping PublicationObserver = { _, _ in }
+    ) {
+        self.scanner = scanner
+        self.onScanPublication = onScanPublication
+        ejectErrors = initialEjectErrors
+    }
 
     /// Begin watching for volume mount/unmount events and do an initial scan.
     func start() {
@@ -65,17 +105,26 @@ final class DeviceMonitor: ObservableObject {
     @objc private func volumesChanged() { refresh() }
 
     func refresh() {
-        guard !scanning else { return }
+        guard refreshCoordinator.requestRefresh() else { return }
         scanning = true
+        startScan()
+    }
+
+    private func startScan() {
+        let scanner = scanner
         Task.detached(priority: .utility) {
-            let drives = Self.scanDrives()
-            let profile = Self.scanSystemProfiler()    // Bluetooth + USB iOS in one call
-            let all = (drives + profile.ios + profile.bluetooth).sorted(by: Self.order)
+            let scanned = await scanner()
+            let all = scanned.sorted(by: Self.order)
             await MainActor.run {
                 self.devices = all
                 let currentIDs = Set(all.map(\.id))
-                self.ejectErrors = self.ejectErrors.filter { currentIDs.contains($0.key) }
-                self.scanning = false
+                self.ejectErrors = Self.pruneEjectErrors(self.ejectErrors, currentIDs: currentIDs)
+                if self.refreshCoordinator.completeRefresh() {
+                    self.startScan()
+                } else {
+                    self.scanning = false
+                }
+                self.onScanPublication(all, self.scanning)
             }
         }
     }
@@ -112,7 +161,7 @@ final class DeviceMonitor: ObservableObject {
         ejectErrors[device.id]
     }
 
-    nonisolated private static func order(_ a: ConnectedDevice, _ b: ConnectedDevice) -> Bool {
+    nonisolated static func order(_ a: ConnectedDevice, _ b: ConnectedDevice) -> Bool {
         if a.lowBattery != b.lowBattery { return a.lowBattery }       // low battery floats to top
         if a.kind.rank != b.kind.rank { return a.kind.rank < b.kind.rank }
         return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
@@ -121,6 +170,19 @@ final class DeviceMonitor: ObservableObject {
     nonisolated private static func ejectMessage(for error: Error) -> String {
         let message = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
         return message.isEmpty ? "macOS reported an unknown error." : message
+    }
+
+    nonisolated static func pruneEjectErrors(
+        _ errors: [String: String],
+        currentIDs: Set<String>
+    ) -> [String: String] {
+        errors.filter { currentIDs.contains($0.key) }
+    }
+
+    nonisolated static func scanAllDevices() async -> [ConnectedDevice] {
+        let drives = scanDrives()
+        let profile = scanSystemProfiler()    // Bluetooth + USB iOS in one call
+        return drives + profile.ios + profile.bluetooth
     }
 
     // MARK: - External drives

@@ -148,6 +148,55 @@ final class DockPreviewWindowSnapshotMatchingTests: XCTestCase {
     }
 }
 
+final class DockPreviewWindowRefreshPolicyTests: XCTestCase {
+    func testEmptyRefreshForPresentedProcessDismissesItsPresentation() {
+        XCTAssertEqual(action(refreshed: 10, presented: 10, empty: true), .dismissCurrentPresentation)
+    }
+
+    func testEmptyRefreshForDifferentProcessKeepsCurrentPresentation() {
+        XCTAssertEqual(action(refreshed: 10, presented: 20, empty: true), .keepCurrentPresentation)
+    }
+
+    func testEmptyRefreshWithoutPresentationKeepsCurrentState() {
+        XCTAssertEqual(action(refreshed: 10, presented: nil, empty: true), .keepCurrentPresentation)
+    }
+
+    func testEquivalentNonemptyRefreshKeepsCurrentPresentation() {
+        XCTAssertEqual(
+            action(refreshed: 10, presented: 10, empty: false, equivalent: true),
+            .keepCurrentPresentation
+        )
+    }
+
+    func testChangedNonemptyRefreshReplacesCurrentPresentation() {
+        XCTAssertEqual(
+            action(refreshed: 10, presented: 10, empty: false, equivalent: false),
+            .replaceCurrentPresentation
+        )
+    }
+
+    func testChangedNonemptyRefreshForDifferentProcessKeepsCurrentPresentation() {
+        XCTAssertEqual(
+            action(refreshed: 10, presented: 20, empty: false, equivalent: false),
+            .keepCurrentPresentation
+        )
+    }
+
+    private func action(
+        refreshed: pid_t,
+        presented: pid_t?,
+        empty: Bool,
+        equivalent: Bool = false
+    ) -> DockPreviewWindowRefreshAction {
+        DockPreviewWindowRefreshPolicy.action(
+            refreshedProcessIdentifier: refreshed,
+            presentedProcessIdentifier: presented,
+            windowsAreEmpty: empty,
+            snapshotsAreEquivalent: equivalent
+        )
+    }
+}
+
 final class DockPreviewHoverMatchingTests: XCTestCase {
     private let item = CGRect(x: 600, y: 800, width: 64, height: 64)
 

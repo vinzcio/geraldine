@@ -55,6 +55,13 @@ struct Finding: Identifiable {
     }
 }
 
+struct SmartCareScanExtras: Sendable, Equatable {
+    var junk: UInt64
+    var startupItems: Int
+}
+
+typealias SmartCareScanner = @Sendable (UUID) async -> SmartCareScanExtras
+
 @MainActor
 final class SmartCareViewModel: ObservableObject {
     enum Phase: Hashable { case idle, scanning, results }
@@ -63,6 +70,12 @@ final class SmartCareViewModel: ObservableObject {
     @Published var findings: [Finding] = []
     @Published var scanDate: Date?
     private var scanID = UUID()
+    private var scanTask: Task<Void, Never>?
+    private let scanner: SmartCareScanner
+
+    init(scanner: @escaping SmartCareScanner = { _ in await SmartCareViewModel.gather() }) {
+        self.scanner = scanner
+    }
 
     var healthLabel: String {
         switch score { case 85...: return "Great"; case 60..<85: return "Fair"; default: return "Needs Attention" }
@@ -75,7 +88,10 @@ final class SmartCareViewModel: ObservableObject {
         return "Scanned At \(DateFormatter.localizedString(from: scanDate, dateStyle: .none, timeStyle: .short))"
     }
 
-    func scan() {
+    @discardableResult
+    func scan() -> UUID {
+        let previousTask = scanTask
+        previousTask?.cancel()
         let id = UUID()
         scanID = id
         phase = .scanning
@@ -84,139 +100,173 @@ final class SmartCareViewModel: ObservableObject {
         let memFraction = AppState.shared.monitor.memoryFraction
         let diskTotal = AppState.shared.monitor.diskTotal
         let diskFree = max(0, diskTotal - AppState.shared.monitor.diskUsed)
-        Task {
-            let extras = await Self.gather()
-            guard self.scanID == id else { return }
-            var results: [Finding] = []
-
-            if diskTotal <= 0 {
-                results.append(Finding(
-                    title: "Disk Capacity Was Not Available",
-                    detail: "macOS did not return a usable volume total for this pass.",
-                    scope: "Live APFS capacity from the startup volume.",
-                    confidence: .limited,
-                    severity: .warn,
-                    module: .storage,
-                    actionTitle: "Open Storage",
-                    actionIcon: "chart.pie.fill"
-                ))
-            } else if diskFraction > MetricAttentionPolicy.storageUsage {
-                results.append(Finding(
-                    title: "Low On Disk Space",
-                    detail: "Only \(Fmt.size(diskFree)) free. Review storage first, then clean selected items.",
-                    scope: "Live free space on the startup volume.",
-                    confidence: .high,
-                    severity: .bad,
-                    module: .storage,
-                    actionTitle: "Review Storage",
-                    actionIcon: "chart.pie.fill"
-                ))
-            } else {
-                results.append(Finding(
-                    title: "Plenty Of Disk Space",
-                    detail: "\(Fmt.size(diskFree)) free on the startup volume.",
-                    scope: "Live free space on the startup volume.",
-                    confidence: .high,
-                    severity: .good,
-                    module: nil,
-                    actionTitle: nil,
-                    actionIcon: "chart.pie.fill"
-                ))
+        let scanner = scanner
+        scanTask = Task.detached(priority: .userInitiated) { [weak self] in
+            if let previousTask {
+                await previousTask.value
             }
-
-            if extras.junk > 2_000_000_000 {
-                results.append(Finding(
-                    title: "\(Fmt.size(extras.junk)) Of Reviewable Junk",
-                    detail: "Caches, logs, and Trash can be reviewed before Geraldine moves or deletes anything.",
-                    scope: "~/Library/Caches, ~/Library/Logs, and ~/.Trash.",
-                    confidence: .medium,
-                    severity: .warn,
-                    module: .cleanup,
-                    actionTitle: "Review Cleanup",
-                    actionIcon: "sparkles"
-                ))
-            } else {
-                results.append(Finding(
-                    title: "Little Junk To Clean",
-                    detail: "Only \(Fmt.size(extras.junk)) found in the standard cleanup locations.",
-                    scope: "~/Library/Caches, ~/Library/Logs, and ~/.Trash.",
-                    confidence: .medium,
-                    severity: .good,
-                    module: nil,
-                    actionTitle: nil,
-                    actionIcon: "sparkles"
-                ))
-            }
-
-            if memFraction > MetricAttentionPolicy.memoryUsage {
-                results.append(Finding(
-                    title: "Memory Is Running High",
-                    detail: "\(Fmt.percent(memFraction)) is in use. Check heavy apps before freeing inactive memory.",
-                    scope: "Live memory use from Geraldine's system monitor.",
-                    confidence: .high,
-                    severity: .warn,
-                    module: .activity,
-                    actionTitle: "Open Activity",
-                    actionIcon: "waveform.path.ecg"
-                ))
-            } else {
-                results.append(Finding(
-                    title: "Memory Looks Healthy",
-                    detail: "\(Fmt.percent(memFraction)) is in use.",
-                    scope: "Live memory use from Geraldine's system monitor.",
-                    confidence: .high,
-                    severity: .good,
-                    module: nil,
-                    actionTitle: nil,
-                    actionIcon: "waveform.path.ecg"
-                ))
-            }
-
-            if extras.startupItems > 8 {
-                results.append(Finding(
-                    title: "\(extras.startupItems) User Launch Agents",
-                    detail: "A larger login footprint can slow startup. Open Login Items for the reviewable controls.",
-                    scope: "~/Library/LaunchAgents plist count; system launch daemons are not changed here.",
-                    confidence: .medium,
-                    severity: .warn,
-                    module: .loginItems,
-                    actionTitle: "Review Startup",
-                    actionIcon: "power"
-                ))
-            } else {
-                results.append(Finding(
-                    title: "Startup Is Lean",
-                    detail: "\(extras.startupItems) user launch agents found.",
-                    scope: "~/Library/LaunchAgents plist count; system launch daemons are not changed here.",
-                    confidence: .medium,
-                    severity: .good,
-                    module: nil,
-                    actionTitle: nil,
-                    actionIcon: "power"
-                ))
-            }
-
-            let penalty = results.reduce(0) { $0 + $1.severity.penalty }
-            self.findings = results.sorted { $0.severity.penalty > $1.severity.penalty }
-            self.score = max(5, 100 - penalty)
-            self.scanDate = Date()
-            self.phase = .results
+            guard !Task.isCancelled else { return }
+            let extras = await scanner(id)
+            guard !Task.isCancelled else { return }
+            await self?.publish(
+                id: id,
+                diskFraction: diskFraction,
+                memFraction: memFraction,
+                diskTotal: diskTotal,
+                diskFree: diskFree,
+                extras: extras
+            )
         }
+        return id
     }
 
-    private struct Extras { var junk: UInt64; var startupItems: Int }
+    func cancelScan() {
+        guard phase == .scanning else { return }
+        scanID = UUID()
+        scanTask?.cancel()
+        scanDate = nil
+        phase = .idle
+    }
 
-    private static func gather() async -> Extras {
-        await Task.detached(priority: .userInitiated) { () -> Extras in
-            let home = FileManager.default.homeDirectoryForCurrentUser
-            let junk = DiskScan.size(of: home.appendingPathComponent("Library/Caches"))
-                + DiskScan.size(of: home.appendingPathComponent("Library/Logs"))
-                + DiskScan.size(of: home.appendingPathComponent(".Trash"))
-            let agents = (try? FileManager.default.contentsOfDirectory(
-                at: home.appendingPathComponent("Library/LaunchAgents"),
-                includingPropertiesForKeys: nil))?.filter { $0.pathExtension == "plist" }.count ?? 0
-            return Extras(junk: junk, startupItems: agents)
-        }.value
+    func ownedScanTaskForTesting() -> Task<Void, Never>? {
+        scanTask
+    }
+
+    private func publish(
+        id: UUID,
+        diskFraction: Double,
+        memFraction: Double,
+        diskTotal: Double,
+        diskFree: Double,
+        extras: SmartCareScanExtras
+    ) {
+        guard scanID == id else { return }
+        var results: [Finding] = []
+
+        if diskTotal <= 0 {
+            results.append(Finding(
+                title: "Disk Capacity Was Not Available",
+                detail: "macOS did not return a usable volume total for this pass.",
+                scope: "Live APFS capacity from the startup volume.",
+                confidence: .limited,
+                severity: .warn,
+                module: .storage,
+                actionTitle: "Open Storage",
+                actionIcon: "chart.pie.fill"
+            ))
+        } else if diskFraction > MetricAttentionPolicy.storageUsage {
+            results.append(Finding(
+                title: "Low On Disk Space",
+                detail: "Only \(Fmt.size(diskFree)) free. Review storage first, then clean selected items.",
+                scope: "Live free space on the startup volume.",
+                confidence: .high,
+                severity: .bad,
+                module: .storage,
+                actionTitle: "Review Storage",
+                actionIcon: "chart.pie.fill"
+            ))
+        } else {
+            results.append(Finding(
+                title: "Plenty Of Disk Space",
+                detail: "\(Fmt.size(diskFree)) free on the startup volume.",
+                scope: "Live free space on the startup volume.",
+                confidence: .high,
+                severity: .good,
+                module: nil,
+                actionTitle: nil,
+                actionIcon: "chart.pie.fill"
+            ))
+        }
+
+        if extras.junk > 2_000_000_000 {
+            results.append(Finding(
+                title: "\(Fmt.size(extras.junk)) Of Reviewable Junk",
+                detail: "Caches, logs, and Trash can be reviewed before Geraldine moves or deletes anything.",
+                scope: "~/Library/Caches, ~/Library/Logs, and ~/.Trash.",
+                confidence: .medium,
+                severity: .warn,
+                module: .cleanup,
+                actionTitle: "Review Cleanup",
+                actionIcon: "sparkles"
+            ))
+        } else {
+            results.append(Finding(
+                title: "Little Junk To Clean",
+                detail: "Only \(Fmt.size(extras.junk)) found in the standard cleanup locations.",
+                scope: "~/Library/Caches, ~/Library/Logs, and ~/.Trash.",
+                confidence: .medium,
+                severity: .good,
+                module: nil,
+                actionTitle: nil,
+                actionIcon: "sparkles"
+            ))
+        }
+
+        if memFraction > MetricAttentionPolicy.memoryUsage {
+            results.append(Finding(
+                title: "Memory Is Running High",
+                detail: "\(Fmt.percent(memFraction)) is in use. Check heavy apps before freeing inactive memory.",
+                scope: "Live memory use from Geraldine's system monitor.",
+                confidence: .high,
+                severity: .warn,
+                module: .activity,
+                actionTitle: "Open Activity",
+                actionIcon: "waveform.path.ecg"
+            ))
+        } else {
+            results.append(Finding(
+                title: "Memory Looks Healthy",
+                detail: "\(Fmt.percent(memFraction)) is in use.",
+                scope: "Live memory use from Geraldine's system monitor.",
+                confidence: .high,
+                severity: .good,
+                module: nil,
+                actionTitle: nil,
+                actionIcon: "waveform.path.ecg"
+            ))
+        }
+
+        if extras.startupItems > 8 {
+            results.append(Finding(
+                title: "\(extras.startupItems) User Launch Agents",
+                detail: "A larger login footprint can slow startup. Open Login Items for the reviewable controls.",
+                scope: "~/Library/LaunchAgents plist count; system launch daemons are not changed here.",
+                confidence: .medium,
+                severity: .warn,
+                module: .loginItems,
+                actionTitle: "Review Startup",
+                actionIcon: "power"
+            ))
+        } else {
+            results.append(Finding(
+                title: "Startup Is Lean",
+                detail: "\(extras.startupItems) user launch agents found.",
+                scope: "~/Library/LaunchAgents plist count; system launch daemons are not changed here.",
+                confidence: .medium,
+                severity: .good,
+                module: nil,
+                actionTitle: nil,
+                actionIcon: "power"
+            ))
+        }
+
+        let penalty = results.reduce(0) { $0 + $1.severity.penalty }
+        findings = results.sorted { $0.severity.penalty > $1.severity.penalty }
+        score = max(5, 100 - penalty)
+        scanDate = Date()
+        phase = .results
+        scanTask = nil
+    }
+
+    nonisolated static func gather() async -> SmartCareScanExtras {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let junk = DiskScan.size(of: home.appendingPathComponent("Library/Caches"))
+            + DiskScan.size(of: home.appendingPathComponent("Library/Logs"))
+            + DiskScan.size(of: home.appendingPathComponent(".Trash"))
+        let agents = (try? FileManager.default.contentsOfDirectory(
+            at: home.appendingPathComponent("Library/LaunchAgents"),
+            includingPropertiesForKeys: nil))?.filter { $0.pathExtension == "plist" }.count ?? 0
+        return SmartCareScanExtras(junk: junk, startupItems: agents)
     }
 }
 
@@ -280,6 +330,7 @@ struct SmartCareView: View {
             if vm.phase == .results, !resultRevealCompleted { finalizeResultReveal() }
         }
         .onDisappear {
+            vm.cancelScan()
             revealTask?.cancel()
             revealTask = nil
         }

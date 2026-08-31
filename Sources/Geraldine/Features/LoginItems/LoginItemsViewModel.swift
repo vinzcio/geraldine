@@ -110,6 +110,40 @@ struct LoginItemOutcome: Identifiable, Equatable {
     let kind: Kind
 }
 
+protocol LoginItemToggleFileOperating {
+    func itemExists(at url: URL) -> Bool
+    func createDirectory(at url: URL) throws
+    func moveItem(at source: URL, to destination: URL) throws
+}
+
+struct FileManagerLoginItemToggleFileOperator: LoginItemToggleFileOperating {
+    private let fileManager: FileManager
+
+    init(fileManager: FileManager = .default) {
+        self.fileManager = fileManager
+    }
+
+    func itemExists(at url: URL) -> Bool {
+        fileManager.fileExists(atPath: url.path)
+    }
+
+    func createDirectory(at url: URL) throws {
+        try fileManager.createDirectory(at: url, withIntermediateDirectories: true)
+    }
+
+    func moveItem(at source: URL, to destination: URL) throws {
+        try fileManager.moveItem(at: source, to: destination)
+    }
+}
+
+private struct LoginItemToggleCollisionError: LocalizedError {
+    let destination: URL
+
+    var errorDescription: String? {
+        "A launch item named \(destination.lastPathComponent) already exists there. Neither item was changed."
+    }
+}
+
 @MainActor
 final class LoginItemsViewModel: ObservableObject {
     @Published var items: [LaunchItem] = []
@@ -124,12 +158,26 @@ final class LoginItemsViewModel: ObservableObject {
     /// so a toggle mid-rescan can't flash rows back to their previous state.
     private var scanGeneration = 0
 
-    private var disabledDir: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/Geraldine/DisabledLaunchAgents")
-    }
-    private var userAgentsDir: URL {
-        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/LaunchAgents")
+    private let disabledDir: URL
+    private let userAgentsDir: URL
+    private let toggleFileOperator: any LoginItemToggleFileOperating
+    /// Tests replace the production rescan with a callback so successful-toggle
+    /// behavior is observable without scanning any real LaunchAgents directory.
+    private let toggleRescan: (@MainActor () -> Void)?
+
+    init(
+        toggleFileOperator: any LoginItemToggleFileOperating = FileManagerLoginItemToggleFileOperator(),
+        disabledDirectory: URL? = nil,
+        userAgentsDirectory: URL? = nil,
+        toggleRescan: (@MainActor () -> Void)? = nil
+    ) {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        self.toggleFileOperator = toggleFileOperator
+        self.disabledDir = disabledDirectory
+            ?? home.appendingPathComponent("Library/Application Support/Geraldine/DisabledLaunchAgents")
+        self.userAgentsDir = userAgentsDirectory
+            ?? home.appendingPathComponent("Library/LaunchAgents")
+        self.toggleRescan = toggleRescan
     }
 
     func items(in scope: LaunchItem.Scope) -> [LaunchItem] {
@@ -184,14 +232,15 @@ final class LoginItemsViewModel: ObservableObject {
     }
 
     private func performToggle(_ item: LaunchItem) {
-        let fm = FileManager.default
         let dest = item.enabled
             ? disabledDir.appendingPathComponent(item.plistURL.lastPathComponent)
             : userAgentsDir.appendingPathComponent(item.plistURL.lastPathComponent)
-        try? fm.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
         do {
-            if fm.fileExists(atPath: dest.path) { try fm.removeItem(at: dest) }
-            try fm.moveItem(at: item.plistURL, to: dest)
+            if toggleFileOperator.itemExists(at: dest) {
+                throw LoginItemToggleCollisionError(destination: dest)
+            }
+            try toggleFileOperator.createDirectory(at: dest.deletingLastPathComponent())
+            try toggleFileOperator.moveItem(at: item.plistURL, to: dest)
             lastError = nil
             let verb = item.enabled ? "Disabled" : "Enabled"
             let message = "\(verb) \(item.displayName)."
@@ -203,7 +252,11 @@ final class LoginItemsViewModel: ObservableObject {
             }
             publishOutcome(itemID: item.id, message: message, kind: .success)
             clearStateLater(state, for: item.id)
-            load()
+            if let toggleRescan {
+                toggleRescan()
+            } else {
+                load()
+            }
         } catch {
             let message = "Could not \(item.enabled ? "disable" : "enable") \(item.displayName): \((error as NSError).localizedDescription)"
             let state = LoginItemActionState.failure(message)

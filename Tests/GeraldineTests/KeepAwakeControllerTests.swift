@@ -90,6 +90,137 @@ final class KeepAwakeControllerTests: XCTestCase {
         XCTAssertEqual(controller.defaultDuration, .oneHour)
     }
 
+    func testBatteryPolicyAllowsACAndAllowsBatteryWhenDisabled() {
+        let suiteName = "KeepAwakeControllerTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        var onBattery = false
+        let controller = KeepAwakeController(
+            defaults: defaults,
+            currentPowerSourceIsBattery: { onBattery }
+        )
+        defer { controller.shutdown() }
+
+        controller.deactivateOnBattery = true
+        controller.activate(duration: 60)
+        XCTAssertTrue(controller.isActive)
+        XCTAssertNil(controller.lastError)
+
+        controller.deactivate()
+        controller.deactivateOnBattery = false
+        onBattery = true
+        controller.activate(duration: 60)
+        XCTAssertTrue(controller.isActive)
+        XCTAssertNil(controller.lastError)
+    }
+
+    func testBatteryPolicyBlocksEveryActivationSurfaceButKeepsURLsRecognized() {
+        func runBlockedCase(
+            _ name: String,
+            recognized: Bool? = nil,
+            action: (KeepAwakeController) -> Bool?
+        ) {
+            let suiteName = "KeepAwakeControllerTests.\(name).\(UUID().uuidString)"
+            let defaults = UserDefaults(suiteName: suiteName)!
+            defaults.set(true, forKey: "keepAwake.deactivateOnBattery")
+            let controller = KeepAwakeController(
+                defaults: defaults,
+                currentPowerSourceIsBattery: { true }
+            )
+            defer {
+                controller.shutdown()
+                defaults.removePersistentDomain(forName: suiteName)
+            }
+
+            let result = action(controller)
+            if let recognized {
+                XCTAssertEqual(result, Optional(recognized), name)
+            } else {
+                XCTAssertNil(result, name)
+            }
+            XCTAssertFalse(controller.isActive, name)
+            XCTAssertEqual(controller.statusLine, "Off", name)
+            XCTAssertNil(controller.activeUntil, name)
+            XCTAssertNil(controller.remaining, name)
+            XCTAssertEqual(
+                controller.lastError,
+                KeepAwakeController.batteryPolicyRefusalMessage,
+                name
+            )
+        }
+
+        runBlockedCase("direct duration") { controller in
+            controller.activate(duration: 60)
+            return nil
+        }
+        runBlockedCase("default duration") { controller in
+            controller.activateDefault()
+            return nil
+        }
+        runBlockedCase("duration option") { controller in
+            controller.activate(option: .tenMinutes)
+            return nil
+        }
+        runBlockedCase("inactive toggle") { controller in
+            controller.toggle()
+            return nil
+        }
+        runBlockedCase("URL activate", recognized: true) { controller in
+            controller.handle(url: URL(string: "geraldine:activate?minutes=10")!)
+        }
+        runBlockedCase("URL toggle", recognized: true) { controller in
+            controller.handle(url: URL(string: "geraldine:toggle?minutes=10")!)
+        }
+    }
+
+    func testBatteryPolicyEndsAReplacementSessionAndLaterAllowedActivationRecovers() {
+        let suiteName = "KeepAwakeControllerTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(true, forKey: "keepAwake.deactivateOnBattery")
+        var onBattery = false
+        let controller = KeepAwakeController(
+            defaults: defaults,
+            currentPowerSourceIsBattery: { onBattery }
+        )
+        defer { controller.shutdown() }
+
+        controller.activate(duration: 60)
+        XCTAssertTrue(controller.isActive)
+
+        onBattery = true
+        controller.activate(duration: 120)
+        XCTAssertFalse(controller.isActive)
+        XCTAssertNil(controller.activeUntil)
+        XCTAssertNil(controller.remaining)
+        XCTAssertEqual(controller.lastError, KeepAwakeController.batteryPolicyRefusalMessage)
+
+        onBattery = false
+        controller.activate(duration: 120)
+        XCTAssertTrue(controller.isActive)
+        XCTAssertNil(controller.lastError)
+    }
+
+    func testEnablingBatteryPolicyStillDeactivatesAnExistingBatterySession() {
+        let suiteName = "KeepAwakeControllerTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        var onBattery = false
+        let controller = KeepAwakeController(
+            defaults: defaults,
+            currentPowerSourceIsBattery: { onBattery }
+        )
+        defer { controller.shutdown() }
+
+        controller.activate(duration: 60)
+        XCTAssertTrue(controller.isActive)
+
+        onBattery = true
+        controller.deactivateOnBattery = true
+        XCTAssertFalse(controller.isActive)
+        XCTAssertNil(controller.lastError)
+    }
+
     func testTimeMarkerLabelsPreserveHalfMinuteQuarterPoints() {
         XCTAssertEqual(KeepAwakeTimeMarkerFormatter.string(seconds: 0), "0s")
         XCTAssertEqual(KeepAwakeTimeMarkerFormatter.string(seconds: 1), "1s")

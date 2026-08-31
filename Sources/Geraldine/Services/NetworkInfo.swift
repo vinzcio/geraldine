@@ -5,6 +5,24 @@ import CoreWLAN
 import CoreLocation
 import AppKit
 
+struct NetworkSpeedTestDisclosure: Equatable, Sendable {
+    let destination: String
+    let downloadByteCount: Int
+    let uploadByteCount: Int
+
+    static let current = NetworkSpeedTestDisclosure(
+        destination: "Cloudflare",
+        downloadByteCount: 25_000_000,
+        uploadByteCount: 10_000_000
+    )
+
+    var text: String {
+        let downloadMegabytes = downloadByteCount / 1_000_000
+        let uploadMegabytes = uploadByteCount / 1_000_000
+        return "Runs a speed test with \(destination); each test transfers up to \(downloadMegabytes) MB down and \(uploadMegabytes) MB up."
+    }
+}
+
 /// Live view of the Mac's own network connection — connection type, Wi-Fi name,
 /// security, signal, link speed — plus an on-demand throughput test.
 ///
@@ -247,7 +265,7 @@ final class NetworkMonitor: NSObject, ObservableObject {
 
     /// Download throughput in Mbps, measured against Cloudflare's public endpoint.
     nonisolated private static func measureDownload() async throws -> Double {
-        let bytes = 25_000_000
+        let bytes = NetworkSpeedTestDisclosure.current.downloadByteCount
         guard let url = URL(string: "https://speed.cloudflare.com/__down?bytes=\(bytes)") else {
             throw URLError(.badURL)
         }
@@ -266,7 +284,7 @@ final class NetworkMonitor: NSObject, ObservableObject {
     /// Upload throughput in Mbps, measured against Cloudflare's public endpoint.
     nonisolated private static func measureUpload() async throws -> Double {
         guard let url = URL(string: "https://speed.cloudflare.com/__up") else { throw URLError(.badURL) }
-        let payload = Data(count: 10_000_000)
+        let payload = Data(count: NetworkSpeedTestDisclosure.current.uploadByteCount)
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.timeoutInterval = 30

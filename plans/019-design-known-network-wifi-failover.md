@@ -438,12 +438,15 @@ labels and no preselected defaults:
     otherwise explicitly `N/A` with the same justification.
 16. `Corrupt and incompatible recovery`: mandatory for persisted state;
     otherwise explicitly `N/A` with the same justification.
+17. `Privacy, disclosure, and data minimization`: the exact network fields that
+    may be displayed, included in notifications, persisted locally, redacted,
+    and cleared by the user.
 
 Use this exact table schema:
 
 `| ID | Decision | Options and tradeoffs | Selected value | Vincent approval source | Status |`
 
-Rows use IDs `D01` through `D16` in the order above. A selected row records a
+Rows use IDs `D01` through `D17` in the order above. A selected row records a
 nonempty value, plus `Vincent approval: YYYY-MM-DD - <direct source reference>`
 and status `APPROVED`. During review, all three cells may say `UNRESOLVED`; a GO
 gate may not. Record exactly one `Persistence contract: NONE`, `Persistence
@@ -481,7 +484,8 @@ require_decision_row D13 'Managed policy rejection'
 require_decision_row D14 'Retention and deletion'
 require_decision_row D15 'Schema compatibility and evolution'
 require_decision_row D16 'Corrupt and incompatible recovery'
-for id in D01 D02 D03 D04 D05 D06 D07 D08 D09 D10 D11 D12 D13 D14 D15 D16; do
+require_decision_row D17 'Privacy, disclosure, and data minimization'
+for id in D01 D02 D03 D04 D05 D06 D07 D08 D09 D10 D11 D12 D13 D14 D15 D16 D17; do
   rg "^\\| $id \\|" "$DOC" | /usr/bin/awk -F'|' '
     function trim(v) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", v); return v }
     {
@@ -498,13 +502,15 @@ Cover wrong-network selection, stale profile order, duplicate/hidden SSIDs,
 same-name networks, captive portals, VPN/Ethernet presence, loss of Location
 access, rapid oscillation, authorization fatigue, managed Macs, commit success
 with no reassociation, failed rollback, app crash mid-transaction, and another
-actor editing preferred order concurrently.
+actor editing preferred order concurrently. Also cover network metadata exposed
+or retained beyond the user's intent in UI, notifications, logs, or durable
+state.
 
 Use this exact threat-table schema:
 
 `| ID | Threat | Harm/consequence | Detection/evidence | Candidate containment/recovery | Status and owner |`
 
-Assign `T01` through `T14` in the order listed above. Every harm, detection, and
+Assign `T01` through `T15` in the order listed above. Every harm, detection, and
 containment cell must contain actual analysis, not a copied threat name, blank,
 `TBD`, or `UNRESOLVED`. Status may remain unresolved under NO-GO. Under GO, each
 status must be `ACCEPTED - Vincent approval: YYYY-MM-DD - <direct source
@@ -548,7 +554,8 @@ require_threat_row T11 'commit success with no reassociation'
 require_threat_row T12 'failed rollback'
 require_threat_row T13 'app crash mid-transaction'
 require_threat_row T14 'another actor editing preferred order concurrently'
-for id in T01 T02 T03 T04 T05 T06 T07 T08 T09 T10 T11 T12 T13 T14; do
+require_threat_row T15 'network metadata exposed or retained beyond user intent'
+for id in T01 T02 T03 T04 T05 T06 T07 T08 T09 T10 T11 T12 T13 T14 T15; do
   rg "^\\| $id \\|" "$DOC" | /usr/bin/awk -F'|' '
     function trim(v) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", v); return v }
     {
@@ -566,7 +573,7 @@ if rg -q '^Final gate: GO$' "$DOC"; then
   rg -q '^Decision record status: APPROVED$' "$DOC"
   rg -q '^Capability evidence status: COMPLETE$' "$DOC"
   rg -q '^Live mutation validation prerequisite: NONE$' "$DOC"
-  for id in D01 D02 D03 D04 D05 D06 D07 D08 D09 D10 D11 D12 D13 D14 D15 D16; do
+  for id in D01 D02 D03 D04 D05 D06 D07 D08 D09 D10 D11 D12 D13 D14 D15 D16 D17; do
     rg "^\\| $id \\|" "$DOC" | /usr/bin/awk -F'|' -v id="$id" '
       function trim(v) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", v); return v }
       {
@@ -590,7 +597,7 @@ if rg -q '^Final gate: GO$' "$DOC"; then
       ! rg "^\\| $id \\|[^|]*\\|[^|]*\\|[[:space:]]*N/A" "$DOC" || exit 1
     done
   fi
-  for id in T01 T02 T03 T04 T05 T06 T07 T08 T09 T10 T11 T12 T13 T14; do
+  for id in T01 T02 T03 T04 T05 T06 T07 T08 T09 T10 T11 T12 T13 T14 T15; do
     rg "^\\| $id \\|" "$DOC" | /usr/bin/awk -F'|' '
       function trim(v) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", v); return v }
       { if (trim($7) !~ /^ACCEPTED - Vincent approval: [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] - .+/) exit 1 }' || exit 1

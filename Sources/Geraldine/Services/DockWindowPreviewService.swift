@@ -1,5 +1,26 @@
 import AppKit
 
+enum DockPreviewWindowRefreshAction: Equatable {
+    case keepCurrentPresentation
+    case dismissCurrentPresentation
+    case replaceCurrentPresentation
+}
+
+enum DockPreviewWindowRefreshPolicy {
+    static func action(
+        refreshedProcessIdentifier: pid_t,
+        presentedProcessIdentifier: pid_t?,
+        windowsAreEmpty: Bool,
+        snapshotsAreEquivalent: Bool
+    ) -> DockPreviewWindowRefreshAction {
+        guard presentedProcessIdentifier == refreshedProcessIdentifier else {
+            return .keepCurrentPresentation
+        }
+        if windowsAreEmpty { return .dismissCurrentPresentation }
+        return snapshotsAreEquivalent ? .keepCurrentPresentation : .replaceCurrentPresentation
+    }
+}
+
 @MainActor
 final class DockWindowPreviewService {
     private struct DisplaySnapshot {
@@ -414,20 +435,33 @@ final class DockWindowPreviewService {
             DispatchQueue.main.async {
                 guard let self, self.isRunning, !target.app.isTerminated,
                       self.windowSnapshotGenerations[processIdentifier] == generation else { return }
+                let presentation = self.presentation
+                let action = DockPreviewWindowRefreshPolicy.action(
+                    refreshedProcessIdentifier: processIdentifier,
+                    presentedProcessIdentifier: presentation?.session.processIdentifier,
+                    windowsAreEmpty: windows.isEmpty,
+                    snapshotsAreEquivalent: presentation.map {
+                        DockPreviewWindowSnapshotMatching.equivalent($0.session.windows, windows)
+                    } ?? false
+                )
                 if windows.isEmpty {
                     self.windowSnapshots.removeValue(forKey: processIdentifier)
-                    return
+                } else {
+                    self.windowSnapshots[processIdentifier] = windows
                 }
-                self.windowSnapshots[processIdentifier] = windows
-                guard let presentation = self.presentation,
-                      presentation.session.processIdentifier == processIdentifier,
-                      !DockPreviewWindowSnapshotMatching.equivalent(presentation.session.windows, windows) else {
+
+                switch action {
+                case .keepCurrentPresentation:
                     return
+                case .dismissCurrentPresentation:
+                    self.dismissPresentation()
+                case .replaceCurrentPresentation:
+                    guard let presentation else { return }
+                    self.present(
+                        target: DockPreviewTarget(app: target.app, itemFrame: presentation.quartzItemFrame),
+                        windows: windows, refreshWindows: false
+                    )
                 }
-                self.present(
-                    target: DockPreviewTarget(app: target.app, itemFrame: presentation.quartzItemFrame),
-                    windows: windows, refreshWindows: false
-                )
             }
         }
     }

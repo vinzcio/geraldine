@@ -23,6 +23,7 @@ struct IdleActivitySimulationSnapshot: Equatable {
 /// idle for a configurable delay. Idleness comes from polling the system's
 /// HIDIdleTime counter — deliberately not a CGEvent tap, so Geraldine never
 /// sits in the delivery path of real keyboard or mouse input.
+@MainActor
 final class IdleActivitySimulationService {
     var onSnapshotChange: ((IdleActivitySimulationSnapshot) -> Void)?
 
@@ -58,11 +59,25 @@ final class IdleActivitySimulationService {
     private var lastUserInput = Date()
     private var errorMessage: String?
     private var timer: Timer?
+    private let accessibilityAvailable: () -> Bool
+    private let currentIdleDuration: () -> TimeInterval?
+    private let injectedPulsePoster: (() -> Bool)?
 
-    init(idleDelay: TimeInterval = 120, pulseInterval: TimeInterval = 30) {
+    init(
+        idleDelay: TimeInterval = 120,
+        pulseInterval: TimeInterval = 30,
+        accessibilityAvailable: (() -> Bool)? = nil,
+        currentIdleDuration: (() -> TimeInterval?)? = nil,
+        pulsePoster: (() -> Bool)? = nil
+    ) {
         self.idleDelay = idleDelay
         self.pulseInterval = pulseInterval
+        self.accessibilityAvailable = accessibilityAvailable ?? { Permissions.hasAccessibilityAccess() }
+        self.currentIdleDuration = currentIdleDuration ?? { Self.currentHIDIdleDuration() }
+        injectedPulsePoster = pulsePoster
     }
+
+    var hasScheduledTimer: Bool { timer != nil }
 
     func start(idleDelay newIdleDelay: TimeInterval? = nil) {
         if let newIdleDelay {
@@ -71,12 +86,12 @@ final class IdleActivitySimulationService {
         isEnabled = true
         errorMessage = nil
 
-        guard Permissions.hasAccessibilityAccess() else {
+        guard accessibilityAvailable() else {
             stopRuntime(phase: .needsAccessibility)
             return
         }
 
-        guard let currentIdle = Self.currentHIDIdleDuration() else {
+        guard let currentIdle = currentIdleDuration() else {
             stopRuntime(phase: .failed, errorMessage: "Could Not Read System Idle Time")
             return
         }
@@ -111,21 +126,30 @@ final class IdleActivitySimulationService {
     private func schedule(after interval: TimeInterval) {
         timer?.invalidate()
         let timer = Timer(timeInterval: max(0.25, interval), repeats: false) { [weak self] _ in
-            self?.timerFired()
+            Self.deliverMainRunLoopTimerCallback {
+                self?.timerFired()
+            }
         }
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
     }
 
+    nonisolated static func deliverMainRunLoopTimerCallback(
+        _ callback: @MainActor () -> Void
+    ) {
+        precondition(Thread.isMainThread, "Idle activity timers must run on the main run loop")
+        MainActor.assumeIsolated(callback)
+    }
+
     private func timerFired() {
         guard isEnabled else { return }
 
-        guard Permissions.hasAccessibilityAccess() else {
+        guard accessibilityAvailable() else {
             stopRuntime(phase: .needsAccessibility)
             return
         }
 
-        guard let idle = Self.currentHIDIdleDuration() else {
+        guard let idle = currentIdleDuration() else {
             stopRuntime(phase: .failed, errorMessage: "Could Not Read System Idle Time")
             return
         }
@@ -143,8 +167,7 @@ final class IdleActivitySimulationService {
                 schedule(after: max(1, idleDelay - idle))
                 return
             }
-            pulse()
-            schedule(after: nextPulseInterval())
+            performPulseCycle()
             return
         }
 
@@ -160,22 +183,32 @@ final class IdleActivitySimulationService {
     private func beginPulsing() {
         isPulsing = true
         setPhase(.pulsing)
-        pulse()
+        performPulseCycle()
+    }
+
+    func performPulseCycle() {
+        guard isEnabled, isPulsing else { return }
+        guard pulse() else { return }
         schedule(after: nextPulseInterval())
     }
 
-    private func pulse() {
+    @discardableResult
+    private func pulse() -> Bool {
         guard postPulse() else {
             stopRuntime(phase: .failed, errorMessage: "Could Not Post Input Events")
-            return
+            return false
         }
 
         lastPulse = Date()
         lastPulseUptime = ProcessInfo.processInfo.systemUptime
         setPhase(.pulsing)
+        return true
     }
 
     private func postPulse() -> Bool {
+        if let injectedPulsePoster {
+            return injectedPulsePoster()
+        }
         guard let source = CGEventSource(stateID: .hidSystemState) else { return false }
 
         for action in randomPulseActions() {

@@ -35,12 +35,71 @@ struct MaintenanceRun: Equatable {
     let finishedAt: Date
 }
 
+struct MaintenanceCommandResult: Equatable, Sendable {
+    let ok: Bool
+    let output: String
+    let finishedAt: Date
+}
+
+protocol MaintenanceCommandRunning: Sendable {
+    func run(_ launchPath: String, arguments: [String]) async -> MaintenanceCommandResult
+    func runAdmin(_ command: String) async -> MaintenanceCommandResult
+}
+
+struct LiveMaintenanceCommandRunner: MaintenanceCommandRunning {
+    func run(_ launchPath: String, arguments: [String]) async -> MaintenanceCommandResult {
+        await Task.detached {
+            let result = Shell.run(launchPath, arguments)
+            return MaintenanceCommandResult(
+                ok: result.status == 0,
+                output: result.output,
+                finishedAt: result.finishedAt
+            )
+        }.value
+    }
+
+    func runAdmin(_ command: String) async -> MaintenanceCommandResult {
+        await Task.detached {
+            let result = Shell.runAdmin(command)
+            return MaintenanceCommandResult(
+                ok: result.ok,
+                output: result.output,
+                finishedAt: result.finishedAt
+            )
+        }.value
+    }
+}
+
+protocol MaintenanceClock: Sendable {
+    func waitForIdleRevert() async
+}
+
+struct SystemMaintenanceClock: MaintenanceClock {
+    func waitForIdleRevert() async {
+        try? await Task.sleep(nanoseconds: 2_500_000_000)
+    }
+}
+
 @MainActor
 final class MaintenanceViewModel: ObservableObject {
     @Published var status: [String: TaskStatus] = [:]
     @Published var lastRuns: [String: MaintenanceRun] = [:]
 
-    let tasks: [MaintenanceTask] = [
+    private let runner: any MaintenanceCommandRunning
+    private let clock: any MaintenanceClock
+
+    let tasks: [MaintenanceTask]
+
+    init(
+        runner: any MaintenanceCommandRunning = LiveMaintenanceCommandRunner(),
+        clock: any MaintenanceClock = SystemMaintenanceClock()
+    ) {
+        self.runner = runner
+        self.clock = clock
+        self.tasks = Self.defaultTasks
+    }
+
+    private static let defaultTasks: [MaintenanceTask] = [
         .init(id: "dns", title: "Flush DNS Cache",
               detail: "Fixes sites that won't load after a network change.",
               icon: "globe", needsAdmin: true,
@@ -69,20 +128,18 @@ final class MaintenanceViewModel: ObservableObject {
     func run(_ task: MaintenanceTask) {
         status[task.id] = .running
         Task {
-            let run = await Task.detached { () -> MaintenanceRun in
-                if task.needsAdmin {
-                    let result = Shell.runAdmin(task.command)
-                    return MaintenanceRun(ok: result.ok,
-                                          command: task.command,
-                                          output: result.output,
-                                          finishedAt: result.finishedAt)
-                }
-                let result = Shell.run("/bin/sh", ["-c", task.command])
-                return MaintenanceRun(ok: result.status == 0,
-                                      command: task.command,
-                                      output: result.output,
-                                      finishedAt: result.finishedAt)
-            }.value
+            let result: MaintenanceCommandResult
+            if task.needsAdmin {
+                result = await runner.runAdmin(task.command)
+            } else {
+                result = await runner.run("/bin/sh", arguments: ["-c", task.command])
+            }
+            let run = MaintenanceRun(
+                ok: result.ok,
+                command: task.command,
+                output: result.output,
+                finishedAt: result.finishedAt
+            )
             self.lastRuns[task.id] = run
             self.status[task.id] = run.ok ? .done : .failed
             if run.ok { self.scheduleIdleRevert(task.id) }
@@ -93,8 +150,12 @@ final class MaintenanceViewModel: ObservableObject {
     /// stays tappable. lastRuns is left intact so the completion time still reads.
     private func scheduleIdleRevert(_ id: String) {
         Task {
-            try? await Task.sleep(nanoseconds: 2_500_000_000)
-            if self.status[id] == .done { self.status[id] = .idle }
+            await resetSuccessfulStateAfterDelay(id)
         }
+    }
+
+    func resetSuccessfulStateAfterDelay(_ id: String) async {
+        await clock.waitForIdleRevert()
+        if status[id] == .done { status[id] = .idle }
     }
 }

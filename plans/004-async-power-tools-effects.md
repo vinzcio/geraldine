@@ -1,48 +1,94 @@
 # Plan 004: Move slow Power Tools effects off the main actor
 
-> **Executor instructions**: Execute only after Plans 001 and 003. Follow each
-> gate, preserve UI preparation on the main actor, and stop on any listed
-> condition. Update Plan 004's README row when complete unless a reviewer owns
-> the index.
+> **Executor instructions**: Execute only after Plans 001, 003, and 007 are
+> present in the supplied base. Follow every fail-closed gate. The dispatcher
+> owns `plans/README.md`, the checkout/worktree, commits, and integration; do not
+> edit the index or mutate Git state in this lane.
 >
-> **Drift check (run first)**:
-> `git diff --stat c8aeca4 -- Sources/Geraldine/Services/PowerTools.swift Sources/Geraldine/Features/PowerTools/PowerToolsView.swift Tests/GeraldineTests/PowerToolsOperationCoordinatorTests.swift`
-> Plans 003 and 001 are expected to have changed Finder selection and Trash
-> internals. Reconcile those planned changes; stop for unrelated semantic drift.
+> **Current handoff**: this plan was refreshed in the source-only export
+> `/private/tmp/geraldine-power-tools-lane-01a05441`. That export has no `.git`
+> directory, so its source work may be implemented and reviewed statically but
+> no Git, build, or test gate may be claimed there. The integration owner must
+> run the complete gate below from a clean isolated Git checkout before handoff.
 
 ## Status
 
 - **Priority**: P1
 - **Effort**: M
 - **Risk**: MED
-- **Depends on**: `plans/001-safe-trash-boundary.md`, `plans/003-structured-finder-selection.md`
-- **Category**: perf, tech-debt, tests
-- **Planned at**: commit `c8aeca4`, 2026-07-15
+- **Depends on**: `plans/001-safe-trash-boundary.md`,
+  `plans/003-structured-finder-selection.md`, and
+  `plans/007-fail-closed-dock-action-targeting.md`
+- **Compatible with**: completed Plans 011 and 014; their files remain outside
+  this plan
+- **Category**: performance, correctness, tests
+- **Prepared from**: repository commit `cd1d60403c1221a8be104c4c11567b40ad816062`
+  (which contains plan index commit `c1f51ea`) plus the exact post-Plan-007
+  `PowerTools.swift` fingerprint below, 2026-08-31
 
 ## Why this matters
 
-`PowerToolsController` is main-actor isolated and synchronously performs one
-`shasum` process per file, copy/move loops, disk eject commands, and permanent
-Trash deletion. Slow media or large files can freeze the main window, menu-bar
-panel, status animation, and event handling. This plan separates main-actor UI
-preparation and result publication from background-safe effects, provides one
-operation-ownership state machine, and consolidates Empty Trash onto the tested
-Plan 001 boundary.
+`PowerToolsController` is `@MainActor` and currently performs checksum
+processes, file copy/move loops, terminal launch, disk ejection, Finder Trash
+moves, and permanent Trash deletion synchronously. `PowerToolsView.perform`
+yields once but then invokes that work on the main actor. Large or slow media
+can therefore freeze the menu-bar UI and event handling. This plan keeps Finder,
+AppKit, and published-state preparation on main, moves only immutable
+file/process effects to an explicitly detached runner, and gives every view
+action one fail-closed ownership state.
 
-## Current state
+## Verified current state
 
-- `PowerToolsController` directly writes `lastResult` after synchronous service
-  calls (`PowerTools.swift:182-220`).
-- `PowerToolsView.perform` yields once, then still calls the synchronous action
-  on `@MainActor` (`PowerToolsView.swift:308-323`).
-- Finder selection, pasteboard, panels, and `NSWorkspace` reveal/open operations
-  are AppKit work and must stay on main.
-- Checksums (`PowerTools.swift:716-727`), transfers (`828-851`), disk ejects
-  (`887-900`), and Trash deletion (`903-950`) are the slow effect phase.
-- Plan 001 provides the canonical Trash classifier/effect seam. Plan 003
-  provides a structured `[URL]` Finder selection.
+The refreshed source snapshot has these exact pre-edit identities:
 
-Current UI pattern:
+- `Sources/Geraldine/Services/PowerTools.swift`:
+  `46ab2ed8f80474fec465f4248f48ec9bee45bf6550aeeef1b958ed544363161b`
+- `Sources/Geraldine/Features/PowerTools/PowerToolsView.swift`:
+  `152bb4c9a8a4086c888ab69007843e5340a9fcc6453bc3b604f6072c15f6fd58`
+- `Sources/Geraldine/Services/TrashService.swift`:
+  `42a6792d606a0c747b11c8cdd1a8d5d7e17f8b2a470e9b476689e7f9749ebb47`
+- `Tests/GeraldineTests/TrashServiceTests.swift`:
+  `141e11de67e9ec27240f3bfc6a69fc2e51343f999c34ede1740d74fea76968d2`
+- `Tests/GeraldineTests/FinderSelectionDescriptorTests.swift`:
+  `c275b5905995ac24e627b48fe08b8718ee74f494775ac059046dd3b3e310e9da`
+
+Plan 001 provides `TrashService.clean` and `moveToTrash`; Plan 003 provides
+structured Finder selection decoding. Plan 007 is present in the same file and
+must survive byte-for-byte. Its current complete `DockTarget` slice has SHA-256
+`b3b79935ac8ac84c3b741d12d9fba31d5cc8dea770a953f4aa6b7d593057c6ac`:
+
+```swift
+private struct DockTarget {
+    let app: NSRunningApplication
+
+    static func target(at point: CGPoint) -> DockTarget? {
+        guard let dockProcessIdentifier = DockWindowPreviewAccessibility.dockProcessIdentifier(),
+              let target = DockWindowPreviewAccessibility.target(
+                  at: point,
+                  dockProcessIdentifier: dockProcessIdentifier,
+                  candidates: DockWindowPreviewAccessibility.applicationCandidates()
+              ) else { return nil }
+        return DockTarget(app: target.app)
+    }
+}
+```
+
+The controller currently publishes writable result state after synchronous
+calls:
+
+```swift
+@Published var lastResult: PowerToolResult?
+
+func copyFinderSHA256() {
+    lastResult = finder.copyChecksumSHA256()
+}
+
+func emptyTrash() {
+    lastResult = system.emptyTrash()
+}
+```
+
+The view still blocks because `action()` inherits `@MainActor`:
 
 ```swift
 Task { @MainActor in
@@ -52,213 +98,270 @@ Task { @MainActor in
 }
 ```
 
-Yielding does not move `action()` off the main actor.
-
-## Commands you will need
-
-| Purpose | Command | Expected on success |
-|---|---|---|
-| Prerequisites | `git ls-files --error-unmatch Tests/GeraldineTests/TrashServiceTests.swift Tests/GeraldineTests/FinderSelectionDescriptorTests.swift && git diff --quiet HEAD -- Sources/Geraldine/Services/TrashService.swift Tests/GeraldineTests/TrashServiceTests.swift Sources/Geraldine/Services/PowerTools.swift Tests/GeraldineTests/FinderSelectionDescriptorTests.swift && git diff --cached --quiet HEAD -- Sources/Geraldine/Services/TrashService.swift Tests/GeraldineTests/TrashServiceTests.swift Sources/Geraldine/Services/PowerTools.swift Tests/GeraldineTests/FinderSelectionDescriptorTests.swift && swift test --scratch-path /tmp/geraldine-plan-004-trash --filter TrashServiceTests && swift test --scratch-path /tmp/geraldine-plan-004-finder --filter FinderSelectionDescriptorTests` | exit 0; committed base contains completed Plans 001 and 003 |
-| Focused tests | `swift test --scratch-path /tmp/geraldine-plan-004-tests --filter PowerToolsOperationCoordinatorTests` | exit 0 |
-| Full tests | `swift test --scratch-path /tmp/geraldine-plan-004-full` | exit 0 |
-| Warning build | `swift test --scratch-path /tmp/geraldine-plan-004-warnings > /tmp/geraldine-plan-004-build.log 2>&1` | exit 0; failed tests fail this command |
-| Deprecation | `! rg -e 'performFileOperation' -e 'destroyOperation.*deprecated' /tmp/geraldine-plan-004-build.log` | exit 0, no output |
-| Hygiene | `git diff --check` | exit 0 |
-
-**User-patch guard (run before and after implementation):**
-
-```sh
-test "$(git diff -- Sources/Geraldine/MenuBar/MetricWidgets.swift | shasum -a 256 | cut -d ' ' -f 1)" = da9ee6c4eafd807623c825613e33929a61f9966d00981be10ca9f8739c56c5c3
-```
-
-**Plan-base and scope guard:** after prerequisites and before editing, run:
-
-```sh
-git rev-parse HEAD > /tmp/geraldine-plan-004-base
-unexpected="$({ git diff --name-only HEAD -- Sources Tests; git diff --cached --name-only HEAD -- Sources Tests; git ls-files --others --exclude-standard -- Sources Tests; } | sort -u | rg -v -e '^Sources/Geraldine/MenuBar/MetricWidgets\.swift$' || true)"
-test -z "$unexpected"
-```
-
-If the base file goes missing after edits, STOP. At closeout run:
-
-```sh
-test -s /tmp/geraldine-plan-004-base
-unexpected="$({ git diff --name-only "$(</tmp/geraldine-plan-004-base)" -- Sources Tests; git diff --cached --name-only "$(</tmp/geraldine-plan-004-base)" -- Sources Tests; git ls-files --others --exclude-standard -- Sources Tests; } | sort -u | rg -v -e '^Sources/Geraldine/Services/PowerTools\.swift$' -e '^Sources/Geraldine/Features/PowerTools/PowerToolsView\.swift$' -e '^Tests/GeraldineTests/PowerToolsOperationCoordinatorTests\.swift$' -e '^Sources/Geraldine/MenuBar/MetricWidgets\.swift$' || true)"
-test -z "$unexpected"
-```
-
 ## Scope
 
-**In scope**:
+**Only implementation/test files in scope**:
 
 - `Sources/Geraldine/Services/PowerTools.swift`
 - `Sources/Geraldine/Features/PowerTools/PowerToolsView.swift`
-- `Tests/GeraldineTests/PowerToolsOperationCoordinatorTests.swift` (create)
-- `plans/README.md` (Plan 004 status cell only)
+- `Tests/GeraldineTests/PowerToolsOperationCoordinatorTests.swift` (new)
+
+**Plan-maintenance file in scope before implementation only**:
+
+- `plans/004-async-power-tools-effects.md`
 
 **Out of scope**:
 
-- Event-tap or keyboard decision policy; Plan 005 owns it.
-- Moving `NSOpenPanel`, Finder selection AppleScript, pasteboard writes,
-  `NSWorkspace` UI calls, or published state off-main.
-- A general application-wide process framework or changes to `Shell.swift`.
-- Changing confirmation wording or silently parallelizing destructive actions.
-- Installed-app launch/reinstall in this implementation plan.
-- `MetricWidgets.swift` and jj metadata.
+- `plans/README.md` (dispatcher-owned)
+- `Sources/Geraldine/MenuBar/MetricWidgets.swift`
+- Plan 007's Dock target resolver, Dock event ownership, and every
+  Dock-preview file
+- keyboard pass/suppress policy (Plan 005 owns extraction)
+- `Shell.swift`, event-tap lifecycle, permission flows, feature defaults,
+  persistence, product strings, layouts, or styling
+- build, install, launch, live Finder/Trash/disk actions, commit, push, or PR
+  creation in the source-only handoff
 
-## Git workflow
+## Fail-closed executor preflight
 
-- Start only from a commit where Plans 001 and 003 are complete and both
-  prerequisite test filters pass; do not carry their source edits uncommitted.
-- Branch: `codex/004-async-power-tools-effects`, created from that verified
-  prerequisite commit.
-- Suggested commit: `Move Power Tools effects off main`.
-- Do not push or open a PR unless instructed.
+Run from a dispatcher-supplied, clean, isolated checkout. Do not run this block
+in the primary OneDrive checkout or in the source-only export.
+
+```sh
+set -e
+set -o pipefail
+PRIMARY_REPO='/Users/vincent/Library/CloudStorage/OneDrive-Personal/Coding Projects/Geraldine'
+CHECKOUT_ROOT="$(git rev-parse --show-toplevel)"
+test "$(cd "$CHECKOUT_ROOT" && pwd -P)" != "$(cd "$PRIMARY_REPO" && pwd -P)"
+test -z "$(git status --porcelain=v1 --untracked-files=all)"
+git merge-base --is-ancestor c1f51ea HEAD
+
+test "$(shasum -a 256 Sources/Geraldine/Services/PowerTools.swift | awk '{print $1}')" = \
+  '46ab2ed8f80474fec465f4248f48ec9bee45bf6550aeeef1b958ed544363161b'
+test "$(shasum -a 256 Sources/Geraldine/Features/PowerTools/PowerToolsView.swift | awk '{print $1}')" = \
+  '152bb4c9a8a4086c888ab69007843e5340a9fcc6453bc3b604f6072c15f6fd58'
+test "$(shasum -a 256 Sources/Geraldine/Services/TrashService.swift | awk '{print $1}')" = \
+  '42a6792d606a0c747b11c8cdd1a8d5d7e17f8b2a470e9b476689e7f9749ebb47'
+test "$(shasum -a 256 Tests/GeraldineTests/TrashServiceTests.swift | awk '{print $1}')" = \
+  '141e11de67e9ec27240f3bfc6a69fc2e51343f999c34ede1740d74fea76968d2'
+test "$(shasum -a 256 Tests/GeraldineTests/FinderSelectionDescriptorTests.swift | awk '{print $1}')" = \
+  'c275b5905995ac24e627b48fe08b8718ee74f494775ac059046dd3b3e310e9da'
+
+dock_slice="$(sed -n '/^private struct DockTarget {/,/^}$/p' Sources/Geraldine/Services/PowerTools.swift)"
+test "$(printf '%s\n' "$dock_slice" | shasum -a 256 | awk '{print $1}')" = \
+  'b3b79935ac8ac84c3b741d12d9fba31d5cc8dea770a953f4aa6b7d593057c6ac'
+git ls-files --error-unmatch \
+  Sources/Geraldine/Services/TrashService.swift \
+  Tests/GeraldineTests/TrashServiceTests.swift \
+  Tests/GeraldineTests/FinderSelectionDescriptorTests.swift \
+  Tests/GeraldineTests/DockTargetResolutionTests.swift
+```
+
+Any mismatch means the source or dependency moved after this recon. STOP and
+refresh the plan instead of applying offsets or weakening a guard.
+
+## CLAYGO and verification substrate
+
+The dispatcher owns the checkout. The Plan 004 executor owns only this SwiftPM
+scratch root. Replace the owner placeholder, then initialize before any build
+or test. First inspect free space and concurrent Swift/Xcode work; if the heavy
+gate is not safe, defer only builds/tests and continue static review.
+
+```sh
+PLAN004_OWNER='<current-thread-or-session-id>'
+test "$PLAN004_OWNER" != '<current-thread-or-session-id>'
+PLAN004_ROOT="/private/tmp/geraldine-plan-004-$(/usr/bin/uuidgen | /usr/bin/tr '[:upper:]' '[:lower:]')"
+PLAN004_RECEIPT="/tmp/$(basename "$PLAN004_ROOT")-receipt.json"
+test ! -e "$PLAN004_ROOT"
+test ! -e "$PLAN004_RECEIPT"
+/Users/vincent/.codex/skills/claygo/scripts/claygo.py init \
+  --path "$PLAN004_ROOT" --temp-root /private/tmp --receipt "$PLAN004_RECEIPT" \
+  --owner "$PLAN004_OWNER" --purpose "Geraldine Plan 004 SwiftPM verification" \
+  --profile swiftpm
+git rev-parse HEAD > "$PLAN004_ROOT/executor-base"
+df -Pk /private/tmp
+pgrep -afil 'swift-build|swift-test|xcodebuild' || true
+```
+
+Use the exact selected macOS SDK for every Swift command:
+
+```sh
+test "$(DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer /usr/bin/xcrun --sdk macosx --show-sdk-version)" = '26.5'
+test -d /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk
+```
 
 ## Steps
 
-### Step 1: Add a single-operation coordinator
+### Step 1: Add a controller-owned single-operation state machine
 
-Introduce an internal, main-actor-owned coordinator/state inside
-`PowerToolsController` (or a narrowly separate internal type in the same file)
-with an explicit action identifier, running/idle state, and latest result.
-Expose read-only published state to the view. Starting an action while another
-is running must be rejected or disabled; results from an older operation must
-never overwrite the current action.
+Make `PowerToolResult`/status equatable and sendable. Add an internal pure
+`PowerToolsOperationCoordinator` with an opaque owner token, exact action ID,
+latest result, begin/finish/invalidate/clear operations, and strict owner
+matching. It must reject overlap and reject stale completion after invalidation
+or replacement. `PowerToolsController` mirrors its state through
+`@Published private(set) var runningActionID` and
+`@Published private(set) var lastResult`; the view clears results through an
+explicit method, never writable publication.
 
-Make `lastResult` `private(set)` and provide explicit clear/start/finish methods
-instead of allowing the view to mutate controller state directly.
+Add a non-main `PowerToolsEffectRunner` whose API accepts an `@Sendable`
+synchronous effect and executes it with `Task.detached`. An async wrapper alone
+is not proof of executor separation.
 
-**Verify**:
-focused tests compile with a controllable suspended operation.
+### Step 2: Separate Finder preparation, effects, and publication
 
-### Step 2: Split Finder preparation, effect, and publication
+Keep structured Finder selection, front-window folder lookup, `NSOpenPanel`,
+pasteboard writes, Finder reveal, and cut-session mutation on `@MainActor`.
+Pass only immutable URLs/options/content into the detached runner for:
 
-For checksum, view-triggered copy/move, and keyboard-triggered cut/paste:
+- text/Markdown file creation;
+- SHA-256 process loops;
+- terminal-launch process execution;
+- view-triggered Copy To / Move To transfer loops;
+- Command-V cut transfer, clearing `cutItems` after every completed transfer as
+  today; and
+- Finder Backspace Trash movement.
 
-1. On main, read the structured Finder selection from Plan 003 and present any
-   destination panel.
-2. Pass immutable URLs/options into a concrete internal
-   `PowerToolsEffectRunner` that starts an explicitly `Task.detached` operation
-   with an `@Sendable` effect closure and awaits its value. Keep this runner
-   outside `@MainActor`; an inherited `Task` or an async closure's ability to
-   suspend is not evidence of executor separation.
-3. Off-main, run checksums or `FileManager` copy/move loops and build a
-   `PowerToolResult` plus any pasteboard text.
-4. Back on main, write the pasteboard, reveal created files if applicable, and
-   publish the result only if the operation still owns the coordinator.
+Preserve every current message, partial-transfer count, same-directory skip,
+unique-name rule, shortcut, and cut-session behavior. Command-X preparation,
+Return-open, selection AppleScript, pasteboard, panel, and reveal remain main.
+The global keyboard adapter may start an async task for slow effects, but must
+not synchronously run them on the event-tap callback or main queue.
 
-Specifically replace the current Command-V path that synchronously invokes
-`pasteCut()` on the main queue. Snapshot the cut-session URLs on main, submit
-the transfer through the same coordinator/background effect path, then always
-clear `cutItems` after the transfer returns, including warning and failure
-results, exactly as current `pasteCut()` does. Publish the result on main.
-Command-X may prepare the session on main;
-the transfer itself must never execute inside the event-tap/main-queue adapter.
+### Step 3: Move blocking system effects and reuse TrashService
 
-Do not access `NSOpenPanel`, `NSPasteboard`, or Finder AppleScript inside the
-background phase. Preserve current skip/failure counting and unique-name rules.
+Run `pmset`, mounted-volume enumeration/`diskutil`, Trash enumeration, and
+deletion through the detached runner. Empty Trash must enumerate the current
+user Trash, create `ScanItem`s, and call `TrashService.clean` with that exact
+Trash root as the classifier authority. Translate the result back to the exact
+existing empty/success/partial/all-failed strings. Remove the deprecated
+`NSWorkspace.performFileOperation(.destroyOperation, ...)` fallback. Clearing
+the pasteboard remains main, but still participates in operation ownership.
 
-**Verify**:
-`rg -n 'Task \{ @MainActor' Sources/Geraldine/Features/PowerTools/PowerToolsView.swift`
-must not identify a wrapper whose closure performs the slow effect synchronously.
+### Step 4: Make the view await one controller-owned action
 
-### Step 3: Move system effects off-main and consolidate Empty Trash
+Replace per-view `workingActionID` ownership with controller
+`runningActionID`. Map all existing action IDs and all current action/result
+semantics to one async controller entry point. `perform` must await completion,
+reject overlap without changing active UI, preserve the Empty Trash
+confirmation/cancellation wording, and preserve two-second success auto-clear.
+Controls for another action must not start work while an owner is active.
 
-Run `pmset`, `diskutil`, Trash enumeration/deletion, and other blocking system
-effects through the same background operation path. For Empty Trash, enumerate
-the user Trash and pass `ScanItem`s through the tested Plan 001 `TrashService`
-boundary; translate its result to existing `PowerToolResult` wording.
+Do not change any action title, icon, role, grid/layout, toggle, preference,
+result wording, section ownership, or Dock-preview UI.
 
-Remove `NSWorkspace.performFileOperation(.destroyOperation, ...)` and the
-deprecated fallback. Do not weaken failure reporting if `FileManager` cannot
-delete an item.
+### Step 5: Add deterministic tests
 
-**Verify**:
-the deprecation command in “Commands you will need” passes.
+Create `PowerToolsOperationCoordinatorTests.swift` without live Finder, Trash,
+disk, pasteboard, event tap, or app launch. Prove:
 
-### Step 4: Make the view await controller-owned actions
+- exact running action publication and overlap rejection;
+- owning completion publishes the result and returns idle;
+- invalidated/stale completion cannot replace a newer result;
+- clearing a displayed result preserves active ownership; and
+- a gated synchronous effect enters on a non-main thread while a separately
+  enqueued `@MainActor` sentinel completes before the gate is released.
 
-Change `PowerToolsView.perform` to start an async controller action and await
-completion without blocking the main actor. Derive working/disabled state from
-the controller's operation state so all slow/destructive controls are disabled
-while one owns the coordinator. Preserve success auto-clear, warning/failure
-display, cancellation messages, and the Empty Trash confirmation.
+The runner test must fail if the blocking closure inherits the main actor.
 
-Quick synchronous UI-only actions such as clearing the pasteboard may remain
-main-actor operations, but they must still respect coordinator ownership.
+### Step 6: Static review, tests, and full gate
 
-**Verify**:
-the focused coordinator tests pass and the view compiles without writable
-access to `lastResult`.
+Before tests, verify Plan 007 is unchanged and the deprecated fallback is gone:
 
-### Step 5: Add deterministic concurrency tests
+```sh
+dock_slice="$(sed -n '/^private struct DockTarget {/,/^}$/p' Sources/Geraldine/Services/PowerTools.swift)"
+test "$(printf '%s\n' "$dock_slice" | shasum -a 256 | awk '{print $1}')" = \
+  'b3b79935ac8ac84c3b741d12d9fba31d5cc8dea770a953f4aa6b7d593057c6ac'
+! rg -n 'performFileOperation|destroyOperation' Sources/Geraldine/Services/PowerTools.swift
+! rg -n '@Published var lastResult' Sources/Geraldine/Services/PowerTools.swift
+git diff --check
+```
 
-Create `PowerToolsOperationCoordinatorTests.swift`. With injected async
-closures/continuations, prove:
+Then, only after the dispatcher clears the heavy-build gate:
 
-- starting an operation publishes its exact action ID and running state;
-- a second overlapping operation cannot start;
-- completion publishes the owning result and returns to idle;
-- a stale completion cannot replace a newer result;
-- thrown/cancelled operation paths return to idle with a deterministic result;
-- clearing a displayed result does not cancel or orphan active ownership.
-- the detached runner starts a gated *synchronous* injected effect that signals
-  entry and blocks on a test semaphore; before releasing that semaphore, the
-  test successfully runs a separately enqueued `@MainActor` sentinel. This
-  would time out if the blocking effect inherited the main actor;
-- the injected effect also records `Thread.isMainThread == false`, and compiler
-  isolation keeps preparation/publication adapters `@MainActor` while the
-  effect closure is `@Sendable` and detached-runner owned.
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk \
+/usr/bin/xcrun --sdk macosx swift test --scratch-path "$PLAN004_ROOT/swiftpm" \
+  --filter TrashServiceTests
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk \
+/usr/bin/xcrun --sdk macosx swift test --scratch-path "$PLAN004_ROOT/swiftpm" \
+  --filter FinderSelectionDescriptorTests
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk \
+/usr/bin/xcrun --sdk macosx swift test --scratch-path "$PLAN004_ROOT/swiftpm" \
+  --filter FinderTrashShortcutTests
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk \
+/usr/bin/xcrun --sdk macosx swift test --scratch-path "$PLAN004_ROOT/swiftpm" \
+  --filter PowerToolsOperationCoordinatorTests
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk \
+/usr/bin/xcrun --sdk macosx swift test --scratch-path "$PLAN004_ROOT/swiftpm"
+```
 
-No test may invoke live Finder, Trash, disk eject, or system sleep.
+Perform a scoped local review after tests. If an accepted fix changes code,
+rerun focused/full tests, static gates, hygiene, and review.
 
-**Verify**:
-`swift test --scratch-path /tmp/geraldine-plan-004-tests --filter PowerToolsOperationCoordinatorTests`
-passes.
+## Closeout scope guard
 
-### Step 6: Run full verification
+```sh
+set -e
+set -o pipefail
+BASE="$(<"$PLAN004_ROOT/executor-base")"
+git cat-file -e "$BASE^{commit}"
+test "$(git rev-parse HEAD)" = "$BASE"
+unstaged="$(git diff --name-only "$BASE" -- .)"
+staged="$(git diff --cached --name-only "$BASE" -- .)"
+untracked="$(git ls-files --others --exclude-standard)"
+changed="$(printf '%s\n%s\n%s\n' "$unstaged" "$staged" "$untracked" | sort -u)"
+unexpected="$(printf '%s\n' "$changed" | /usr/bin/awk 'NF && $0 != "Sources/Geraldine/Services/PowerTools.swift" && $0 != "Sources/Geraldine/Features/PowerTools/PowerToolsView.swift" && $0 != "Tests/GeraldineTests/PowerToolsOperationCoordinatorTests.swift" { print }')"
+test -z "$unexpected"
+test -z "$(git status --short -- plans/README.md Sources/Geraldine/MenuBar/MetricWidgets.swift)"
+```
 
-**Verify**:
+Finalize only the registered SwiftPM scratch root:
 
-- full tests pass;
-- the deprecation-warning gate passes;
-- `git diff --check` passes;
-- the scope allowlist emits no output, and the recorded `MetricWidgets.swift`
-  diff hash is unchanged.
-
-## Test plan
-
-The coordinator cases are in Step 5. Existing Plan 001 tests cover actual
-Trash routing; Plan 003 tests cover selection integrity. Do not duplicate those
-tests here. A later authorized installed-app pass should manually exercise one
-large checksum/copy while confirming the menu bar remains interactive.
+```sh
+/Users/vincent/.codex/skills/claygo/scripts/claygo.py mark \
+  --receipt "$PLAN004_RECEIPT" --state disposable \
+  --reason "Plan 004 verification complete; proof retained in task transcript"
+/Users/vincent/.codex/skills/claygo/scripts/claygo.py finalize \
+  --receipt "$PLAN004_RECEIPT" --check-open-files
+test ! -e "$PLAN004_ROOT"
+/Users/vincent/.codex/skills/claygo/scripts/claygo.py closeout \
+  --owner "$PLAN004_OWNER" --finalize-disposable
+test ! -e "$PLAN004_RECEIPT"
+```
 
 ## Done criteria
 
-- [ ] Slow file/process effects do not execute on `@MainActor`.
-- [ ] AppKit preparation and result publication remain on main.
-- [ ] Only one slow/destructive Power Tool runs at a time.
-- [ ] Empty Trash reuses `TrashService`; deprecated destroy APIs are gone.
-- [ ] Coordinator tests, full tests, warning gate, and `git diff --check` pass.
-- [ ] Only in-scope files changed.
-- [ ] The pre-existing `MetricWidgets.swift` diff hash is unchanged.
-- [ ] Plan 004's README status is updated.
+- [ ] Exact prerequisite hashes and post-Plan-007 Dock slice passed preflight.
+- [ ] AppKit/Finder preparation and publication remain `@MainActor`.
+- [ ] Blocking file/process effects use the explicit detached runner.
+- [ ] One owner serializes view actions; stale completion cannot publish.
+- [ ] Every current action ID, result/cancellation string, shortcut, cut-session,
+      partial-transfer, and UI behavior is preserved.
+- [ ] Empty Trash uses `TrashService`; deprecated destroy fallback is absent.
+- [ ] Focused and full tests, static gates, hygiene, scope guard, and local
+      review pass in the integration checkout.
+- [ ] README, `MetricWidgets.swift`, Dock behavior, and all out-of-scope files
+      are unchanged.
+- [ ] CLAYGO root/receipt are absent and owner closeout succeeds.
 
 ## STOP conditions
 
-Stop and report if:
-
-- Plans 001 or 003 are incomplete;
-- an AppKit API must run in the detached/background phase;
-- preserving user-visible behavior requires a general `Shell` rewrite;
-- safe cancellation would terminate a copy/move midway without a defined
-  partial-result contract;
-- source drift, repeated verification failure, or out-of-scope edits occur.
+STOP if the checkout is primary, dirty, or not Git-backed; a fingerprint or
+Dock slice differs; Plans 001/003/007 are absent; AppKit would need to run in a
+detached closure; preserving current transfer/cut/result semantics would require
+an architectural rewrite; another action must be cancelled mid-transfer; SDK
+26.5 is unavailable; a gate fails twice after one narrow in-scope correction;
+an out-of-scope file changes; or the registered temporary root cannot be safely
+closed.
 
 ## Maintenance notes
 
-Future Power Tools must declare their main-actor preparation, background effect,
-and main-actor publication phases. Reviewers should scrutinize ownership races,
-Sendable captures, partial file transfers, and whether buttons truly disable
-during an active destructive operation.
+Every future Power Tool should declare three phases: main-actor preparation,
+immutable detached effect, and owner-checked main-actor publication. Every new
+slow keyboard effect must reuse that split rather than putting file/process work
+back on the event tap or main queue.
