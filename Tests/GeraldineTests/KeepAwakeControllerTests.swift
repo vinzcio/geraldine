@@ -221,6 +221,86 @@ final class KeepAwakeControllerTests: XCTestCase {
         XCTAssertNil(controller.lastError)
     }
 
+    func testStaleExpirationCannotDeactivateAReplacementSession() {
+        let suiteName = "KeepAwakeControllerTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let controller = KeepAwakeController(defaults: defaults)
+        defer { controller.shutdown() }
+
+        controller.activate(duration: 60)
+        let replacedSessionToken = controller.expirationSessionToken
+
+        controller.activate(duration: 120)
+        let replacementSessionToken = controller.expirationSessionToken
+        XCTAssertNotEqual(replacedSessionToken, replacementSessionToken)
+
+        controller.expireSession(ifCurrent: replacedSessionToken)
+
+        XCTAssertTrue(controller.isActive)
+        XCTAssertEqual(controller.activeDuration ?? 0, 120, accuracy: 0.01)
+
+        controller.expireSession(ifCurrent: replacementSessionToken)
+        XCTAssertFalse(controller.isActive)
+    }
+
+    func testStaleExpirationCannotClearABatteryPolicyRefusal() {
+        let suiteName = "KeepAwakeControllerTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(true, forKey: "keepAwake.deactivateOnBattery")
+        var onBattery = false
+        let controller = KeepAwakeController(
+            defaults: defaults,
+            currentPowerSourceIsBattery: { onBattery }
+        )
+        defer { controller.shutdown() }
+
+        controller.activate(duration: 60)
+        let refusedSessionToken = controller.expirationSessionToken
+
+        onBattery = true
+        controller.activate(duration: 120)
+        XCTAssertFalse(controller.isActive)
+        XCTAssertEqual(controller.lastError, KeepAwakeController.batteryPolicyRefusalMessage)
+
+        controller.expireSession(ifCurrent: refusedSessionToken)
+
+        XCTAssertFalse(controller.isActive)
+        XCTAssertEqual(controller.lastError, KeepAwakeController.batteryPolicyRefusalMessage)
+    }
+
+    func testIdleActivitySnapshotsPublishSynchronouslyInSourceOrder() {
+        let suiteName = "KeepAwakeControllerTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        var pulseSucceeds = true
+        let simulator = IdleActivitySimulationService(
+            idleDelay: 1,
+            pulseInterval: 30,
+            accessibilityAvailable: { true },
+            currentIdleDuration: { 10 },
+            pulsePoster: { pulseSucceeds }
+        )
+        let controller = KeepAwakeController(
+            defaults: defaults,
+            idleActivitySimulator: simulator
+        )
+        defer { controller.shutdown() }
+
+        simulator.start(idleDelay: 1)
+
+        XCTAssertEqual(controller.idleActivityPhase, .pulsing)
+        XCTAssertNotNil(controller.idleActivityLastPulse)
+        XCTAssertNil(controller.idleActivityError)
+
+        pulseSucceeds = false
+        simulator.performPulseCycle()
+
+        XCTAssertEqual(controller.idleActivityPhase, .failed)
+        XCTAssertEqual(controller.idleActivityError, "Could Not Post Input Events")
+    }
+
     func testTimeMarkerLabelsPreserveHalfMinuteQuarterPoints() {
         XCTAssertEqual(KeepAwakeTimeMarkerFormatter.string(seconds: 0), "0s")
         XCTAssertEqual(KeepAwakeTimeMarkerFormatter.string(seconds: 1), "1s")

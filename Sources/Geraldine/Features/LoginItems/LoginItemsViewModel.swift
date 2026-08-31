@@ -1,4 +1,5 @@
 import SwiftUI
+import Darwin
 
 struct LaunchItem: Identifiable, Hashable {
     let id: String
@@ -144,8 +145,56 @@ private struct LoginItemToggleCollisionError: LocalizedError {
     }
 }
 
+struct LoginItemsScanSource {
+    let directory: URL
+    let scope: LaunchItem.Scope
+    let enabled: Bool
+}
+
+private struct LoginItemPlistMetadata {
+    let label: String?
+    let program: String
+}
+
+private enum LoginItemPlistReadError: LocalizedError {
+    case couldNotOpen
+    case couldNotInspect
+    case notRegularFile
+    case invalidSize
+    case exceedsMaximumSize
+    case changedWhileReading
+    case couldNotRead
+    case invalidPropertyList
+    case propertyListIsNotDictionary
+
+    var errorDescription: String? {
+        switch self {
+        case .couldNotOpen:
+            "Could not open this plist safely."
+        case .couldNotInspect:
+            "Could not inspect this plist safely."
+        case .notRegularFile:
+            "This plist is not a regular file."
+        case .invalidSize:
+            "This plist reported an invalid size."
+        case .exceedsMaximumSize:
+            "This plist exceeds the approved size limit."
+        case .changedWhileReading:
+            "This plist changed while it was being read."
+        case .couldNotRead:
+            "Could not read this plist safely."
+        case .invalidPropertyList:
+            "This file is not a valid property list."
+        case .propertyListIsNotDictionary:
+            "This property list is not a dictionary."
+        }
+    }
+}
+
 @MainActor
 final class LoginItemsViewModel: ObservableObject {
+    nonisolated static let maximumLoginItemPlistBytes = 1_048_576
+
     @Published var items: [LaunchItem] = []
     /// Starts true: the view scans on appear, so the first frame should read
     /// as "scanning" rather than flashing the empty state for a beat.
@@ -302,37 +351,119 @@ final class LoginItemsViewModel: ObservableObject {
     }
 
     private nonisolated static func scan(userDir: URL, disabledDir: URL) -> LoginItemsScanResult {
+        scan(sources: [
+            LoginItemsScanSource(directory: userDir, scope: .user, enabled: true),
+            LoginItemsScanSource(directory: disabledDir, scope: .user, enabled: false),
+            LoginItemsScanSource(
+                directory: URL(fileURLWithPath: "/Library/LaunchAgents"),
+                scope: .global,
+                enabled: true
+            ),
+            LoginItemsScanSource(
+                directory: URL(fileURLWithPath: "/Library/LaunchDaemons"),
+                scope: .daemon,
+                enabled: true
+            )
+        ])
+    }
+
+    nonisolated static func scan(sources: [LoginItemsScanSource]) -> LoginItemsScanResult {
         var out: [LaunchItem] = []
         var diagnostics = ScanDiagnostics()
         let fm = FileManager.default
-        func read(_ dir: URL, scope: LaunchItem.Scope, enabled: Bool) {
-            guard fm.fileExists(atPath: dir.path) else { return }
+        for source in sources {
+            guard fm.fileExists(atPath: source.directory.path) else { continue }
             do {
-                let files = try fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
+                let files = try fm.contentsOfDirectory(
+                    at: source.directory,
+                    includingPropertiesForKeys: nil
+                )
                 for url in files where url.pathExtension == "plist" {
                     diagnostics.noteScanned()
-                    let dict = NSDictionary(contentsOf: url)
-                    let label = (dict?["Label"] as? String) ?? url.deletingPathExtension().lastPathComponent
-                    let program = (dict?["Program"] as? String)
-                        ?? (dict?["ProgramArguments"] as? [String])?.first
-                        ?? ""
-                    out.append(LaunchItem(label: label, program: program, plistURL: url,
-                                          scope: scope, enabled: enabled))
+                    do {
+                        let metadata = try readPlistMetadata(at: url)
+                        let label = metadata.label
+                            ?? url.deletingPathExtension().lastPathComponent
+                        out.append(LaunchItem(
+                            label: label,
+                            program: metadata.program,
+                            plistURL: url,
+                            scope: source.scope,
+                            enabled: source.enabled
+                        ))
+                    } catch {
+                        diagnostics.noteSkipped(url, error)
+                    }
                 }
             } catch {
-                diagnostics.noteSkipped(dir, error)
+                diagnostics.noteSkipped(source.directory, error)
             }
         }
-        read(userDir, scope: .user, enabled: true)
-        read(disabledDir, scope: .user, enabled: false)
-        read(URL(fileURLWithPath: "/Library/LaunchAgents"), scope: .global, enabled: true)
-        read(URL(fileURLWithPath: "/Library/LaunchDaemons"), scope: .daemon, enabled: true)
         diagnostics.finish()
         return LoginItemsScanResult(items: out, diagnostics: diagnostics)
     }
+
+    private nonisolated static func readPlistMetadata(at url: URL) throws -> LoginItemPlistMetadata {
+        let descriptor = Darwin.open(
+            url.path,
+            O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK
+        )
+        guard descriptor >= 0 else {
+            throw LoginItemPlistReadError.couldNotOpen
+        }
+        defer { Darwin.close(descriptor) }
+
+        var info = stat()
+        guard Darwin.fstat(descriptor, &info) == 0 else {
+            throw LoginItemPlistReadError.couldNotInspect
+        }
+        guard (info.st_mode & S_IFMT) == S_IFREG else {
+            throw LoginItemPlistReadError.notRegularFile
+        }
+        guard info.st_size >= 0 else {
+            throw LoginItemPlistReadError.invalidSize
+        }
+        guard info.st_size <= off_t(maximumLoginItemPlistBytes) else {
+            throw LoginItemPlistReadError.exceedsMaximumSize
+        }
+
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
+        let data: Data
+        do {
+            data = try handle.read(upToCount: maximumLoginItemPlistBytes + 1) ?? Data()
+        } catch {
+            throw LoginItemPlistReadError.couldNotRead
+        }
+        guard data.count <= maximumLoginItemPlistBytes else {
+            throw LoginItemPlistReadError.exceedsMaximumSize
+        }
+        guard data.count == Int(info.st_size) else {
+            throw LoginItemPlistReadError.changedWhileReading
+        }
+
+        let propertyList: Any
+        do {
+            propertyList = try PropertyListSerialization.propertyList(
+                from: data,
+                options: [],
+                format: nil
+            )
+        } catch {
+            throw LoginItemPlistReadError.invalidPropertyList
+        }
+        guard let dictionary = propertyList as? [String: Any] else {
+            throw LoginItemPlistReadError.propertyListIsNotDictionary
+        }
+        return LoginItemPlistMetadata(
+            label: dictionary["Label"] as? String,
+            program: (dictionary["Program"] as? String)
+                ?? (dictionary["ProgramArguments"] as? [String])?.first
+                ?? ""
+        )
+    }
 }
 
-private struct LoginItemsScanResult {
+struct LoginItemsScanResult {
     var items: [LaunchItem]
     var diagnostics: ScanDiagnostics
 }

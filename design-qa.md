@@ -1,6 +1,11 @@
 # Keep Awake Watch Panel Design QA
 
-Source visual truth:
+> **Historical QA record.** This document describes a past comparison only. Every
+> listed `/tmp` capture was ephemeral and is not available as durable or current
+> evidence. The historical pass below does not establish today's installed state;
+> current visual and live behavior are unverified.
+
+Historical source visual reference:
 
 - Figma file: `https://www.figma.com/design/RlTciPre9TA7zRKZsa7jXl`
 - Main card node: `4:12`
@@ -8,7 +13,7 @@ Source visual truth:
 - Figma main capture: `/tmp/geraldine-keep-awake-polish-audit/09-final-installed-main.png`
 - Figma popover capture: `/tmp/geraldine-keep-awake-polish-audit/10-final-installed-popover.png`
 
-Installed implementation:
+Historical installed implementation evidence:
 
 - Exact-state main-window screenshot: `/tmp/geraldine-figma-apply-live-main-figma-state.png`
 - Exact-state popover screenshot: `/tmp/geraldine-figma-apply-live-popover-figma-state.png`
@@ -82,9 +87,9 @@ markers without waiting six hours in a live 12-hour session.
    labels. Deactivation restored the saved indefinite default without leaving a power
    assertion behind.
 
-## Findings
+## Historical findings
 
-No actionable P0, P1, or P2 visual differences remain.
+No actionable P0, P1, or P2 visual differences remained in that comparison.
 
 ## Follow-up polish
 
@@ -93,4 +98,4 @@ renderer because it passes through the window material and screen capture. Eye p
 selection, active-state, and perimeter-marker transitions were exercised in the live
 app; Reduce Motion remains handled by the production SwiftUI implementation.
 
-final result: passed
+historical result: passed; current status: unverified

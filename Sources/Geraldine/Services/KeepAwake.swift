@@ -138,19 +138,24 @@ final class KeepAwakeController: ObservableObject {
         "Keep Awake is off while Deactivate On Battery is enabled."
     private let defaults: UserDefaults
     private let currentPowerSourceIsBattery: () -> Bool
-    private let idleActivitySimulator = IdleActivitySimulationService()
+    private let idleActivitySimulator: IdleActivitySimulationService
     private var activeSince: Date?
     private var idleAssertion: IOPMAssertionID = 0
     private var displayAssertion: IOPMAssertionID = 0
     private var expirationTimer: Timer?
+    /// Regenerated whenever expiration ownership changes. A callback that has
+    /// already started delivery cannot use an invalidated timer to end a newer session.
+    private(set) var expirationSessionToken = UUID()
     private var ticker: Timer?
     private var powerSourceRunLoopSource: CFRunLoopSource?
     private var workspaceObservers: [NSObjectProtocol] = []
 
     init(defaults: UserDefaults = .standard,
-         currentPowerSourceIsBattery: @escaping () -> Bool = KeepAwakeController.isOnBatteryPower) {
+         currentPowerSourceIsBattery: @escaping () -> Bool = KeepAwakeController.isOnBatteryPower,
+         idleActivitySimulator: IdleActivitySimulationService? = nil) {
         self.defaults = defaults
         self.currentPowerSourceIsBattery = currentPowerSourceIsBattery
+        self.idleActivitySimulator = idleActivitySimulator ?? IdleActivitySimulationService()
 
         let rawDuration = defaults.string(forKey: DefaultsKey.defaultDuration) ?? KeepAwakeDuration.oneHour.rawValue
         defaultDuration = KeepAwakeDuration(rawValue: rawDuration) ?? .oneHour
@@ -300,8 +305,7 @@ final class KeepAwakeController: ObservableObject {
         activeSince = nil
         activeUntil = nil
         remaining = nil
-        expirationTimer?.invalidate()
-        expirationTimer = nil
+        invalidateExpirationTimer()
         ticker?.invalidate()
         ticker = nil
         releaseAssertions()
@@ -362,7 +366,7 @@ final class KeepAwakeController: ObservableObject {
 
     private func configureIdleActivitySimulator() {
         idleActivitySimulator.onSnapshotChange = { [weak self] snapshot in
-            Task { @MainActor in
+            Self.deliverMainRunLoopCallback {
                 self?.idleActivityPhase = snapshot.phase
                 self?.idleActivityLastPulse = snapshot.lastPulse
                 self?.idleActivityLastUserInput = snapshot.lastUserInput
@@ -446,16 +450,39 @@ final class KeepAwakeController: ObservableObject {
     }
 
     private func scheduleExpirationTimer() {
-        expirationTimer?.invalidate()
-        expirationTimer = nil
+        invalidateExpirationTimer()
 
         guard let activeUntil else { return }
         let interval = max(0.1, activeUntil.timeIntervalSinceNow)
+        let sessionToken = expirationSessionToken
         let timer = Timer(timeInterval: interval, repeats: false) { [weak self] _ in
-            Task { @MainActor in self?.deactivate() }
+            Self.deliverMainRunLoopCallback {
+                self?.expireSession(ifCurrent: sessionToken)
+            }
         }
         RunLoop.main.add(timer, forMode: .common)
         expirationTimer = timer
+    }
+
+    private func invalidateExpirationTimer() {
+        expirationSessionToken = UUID()
+        expirationTimer?.invalidate()
+        expirationTimer = nil
+    }
+
+    /// Handles the semantic expiration event after the run-loop timer fires.
+    /// Keeping the token check here makes stale delivery inert even if the old
+    /// timer fired just before it was invalidated.
+    func expireSession(ifCurrent sessionToken: UUID) {
+        guard sessionToken == expirationSessionToken else { return }
+        deactivate()
+    }
+
+    nonisolated static func deliverMainRunLoopCallback(
+        _ callback: @MainActor () -> Void
+    ) {
+        precondition(Thread.isMainThread, "Keep Awake callbacks must run on the main run loop")
+        MainActor.assumeIsolated(callback)
     }
 
     private func startTicker() {

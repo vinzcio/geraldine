@@ -9,8 +9,9 @@ product-direction options, so every selected item is represented below as Plan
 
 Completed implementation and decision-spike work is local only. This queue did
 not authorize a push, PR, signing, installation, launch, live settings change,
-or foreground UI verification. Remaining blocked plans still require their
-exact approval gates; `Do all` does not supply unselected policy values.
+or foreground UI verification. Vincent's 2026-08-31 `Go` approved the exact
+Plan 013 and Plan 016 numeric gates, the recommended Plan 018 NO-GO, and both
+adjacent Keep Awake race fixes; it did not select any alert policy value.
 
 ## Execution order and status
 
@@ -28,29 +29,28 @@ exact approval gates; `Do all` does not supply unselected policy values.
 | 010 | Keep idle-simulation pulse failures terminal | P1 | S | — | DONE |
 | 011 | Dismiss an empty live Dock-preview refresh | P1 | S | Dock lane, 007 | DONE |
 | 012 | Cancel superseded Smart Care scans | P2 | M | — | DONE |
-| 013 | Harden Login Item plist reading | P2 | M | 006, approved exact byte ceiling | BLOCKED (exact byte ceiling not yet approved) |
+| 013 | Harden Login Item plist reading | P2 | M | 006, approved exact byte ceiling | DONE |
 | 014 | Align Finder and speed-test privacy disclosures | P1 | S | committed Dock-preview lane | DONE |
 | 015 | Test Updater and Maintenance state machines | P2 | M | — | DONE |
-| 016 | Add deterministic source verification and current documentation | P2 | M | 006-015, approved free-space gate | BLOCKED (exact free-space gate not yet approved) |
+| 016 | Add deterministic source verification and current documentation | P2 | M | 006-015, approved free-space gate | DONE |
 | 017 | Design resumable Smart Care sessions | P2 | M | 012 | DONE (NO-GO; no feature shipped) |
-| 018 | Decide whether and how to offer opt-in peripheral battery alerts | P3 | M | 009, explicit product decisions | BLOCKED (explicit GO/NO-GO and 13 product decisions required) |
+| 018 | Decide whether and how to offer opt-in peripheral battery alerts | P3 | M | 009, explicit product decisions | DONE (NO-GO; no feature shipped) |
 | 019 | Decide a safe known-network Wi-Fi failover contract | P3 | M | — | DONE (NO-GO; no feature shipped) |
 
 Status values are `TODO`, `IN PROGRESS`, `DONE`, `BLOCKED (<reason>)`, or
 `REJECTED (<reason>)`. `DONE` on Plans 017–019 means the decision spike is
 complete; it never means that product direction was implemented or shipped.
 
-## Remaining execution graph
+## Completion record
 
-1. Run Plan 013 only after Vincent approves an exact Login Item plist byte
-   ceiling. The recommended `1,048,576`-byte value is not authorization.
-2. Run Plan 016 after Plan 013 and only after Vincent approves an exact positive
-   free-space gate. The recommended `2,097,152`-KiB value is not authorization.
-3. Close Plan 018 only after an explicit GO/NO-GO and all 13 decisions in its
-   decision matrix. The current recommendation is NO-GO; it has not been
-   selected on Vincent's behalf.
-4. Two adjacent Keep Awake ordering races found during review remain outside
-   this queue and require separate authorization before implementation.
+1. Plan 013 uses the explicitly approved `1,048,576`-byte Login Item plist
+   ceiling and preserves Plan 006's collision refusal.
+2. Plan 016 uses the explicitly approved `2,097,152`-KiB free-space gate for
+   this verification run; the verifier has no built-in default.
+3. Plan 018 closed as NO-GO. All thirteen policy rows remain explicitly
+   unselected, and no peripheral-alert feature shipped.
+4. The two separately authorized Keep Awake ordering fixes now preserve idle
+   snapshot order and make stale expiration callbacks inert.
 
 ## Dependency and ownership notes
 
@@ -70,17 +70,20 @@ complete; it never means that product direction was implemented or shipped.
 
 ## Verified local execution baseline
 
-- `origin/main` remains at `7b6fa41`; the local execution base contains the
-  three commits `61872f9`, `c1f51ea`, and `cd1d604` above it.
-- The final source suite ran with the explicit Xcode macOS 26.5 SDK: 254 XCTest
+- `origin/main` remains at `7b6fa41`; all queue completion remains local and
+  unpushed.
+- The final source suite ran with the explicit Xcode macOS 26.5 SDK: 266 XCTest
   tests executed, 2 skipped, and 0 failed; the separate Swift Testing
   menu-bar placement suite passed both tests. A passing source suite does not
   prove a packaged bundle, installed `/Applications` bundle, or live
   interaction/performance behavior.
 - `Package.swift` targets macOS 14+, links only system frameworks, and declares
   no third-party package graph. There is no dependency-migration finding.
-- There is currently no root README or CI source gate. Plan 016 remains blocked
-  on its exact approved free-space gate.
+- The root README now separates source, packaged, installed, and live proof.
+  `verify.sh` matched source and staged input SHA-256
+  `b9899f5d2f47e2907b1a12c682117f7e47161fbeb8259415cb21806d1e1152a4`,
+  passed full tests and a separate clean release build, and proved cleanup for
+  normal, controlled-failure, and TERM paths.
 - No packaging, signing, installation, launch, foreground UI, permission
   request, push, or live account/system mutation was authorized or run.
 
@@ -120,9 +123,9 @@ from the old planning fingerprint.
 - Do not turn Geraldine into a generic AI dashboard or system-monitor aesthetic.
   A whole-app/icon direction remains blocked on a personal identity brief.
 - No plan may invent quotas, ceilings, retention, timeouts, retries, migrations,
-  schema/default changes, or policy values. Plans 013 and 016 therefore carry
-  explicit numeric-approval gates, and Plans 017–019 preserve unresolved
-  product decisions instead of selecting defaults.
+  schema/default changes, or policy values. Plans 013 and 016 used only their
+  explicitly approved numeric gates, and the NO-GO records for Plans 017–019
+  preserve unselected product policies instead of manufacturing defaults.
 
 ## Selection result
 

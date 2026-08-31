@@ -2,14 +2,13 @@
 
 ## Status
 
-Decision status: PENDING
+Decision status: NO-GO
 
 Implementation status: Not shipped
 
-Plan 009 source is integrated for review; its compiler/test gates remain part
-of the queue-wide verification. No notification, permission request, device
-scan, cadence change, persistence, install, or launch was performed for this
-spike.
+Plan 009 remains the evidence boundary for this decision. No notification,
+permission request, device scan, cadence change, persistence, install, or
+launch was performed for this spike.
 
 ## Evidence and fixed constraints
 
@@ -67,66 +66,56 @@ mitigation.
 
 | Decision | Neutral options and tradeoffs | Vincent decision | Rationale/source |
 |---|---|---|---|
-| Eligible device types | Bluetooth-only, other evidence-backed kinds, or an explicit subset; broader scope increases missing/identity ambiguity | PENDING | PENDING |
-| Alert threshold and hysteresis | Exact downward and recovery boundaries trade responsiveness against flapping; no current visual value is a default | PENDING | PENDING |
-| Cooldown and deduplication | Per-device or batched identity, repeat/suppression behavior, and exact timing all change interruption risk | PENDING | PENDING |
-| Reconnect and disconnect cleanup | Preserve, reset, or reconcile state on absence/identity change; each risks storms or stale suppression | PENDING | PENDING |
-| Notification permission UX | Ask at opt-in, first eligible event, or another explicit point; denial/recovery copy and Settings path differ | PENDING | PENDING |
-| Notification content and actions | Privacy level, device naming, click destination, and optional actions change disclosure and completion semantics | PENDING | PENDING |
-| Persistence or session scope | Process/session-only state versus local persistence changes restart behavior and privacy/lifecycle obligations | PENDING | PENDING |
-| Multi-battery semantics | Current lowest-value composite, component-aware evidence, or an explicit subset; component support expands the source model | PENDING | PENDING |
-| Missing stale and failure behavior | Hold, clear, suppress, or surface uncertainty; none can be inferred as recovery | PENDING | PENDING |
-| Opt-in surface | Exact discovery/consent location and a reversible disable path must be chosen | PENDING | PENDING |
-| Retention and deletion | Mandatory if any state persists; lifecycle and verified clearing must be explicit | PENDING | PENDING |
-| Schema compatibility and evolution | Mandatory if any state persists; compatibility, migration, and unknown fields need explicit ownership | PENDING | PENDING |
-| Corrupt and incompatible recovery | Mandatory if any state persists; preserve, quarantine, replace, or approved deletion have different risks | PENDING | PENDING |
+| Eligible device types | Bluetooth-only, other evidence-backed kinds, or an explicit subset; broader scope increases missing/identity ambiguity | NOT SELECTED — NO-GO | Vincent approved the recommended NO-GO on 2026-08-31; no eligible scope is authorized. |
+| Alert threshold and hysteresis | Exact downward and recovery boundaries trade responsiveness against flapping; no current visual value is a default | NOT SELECTED — NO-GO | Vincent approved the recommended NO-GO on 2026-08-31; no interruption boundaries are authorized. |
+| Cooldown and deduplication | Per-device or batched identity, repeat/suppression behavior, and exact timing all change interruption risk | NOT SELECTED — NO-GO | Vincent approved the recommended NO-GO on 2026-08-31; no suppression or repeat policy is authorized. |
+| Reconnect and disconnect cleanup | Preserve, reset, or reconcile state on absence/identity change; each risks storms or stale suppression | NOT SELECTED — NO-GO | Vincent approved the recommended NO-GO on 2026-08-31; no lifecycle policy is authorized. |
+| Notification permission UX | Ask at opt-in, first eligible event, or another explicit point; denial/recovery copy and Settings path differ | NOT SELECTED — NO-GO | Vincent approved the recommended NO-GO on 2026-08-31; no permission flow is authorized. |
+| Notification content and actions | Privacy level, device naming, click destination, and optional actions change disclosure and completion semantics | NOT SELECTED — NO-GO | Vincent approved the recommended NO-GO on 2026-08-31; no notification surface is authorized. |
+| Persistence or session scope | Process/session-only state versus local persistence changes restart behavior and privacy/lifecycle obligations | NOT SELECTED — NO-GO | Vincent approved the recommended NO-GO on 2026-08-31; no alert state is authorized. |
+| Multi-battery semantics | Current lowest-value composite, component-aware evidence, or an explicit subset; component support expands the source model | NOT SELECTED — NO-GO | Vincent approved the recommended NO-GO on 2026-08-31; no battery interpretation is authorized. |
+| Missing stale and failure behavior | Hold, clear, suppress, or surface uncertainty; none can be inferred as recovery | NOT SELECTED — NO-GO | Vincent approved the recommended NO-GO on 2026-08-31; no failure semantics are authorized. |
+| Opt-in surface | Exact discovery/consent location and a reversible disable path must be chosen | NOT SELECTED — NO-GO | Vincent approved the recommended NO-GO on 2026-08-31; no opt-in surface is authorized. |
+| Retention and deletion | Mandatory if any state persists; lifecycle and verified clearing must be explicit | NOT SELECTED — NO-GO | Vincent approved the recommended NO-GO on 2026-08-31; no persistence or retention policy is authorized. |
+| Schema compatibility and evolution | Mandatory if any state persists; compatibility, migration, and unknown fields need explicit ownership | NOT SELECTED — NO-GO | Vincent approved the recommended NO-GO on 2026-08-31; no persisted schema is authorized. |
+| Corrupt and incompatible recovery | Mandatory if any state persists; preserve, quarantine, replace, or approved deletion have different risks | NOT SELECTED — NO-GO | Vincent approved the recommended NO-GO on 2026-08-31; no persisted recovery policy is authorized. |
 
-No recommendation or agent assumption is recorded as a decision. If Vincent
-selects process/session-only behavior with no persistence, the final three rows
-still require his explicit `NOT APPLICABLE — no persistence` decision.
+No product policy or agent assumption is recorded as a decision. The NO-GO
+leaves every policy unselected and authorizes no alert implementation.
 
 ## Policy/state model
 
-Inputs are successive completed `[ConnectedDevice]` snapshots only. The state
-and transition outputs cannot be selected until the ledger is resolved.
+Withheld under the approved NO-GO. No evaluator state, transition semantics, or
+notification intents were selected. Modeling first observation, downward
+crossing, recovery, repeated low readings, missing evidence, duplicate identity,
+disconnect, reconnect, simultaneous devices, permission states, restart, or
+delivery failure would therefore encode unapproved policy.
 
-| Scenario | Evidence input | Required unresolved policy | Current outcome |
-|---|---|---|---|
-| First observation | First eligible device value | Whether an already-low first value alerts | BLOCKED on ledger |
-| Downward crossing | Prior value above, new value below selected boundary | Exact boundary and eligibility | BLOCKED on ledger |
-| Recovery | Value reaches selected recovery condition | Hysteresis and suppression reset | BLOCKED on ledger |
-| Repeated low | Consecutive low snapshots | Cooldown, deduplication, and repeat | BLOCKED on ledger |
-| Missing reading | Known row has nil battery or disappears through failed evidence | Missing/stale/failure behavior | BLOCKED on ledger |
-| Duplicate identity | More than one physical device maps to one ID | Identity and fail-closed behavior | BLOCKED on ledger |
-| Disconnect | Device absent from a completed snapshot | Disconnect cleanup versus evidence failure | BLOCKED on ledger |
-| Reconnect | Device reappears with same or changed display ID | Reconnect and identity policy | BLOCKED on ledger |
-| Simultaneous devices | Several devices cross in one publication | Batching, priority, and content | BLOCKED on ledger |
-| Permission state | Undetermined, denied, allowed, or later changed | Permission timing and recovery UX | BLOCKED on ledger |
-| Restart/session boundary | Evaluator process restarts | Persistence/session scope and lifecycle | BLOCKED on ledger |
-| Delivery failure | Intent cannot be delivered | Repeat/suppression and local status behavior | BLOCKED on ledger |
-
-Scratch model: not used. Without selected policy, an executable model would
-only encode agent assumptions.
+Scratch model: not used. Under NO-GO, an executable model would only encode
+agent assumptions.
 
 ## GO or NO-GO
 
-Final gate: not yet selected
+Final gate: NO-GO
 
-Vincent must resolve every applicable ledger row with rationale, review the
-resulting state table, and then choose exactly GO or NO-GO. GO would authorize a
-later implementation plan only. NO-GO would record its rationale and the
-evidence or decision that could justify reopening. This PENDING record cannot
-be marked DONE.
+Vincent approved the recommended NO-GO on 2026-08-31 by responding `Go` to the
+full approval bundle. The current snapshots remain display-oriented evidence:
+they do not establish alert-grade identity, freshness, component-battery, or
+failure semantics, and no interruption policy has been selected. This closes
+the design spike without authorizing or shipping peripheral battery alerts.
+
+Reopen only after Vincent explicitly requests reconsideration. Before a future
+GO, the thirteen ledger decisions must be explicitly resolved, and any new
+evidence must show that an alert can be useful and trustworthy while preserving
+the existing snapshot-only, no-new-scan, no-cadence-change, and local-only
+boundaries.
 
 ## Implementation outline if GO
 
-Withheld while decisions are PENDING. A future GO outline must name a pure
-snapshot evaluator, identity and state ownership, a notification permission and
-delivery adapter, an opt-in/disable surface, deterministic scenario tests,
-permission UX tests, and live acceptance gates. It may not add scan cadence or
-choose unresolved defaults. Persistence, if selected, additionally requires
-explicit retention/deletion, compatibility/evolution, and corrupt-state
-recovery contracts.
+Withheld under the approved NO-GO. If Vincent later reopens the decision and
+explicitly selects GO, a new implementation plan must name ownership seams,
+pure scenario tests, permission UX tests, and live acceptance gates without
+adding scan cadence or choosing unresolved defaults.
 
 ## Deferred/non-goals
 
