@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 @testable import Geraldine
 
@@ -53,4 +54,24 @@ final class WidgetLayoutMigrationTests: XCTestCase {
         let reloaded = WidgetLayoutStore(defaults: defaults)
         XCTAssertEqual(reloaded.items.first { $0.kind == .keepAwake }?.size, .small)
     }
+    func testGPUOptionIsAddedWithoutChangingSavedLayoutAndCanDriveMenuBar() throws {
+        let suiteName = "GPUWidgetLayoutTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let existing = [WidgetItem(.cpu, .small), WidgetItem(.memory, .medium)]
+        defaults.set(try JSONEncoder().encode(existing), forKey: "geraldine.widgetLayout.v3")
+        let layout = WidgetLayoutStore(defaults: defaults)
+        XCTAssertEqual(Array(layout.items.prefix(2)), existing)
+        XCTAssertEqual(layout.items.filter { $0.kind == .metric(.gpu) }.count, 1)
+        XCTAssertEqual(layout.items.first { $0.kind == .metric(.gpu) }?.isShown, false)
+        layout.setShown(.metric(.gpu), true)
+        layout.moveToFront(.metric(.gpu))
+        XCTAssertEqual(layout.menuBarKind(hasBattery: false), .gpu)
+        let restored = WidgetLayoutStore(defaults: defaults)
+        XCTAssertEqual(restored.menuBarKind(hasBattery: false), .gpu)
+        XCTAssertTrue(restored.visibleItems(hasBattery: false, calendarInPopover: false).contains { $0.kind == .metric(.gpu) })
+        XCTAssertNotNil(MetricChartStyle.gradient(for: .gpu))
+        XCTAssertNotNil(NSImage(systemSymbolName: MetricKind.gpu.icon, accessibilityDescription: nil))
+    }
+
 }

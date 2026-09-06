@@ -69,6 +69,8 @@ struct ActivityView: View {
                       footnote: String(format: "Load Average %.2f", monitor.loadAverage),
                       footnoteAnimationValue: monitor.loadAverage)
 
+            gpuCard
+
             graphCard("Memory", systemImage: "memorychip",
                       value: Fmt.percent(monitor.memoryFraction),
                       valueAnimationValue: monitor.memoryFraction * 100,
@@ -93,6 +95,55 @@ struct ActivityView: View {
         .onDisappear { vm.stop() }
         .onChange(of: surfaceActive) { _, isActive in
             isActive ? vm.start() : vm.stop()
+        }
+    }
+
+    @ViewBuilder private var gpuCard: some View {
+        if monitor.gpuHistory.devices.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Label("GPU Activity", systemImage: MetricKind.gpu.icon).font(.rounded(14, .semibold))
+                Text("GPU activity isn't available from macOS right now.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            .card(tier: .raised, cornerRadius: Theme.Radius.raised)
+        }
+        ForEach(monitor.gpuHistory.devices) { device in
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Label("GPU Activity", systemImage: MetricKind.gpu.icon).font(.rounded(14, .semibold))
+                    Spacer()
+                    if let activity = device.activity {
+                        AnimatedNumberText(Fmt.percent(activity), value: activity * 100)
+                            .font(.rounded(22, .bold)).monospacedDigit()
+                            .foregroundStyle(MetricPresentationPolicy.usageReadoutColor(activity))
+                    } else {
+                        Text(device.state.rawValue).font(.callout).foregroundStyle(.secondary)
+                    }
+                }
+                if device.samples.isEmpty && device.state != .available {
+                    Text("No activity history")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, minHeight: 88)
+                } else {
+                    TimelineSparkGraph(samples: device.samples,
+                                       window: SystemMonitor.liveHistoryWindow,
+                                       now: Date(),
+                                       tint: device.activity.map(MetricPresentationPolicy.usageChartColor) ?? .secondary,
+                                       gradient: MetricChartStyle.gradient(for: .gpu),
+                                       domain: MetricChartStyle.normalizedDomain,
+                                       sampleColor: MetricPresentationPolicy.usageChartColor,
+                                       showsLatestEndpoint: device.state == .available,
+                                       gapThreshold: SystemMonitor.chartSampleGapThreshold,
+                                       maximumPointCount: 300,
+                                       inspectionValueFormatter: { Fmt.percent($0) },
+                                       inspectionAccessibilityLabel: "\(device.displayName) GPU activity history")
+                        .frame(height: 88)
+                }
+                Text(device.displayName)
+                    .font(.caption).foregroundStyle(.secondary)
+                    .help("Activity reported by this graphics processor, not a measurement of how many GPU cores are fully occupied.")
+            }
+            .card(tier: .raised, cornerRadius: Theme.Radius.raised)
         }
     }
 
@@ -148,6 +199,11 @@ struct ActivityView: View {
                     Text(th.cpuSource)
                         .font(.caption).foregroundStyle(.secondary)
                 }
+            } else if !th.sensors.isEmpty {
+                Text("CPU temperature is unavailable. Other sensor readings are shown below.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if !th.sensors.isEmpty {
                 HStack(spacing: 10) {
                     tempChip("Sensor Peak", th.peak)
                     if let b = th.battery { tempChip("Battery", b) }

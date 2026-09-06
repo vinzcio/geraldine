@@ -335,6 +335,7 @@ final class MenuBarController: NSObject, NSWindowDelegate {
 
     private struct StatusPlan {
         var kind: MetricKind
+        var sourceID: UInt64? = nil
         var samples: [StatusTimelineSample]? = nil
         var fallbackSeries: [Double]? = nil
         var timelineDuration: TimeInterval = 60
@@ -375,6 +376,14 @@ final class MenuBarController: NSObject, NSWindowDelegate {
         }
 
         guard let currentStatusPlan else {
+            applyStatusImage(nextImage(), to: button)
+            self.currentStatusPlan = nextPlan
+            return
+        }
+
+        if currentStatusPlan.sourceID != nextPlan.sourceID {
+            statusDisplayLink?.isPaused = true
+            clearStatusAnimation()
             applyStatusImage(nextImage(), to: button)
             self.currentStatusPlan = nextPlan
             return
@@ -475,6 +484,20 @@ final class MenuBarController: NSObject, NSWindowDelegate {
                               gradient: Thermal.gradient,
                               domain: Thermal.chartDomain,
                               sampleColor: { NSColor(Thermal.chartColor($0)) })
+        case .gpu:
+            let device = m.gpuHistory.selectedDevice
+            return StatusPlan(kind: .gpu, sourceID: m.gpuHistory.selectedDeviceID,
+                              samples: device?.samples.map(StatusTimelineSample.init),
+                              timelineDuration: menuBarMetricWindow,
+                              timelineMaximumCount: menuBarSparklineLimit,
+                              glyph: device?.samples.isEmpty == false ? nil : MetricKind.gpu.icon,
+                              label: device?.activity.map(Fmt.percent) ?? "N/A", widthSample: "100%",
+                              color: device?.activity.map { NSColor(MetricPresentationPolicy.usageReadoutColor($0)) } ?? .secondaryLabelColor,
+                              animationValue: device?.activity.map { $0 * 100 },
+                              gradient: MetricChartStyle.gradient(for: .gpu),
+                              domain: MetricChartStyle.normalizedDomain,
+                              sampleColor: { NSColor(MetricPresentationPolicy.usageChartColor($0)) },
+                              showsLatestEndpoint: device?.state == .available)
         case .cpu:
             return StatusPlan(kind: .cpu,
                               samples: m.cpuHistory.map(StatusTimelineSample.init),
@@ -603,6 +626,9 @@ final class MenuBarController: NSObject, NSWindowDelegate {
         case .temperature:
             guard m.thermal.available else { return "Temperature unavailable" }
             return "Temperature \(Int(m.thermal.cpu.rounded())) degrees Celsius"
+        case .gpu:
+            let device = m.gpuHistory.selectedDevice
+            return "GPU \(device?.displayName ?? "unavailable") \(device?.activity.map(Fmt.percent) ?? device?.state.rawValue ?? "Unavailable")"
         case .cpu:
             return "CPU \(Fmt.percent(m.cpuUsage))"
         case .memory:
