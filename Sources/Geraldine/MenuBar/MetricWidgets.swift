@@ -709,6 +709,58 @@ struct MetricWidget: View {
             .strokeBorder(customizationActive ? Theme.accent.opacity(0.24) : .clear, lineWidth: 1))
     }
 
+    // MARK: GPU activity
+
+    private var gpuFooter: some View {
+        HStack {
+            if monitor.gpuHistory.devices.count > 1 || monitor.gpuHistory.selectedDevice == nil {
+                Menu {
+                    ForEach(monitor.gpuHistory.devices) { device in
+                        Button {
+                            monitor.selectGPUDevice(device.id)
+                        } label: {
+                            if monitor.gpuHistory.selectedDeviceID == device.id {
+                                Label(device.displayName, systemImage: "checkmark")
+                            } else {
+                                Text(device.displayName)
+                            }
+                        }
+                    }
+                } label: {
+                    Text(monitor.gpuHistory.selectedDevice?.displayName ?? "Choose GPU")
+                        .font(.caption2).lineLimit(1)
+                }
+                .menuStyle(.borderlessButton)
+                .help("Select the GPU shown in compact widgets and the menu bar.")
+                .disabled(monitor.gpuHistory.devices.isEmpty)
+            } else {
+                caption(monitor.gpuHistory.selectedDevice?.displayName ?? "Unavailable")
+            }
+            Spacer(minLength: 4)
+            actionButton(isSmall ? "Details" : "Activity") { state.open(.activity) }
+        }
+    }
+
+    @ViewBuilder private func gpuGraph(_ device: GPUDeviceHistory) -> some View {
+        if device.samples.isEmpty && device.state != .available {
+            Text("No activity history").font(.caption2).foregroundStyle(.secondary)
+        } else {
+            TimelineSparkGraph(samples: device.samples,
+                               window: SystemMonitor.liveHistoryWindow,
+                               now: Date(),
+                               tint: device.activity.map(MetricPresentationPolicy.usageChartColor) ?? .secondary,
+                               gradient: MetricChartStyle.gradient(for: .gpu),
+                               domain: MetricChartStyle.normalizedDomain,
+                               sampleColor: MetricPresentationPolicy.usageChartColor,
+                               showsLatestEndpoint: device.state == .available,
+                               gapThreshold: SystemMonitor.chartSampleGapThreshold,
+                               maximumPointCount: 300,
+                               inspectionValueFormatter: { Fmt.percent($0) },
+                               inspectionAccessibilityLabel: "\(device.displayName) GPU activity history")
+                .id(device.id)
+        }
+    }
+
     // MARK: Shared chrome
 
     private func headerRow(@ViewBuilder trailing: () -> some View) -> some View {
@@ -746,13 +798,13 @@ struct MetricWidget: View {
         }
     }
 
-    // MARK: Standard metrics (temperature / cpu / memory / storage / battery)
+    // MARK: Standard metrics (temperature / cpu / gpu / memory / storage / battery)
 
     @ViewBuilder private var standardBody: some View {
         VStack(alignment: .leading, spacing: isSmall ? 6 : 8) {
             headerRow {
                 // Hidden while editing so the value never sits under the resize badge.
-                if !isSmall && !customizationActive {
+                if !isSmall && !customizationActive && !(kind == .gpu && size == .large && monitor.gpuHistory.devices.count > 1) {
                     animatedValueText(size: 15, weight: .semibold)
                         .foregroundStyle(chartTint)
                 }
@@ -786,7 +838,7 @@ struct MetricWidget: View {
     @ViewBuilder private var smallFooter: some View {
         switch kind {
         case .temperature:
-            caption(monitor.thermal.available ? "CPU Die" : "Unavailable")
+            caption(monitor.thermal.available ? "CPU" : "Unavailable")
         case .cpu:
             HStack {
                 caption("In Use")
@@ -808,7 +860,8 @@ struct MetricWidget: View {
                 actionButton("Review") { state.open(.storage) }
             }
         case .battery:     caption(batteryCaption, animationValue: batteryCaptionAnimationValue)
-        case .network:     EmptyView()
+        case .gpu: gpuFooter
+        case .network: EmptyView()
         }
     }
 
@@ -823,6 +876,23 @@ struct MetricWidget: View {
             } else {
                 storageCapacitySummary
                     .frame(maxHeight: .infinity)
+            }
+        } else if kind == .gpu && size == .large && monitor.gpuHistory.devices.count > 1 {
+            ForEach(monitor.gpuHistory.devices) { device in
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        caption(device.displayName)
+                        Spacer()
+                        if let activity = device.activity {
+                            AnimatedNumberText(Fmt.percent(activity), value: activity * 100)
+                                .font(.rounded(15, .semibold)).monospacedDigit()
+                                .foregroundStyle(MetricPresentationPolicy.usageChartColor(activity))
+                        } else {
+                            caption(device.state.rawValue)
+                        }
+                    }
+                    gpuGraph(device).frame(height: 148)
+                }
             }
         } else if size == .large {
             chart.frame(height: 148)
@@ -904,6 +974,13 @@ struct MetricWidget: View {
                                    maximumPointCount: MetricChartStyle.expandedMaxPoints)
         case .storage:
             EmptyView()
+        case .gpu:
+            if let device = monitor.gpuHistory.selectedDevice {
+                gpuGraph(device)
+            } else {
+                Text("Unavailable").font(.caption2).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         case .network:
             EmptyView()
         }
@@ -947,6 +1024,8 @@ struct MetricWidget: View {
 
     @ViewBuilder private var largeFooter: some View {
         switch kind {
+        case .gpu:
+            gpuFooter
         case .temperature:
             let values = monitor.thermalHistory.map(\.value)
             let low = values.min()
@@ -1287,6 +1366,7 @@ struct MetricWidget: View {
         switch kind {
         case .temperature:
             return monitor.thermal.available ? Thermal.readoutColor(monitor.thermal.cpu) : .secondary
+        case .gpu:         return monitor.gpuHistory.selectedDevice?.activity.map(MetricPresentationPolicy.usageReadoutColor) ?? .secondary
         case .cpu:         return MetricPresentationPolicy.usageReadoutColor(monitor.cpuUsage)
         case .memory:      return MetricPresentationPolicy.usageReadoutColor(monitor.memoryFraction)
         case .storage:     return MetricPresentationPolicy.usageReadoutColor(monitor.diskFraction)
@@ -1300,6 +1380,8 @@ struct MetricWidget: View {
         switch kind {
         case .temperature:
             return monitor.thermal.available ? Thermal.chartColor(monitor.thermal.cpu) : .secondary
+        case .gpu:
+            return monitor.gpuHistory.selectedDevice?.activity.map(MetricPresentationPolicy.usageChartColor) ?? .secondary
         case .cpu:
             return Theme.Chart.status(for: monitor.cpuUsage)
         case .memory:
@@ -1326,6 +1408,8 @@ struct MetricWidget: View {
     private var valueText: String {
         switch kind {
         case .temperature: return monitor.thermal.available ? "\(Int(monitor.thermal.cpu.rounded()))°C" : "—"
+        case .gpu:         return monitor.gpuHistory.selectedDevice?.activity.map(Fmt.percent)
+                ?? monitor.gpuHistory.selectedDevice?.state.rawValue ?? "Unavailable"
         case .cpu:         return Fmt.percent(monitor.cpuUsage)
         case .memory:      return Fmt.percent(monitor.memoryFraction)
         case .storage:     return "\(Fmt.size(max(0, monitor.diskTotal - monitor.diskUsed))) Free"
@@ -1352,6 +1436,8 @@ struct MetricWidget: View {
         switch kind {
         case .temperature:
             return monitor.thermal.available ? monitor.thermal.cpu : nil
+        case .gpu:
+            return monitor.gpuHistory.selectedDevice?.activity.map { $0 * 100 }
         case .cpu:
             return monitor.cpuUsage * 100
         case .memory:

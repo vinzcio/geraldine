@@ -9,7 +9,7 @@ enum MetricChartStyle {
 
     static func gradient(for metric: MetricKind) -> MetricGradientSpec? {
         switch metric {
-        case .cpu, .memory, .storage:
+        case .cpu, .gpu, .memory, .storage:
             return MetricPresentationPolicy.usageGradient
         case .battery:
             return MetricPresentationPolicy.batteryChargeGradient
@@ -22,7 +22,7 @@ enum MetricChartStyle {
 
     static func chartColor(for metric: MetricKind) -> Color {
         switch metric {
-        case .cpu:
+        case .cpu, .gpu:
             return Theme.Chart.purple
         case .memory, .network:
             return Theme.Chart.blue

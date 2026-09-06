@@ -10,16 +10,16 @@ enum Thermal {
     }
 
     struct Reading: Sendable {
-        var cpu: Double          // headline CPU/SoC temperature
-        var cpuAverage: Double   // average of CPU/SoC candidate sensors
-        var cpuPeak: Double      // hottest HID CPU/SoC candidate sensor
+        var cpu: Double          // headline CPU temperature
+        var cpuAverage: Double   // average of identified HID CPU sensors
+        var cpuPeak: Double      // hottest identified HID CPU sensor
         var hidCPUCandidateCount: Int
         var cpuSource: String
         var peak: Double         // hottest sensor
         var battery: Double?
         var storage: Double?
         var sensors: [Sensor]
-        var available: Bool { !sensors.isEmpty }
+        var available: Bool { cpu.isFinite && cpu > 0 }
 
         static let empty = Reading(cpu: 0, cpuAverage: 0, cpuPeak: 0, hidCPUCandidateCount: 0, cpuSource: "Unavailable",
                                    peak: 0, battery: nil, storage: nil, sensors: [])
@@ -80,22 +80,20 @@ enum Thermal {
         }
     }
 
-    private static func summarize(_ sensors: [Sensor]) -> Reading {
+    static func summarize(_ sensors: [Sensor]) -> Reading {
         func avg(_ xs: [Double]) -> Double { xs.isEmpty ? 0 : xs.reduce(0, +) / Double(xs.count) }
 
-        // On Apple Silicon, "tdie" sensors are the CPU/SoC die temperatures.
-        let hidSensors = sensors.filter { !$0.name.hasPrefix(smcSensorNamePrefix) }
-        let dies = hidSensors.filter { $0.name.lowercased().contains("tdie") }.map(\.temp)
-        let socish = hidSensors.filter {
-            let n = $0.name.lowercased()
-            return n.contains("pmu") || n.contains("soc") || n.contains("cpu") || n.contains("core")
+        // pACC/eACC identify CPU sensors. PMU tdie, GPU, SoC, battery and
+        // storage sensors must never be substituted for CPU temperature.
+        let cpuCandidates = sensors.filter {
+            let name = $0.name.lowercased()
+            return name.hasPrefix("pacc mtr temp sensor") || name.hasPrefix("eacc mtr temp sensor")
+                || name == "cpu" || name.hasPrefix("cpu ")
         }.map(\.temp)
-
-        let cpuCandidates = !dies.isEmpty ? dies : (!socish.isEmpty ? socish : hidSensors.map(\.temp))
         let cpuPeak = cpuCandidates.max() ?? 0
         let cpuAverage = avg(cpuCandidates)
         let hidCPUCandidateCount = cpuCandidates.count
-        let hidSource = !dies.isEmpty ? "HID tdie peak" : "HID sensor peak"
+        let hidSource = cpuCandidates.isEmpty ? "Unavailable" : "HID CPU sensor peak"
         let cleanMyMacSMC = cleanMyMacSMCHeadline(from: sensors)
         let cpu = cleanMyMacSMC?.temp ?? cpuPeak
         let cpuSource = cleanMyMacSMC?.source ?? hidSource

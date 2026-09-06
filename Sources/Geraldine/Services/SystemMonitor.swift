@@ -48,6 +48,7 @@ final class SystemMonitor: ObservableObject {
     nonisolated static let chartSampleGapThreshold: TimeInterval = 4
 
     @Published var cpuUsage: Double = 0          // 0…1
+    @Published private(set) var gpuHistory = GPUHistory()
     @Published var memoryUsed: Double = 0        // bytes
     @Published var memoryTotal: Double = 0       // bytes
     @Published var diskUsed: Double = 0          // bytes
@@ -86,6 +87,7 @@ final class SystemMonitor: ObservableObject {
     private static let diskSampleInterval: TimeInterval = 15
     private var prevCPU: host_cpu_load_info?
     private var prevNet: (rx: UInt64, tx: UInt64, time: TimeInterval)?
+    private var gpuInFlight = false
     private var thermalInFlight = false
     private var historyDirty = false
     private var lastCheckpointAt: TimeInterval
@@ -163,6 +165,13 @@ final class SystemMonitor: ObservableObject {
 
     func refresh() {
         let timestamp = now().timeIntervalSinceReferenceDate
+        if !gpuInFlight {
+            gpuInFlight = true
+            Task.detached(priority: .utility) { [weak self] in
+                let usage = GPUSampler.sample()
+                await self?.applyGPU(usage)
+            }
+        }
         let sampledCPU = sampleCPU()
         if let sampledCPU { cpuUsage = sampledCPU }
         let mem = Self.sampleMemory()
@@ -228,6 +237,15 @@ final class SystemMonitor: ObservableObject {
                 await self?.applyThermal(reading)
             }
         }
+    }
+
+    func selectGPUDevice(_ id: UInt64) {
+        gpuHistory.selectDevice(id)
+    }
+
+    private func applyGPU(_ readings: [GPUReading]?) {
+        gpuInFlight = false
+        gpuHistory.apply(readings, at: now().timeIntervalSinceReferenceDate)
     }
 
     private func applyThermal(_ reading: Thermal.Reading) {

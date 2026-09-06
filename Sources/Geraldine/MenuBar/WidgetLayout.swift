@@ -3,7 +3,7 @@ import Foundation
 /// A metric that can appear as a resizable widget in the menu-bar popover.
 /// The first item in the layout also drives the live menu-bar status item.
 enum MetricKind: String, Codable, CaseIterable, Identifiable {
-    case temperature, cpu, memory, storage, battery, network
+    case temperature, cpu, gpu, memory, storage, battery, network
 
     var id: String { rawValue }
 
@@ -11,6 +11,7 @@ enum MetricKind: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .temperature: return "Temperature"
         case .cpu:         return "CPU"
+        case .gpu:         return "GPU"
         case .memory:      return "Memory"
         case .storage:     return "Storage"
         case .battery:     return "Battery"
@@ -30,6 +31,7 @@ enum MetricKind: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .temperature: return "thermometer.medium"
         case .cpu:         return "cpu"
+        case .gpu:         return "cpu"
         case .memory:      return "memorychip"
         case .storage:     return "internaldrive"
         case .battery:     return "battery.100"
@@ -45,7 +47,7 @@ enum MetricKind: String, Codable, CaseIterable, Identifiable {
     /// storage) are better shown as a glyph + value in the cramped menu bar.
     var isTimeSeries: Bool {
         switch self {
-        case .temperature, .cpu, .memory, .network: return true
+        case .temperature, .cpu, .gpu, .memory, .network: return true
         case .battery, .storage: return false
         }
     }
@@ -225,6 +227,7 @@ final class WidgetLayoutStore: ObservableObject {
         WidgetItem(.keepAwake, .large),
         WidgetItem(.cpu, .small),
         WidgetItem(.memory, .small),
+        WidgetItem(.gpu, .medium, isShown: false),
         WidgetItem(.network, .medium),
         WidgetItem(.storage, .small, isShown: false),
         WidgetItem(.battery, .small, isShown: false),
