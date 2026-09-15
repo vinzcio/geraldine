@@ -77,6 +77,16 @@ struct AppSettingsView: View {
                 LaunchAtLoginControl()
             }
 
+            SettingsSectionCard(tier: .tinted(Theme.accent2)) {
+                SectionHeader(
+                    "Coding Usage",
+                    subtitle: AIUsageDisclosure.current.text
+                )
+                ForEach(AICodingProvider.allCases) { provider in
+                    AIUsageConnectionRow(provider: provider)
+                }
+            }
+
             SettingsSectionCard(tier: .tinted(Module.permissions.tint)) {
                 SectionHeader(
                     "Readiness",
@@ -302,6 +312,71 @@ struct LaunchAtLoginControl: View {
         .onAppear {
             launchAtLogin = LaunchAtLogin.isEnabled
             onChange?(launchAtLogin)
+        }
+    }
+}
+
+private struct AIUsageConnectionRow: View {
+    let provider: AICodingProvider
+    @EnvironmentObject private var state: AppState
+    @EnvironmentObject private var usage: AIUsageMonitor
+
+    private var snapshot: AIUsageSnapshot { usage.snapshot(for: provider) }
+
+    var body: some View {
+        HStack(alignment: .center, spacing: Theme.Spacing.sm) {
+            CodingAssistantMark(provider: provider, size: 18)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(provider.title).font(.rounded(13, .semibold))
+                Text(detail)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            if snapshot.status == .ready, let remaining = snapshot.remainingPercent {
+                Text("\(Int(remaining.rounded()))% left")
+                    .font(.caption.monospacedDigit().weight(.semibold))
+                    .foregroundStyle(UsageRemainingRing.tint(for: remaining, brand: provider.tint))
+            }
+            connectionButton
+        }
+        .padding(.vertical, Theme.Spacing.xxs)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var detail: String {
+        switch snapshot.status {
+        case .disconnected:
+            return provider.signInHint
+        case .needsSignIn:
+            return "Local sign-in was not found. Open the official app or CLI, then retry."
+        case .loading:
+            return "Reading remaining usage…"
+        case .ready:
+            if let window = snapshot.headline {
+                return window.title
+            }
+            return "Connected"
+        case .error(let message):
+            return message
+        }
+    }
+
+    @ViewBuilder private var connectionButton: some View {
+        switch snapshot.status {
+        case .disconnected:
+            Button("Connect") { state.connectAIUsage(provider) }
+                .buttonStyle(.soft(Theme.accent))
+        case .needsSignIn:
+            Button("Sign In") { usage.openSignIn(for: provider) }
+                .buttonStyle(.soft(Theme.warn))
+        case .loading:
+            ProgressView().controlSize(.small)
+        case .ready, .error:
+            Button("Disconnect") { state.disconnectAIUsage(provider) }
+                .buttonStyle(.quiet(Theme.accent, compact: true))
         }
     }
 }

@@ -54,18 +54,21 @@ enum MetricKind: String, Codable, CaseIterable, Identifiable {
 }
 
 /// What a widget tile holds. Metrics drive sparklines/readouts; Keep Awake is a
-/// control. Both share the same draggable, resizable grid — but only metrics can
-/// drive the live menu-bar status item (see `WidgetLayoutStore.menuBarKind`).
+/// control; coding-usage tiles show remaining provider allowance. They share the
+/// same draggable, resizable grid — but only metrics can drive the live menu-bar
+/// status item (see `WidgetLayoutStore.menuBarKind`).
 enum WidgetKind: Hashable, Identifiable {
     case metric(MetricKind)
     case keepAwake
     case calendar
+    case aiUsage(AICodingProvider)
 
     var id: String {
         switch self {
-        case .metric(let metric): return metric.rawValue
-        case .keepAwake:          return "keepAwake"
-        case .calendar:           return "calendar"
+        case .metric(let metric):     return metric.rawValue
+        case .keepAwake:              return "keepAwake"
+        case .calendar:               return "calendar"
+        case .aiUsage(let provider):  return provider.widgetID
         }
     }
 
@@ -74,8 +77,13 @@ enum WidgetKind: Hashable, Identifiable {
         case "keepAwake":    self = .keepAwake
         case "calendar":     self = .calendar
         default:
-            guard let metric = MetricKind(rawValue: id) else { return nil }
-            self = .metric(metric)
+            if let provider = AICodingProvider.from(widgetID: id) {
+                self = .aiUsage(provider)
+            } else if let metric = MetricKind(rawValue: id) {
+                self = .metric(metric)
+            } else {
+                return nil
+            }
         }
     }
 
@@ -84,8 +92,8 @@ enum WidgetKind: Hashable, Identifiable {
     /// be reordered, never resized.
     var canResize: Bool {
         switch self {
-        case .metric, .keepAwake: return true
-        case .calendar:           return false
+        case .metric, .keepAwake, .aiUsage: return true
+        case .calendar:                     return false
         }
     }
 
@@ -97,17 +105,19 @@ enum WidgetKind: Hashable, Identifiable {
 
     var title: String {
         switch self {
-        case .metric(let metric): return metric.title
-        case .keepAwake:          return "Keep Awake"
-        case .calendar:           return "Calendar & Clocks"
+        case .metric(let metric):     return metric.title
+        case .keepAwake:              return "Keep Awake"
+        case .calendar:               return "Calendar & Clocks"
+        case .aiUsage(let provider):  return provider.title
         }
     }
 
     func title(hasBattery: Bool) -> String {
         switch self {
-        case .metric(let metric): return metric.title(hasBattery: hasBattery)
-        case .keepAwake:          return "Keep Awake"
-        case .calendar:           return "Calendar & Clocks"
+        case .metric(let metric):     return metric.title(hasBattery: hasBattery)
+        case .keepAwake:              return "Keep Awake"
+        case .calendar:               return "Calendar & Clocks"
+        case .aiUsage(let provider):  return provider.title
         }
     }
 }
@@ -231,7 +241,12 @@ final class WidgetLayoutStore: ObservableObject {
         WidgetItem(.network, .medium),
         WidgetItem(.storage, .small, isShown: false),
         WidgetItem(.battery, .small, isShown: false),
-        WidgetItem(.calendar, .large, isShown: false)
+        WidgetItem(.calendar, .large, isShown: false),
+        WidgetItem(.aiUsage(.codex), .small, isShown: false),
+        WidgetItem(.aiUsage(.claude), .small, isShown: false),
+        WidgetItem(.aiUsage(.cursor), .small, isShown: false),
+        WidgetItem(.aiUsage(.grok), .small, isShown: false),
+        WidgetItem(.aiUsage(.antigravity), .small, isShown: false)
     ]
 
     init(defaults: UserDefaults = .standard) {
@@ -275,6 +290,7 @@ final class WidgetLayoutStore: ObservableObject {
         case .metric(let metric): return metric.isAvailable(hasBattery: hasBattery)
         case .keepAwake:          return true
         case .calendar:           return calendarInPopover
+        case .aiUsage:            return true
         }
     }
 
@@ -426,6 +442,9 @@ final class WidgetLayoutStore: ObservableObject {
         }
         if !seen.contains(.calendar) {
             result.append(defaultItem(for: .calendar))
+        }
+        for provider in AICodingProvider.allCases where !seen.contains(.aiUsage(provider)) {
+            result.append(defaultItem(for: .aiUsage(provider)))
         }
         return result
     }

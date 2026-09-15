@@ -115,6 +115,16 @@ else
   ICON_KEY=""
 fi
 
+if [ -f "$SRC_DIR/Sources/Geraldine/Resources/GrokMark.png" ]; then
+  cp "$SRC_DIR/Sources/Geraldine/Resources/GrokMark.png" "$CONTENTS/Resources/GrokMark.png"
+fi
+# SwiftPM resource bundle (Bundle.module) lives next to the built executable.
+shopt -s nullglob
+for bundle in "$BUILD"/*/"$CONFIG"/*.bundle "$BUILD/$CONFIG"/*.bundle; do
+  cp -R "$bundle" "$CONTENTS/Resources/"
+done
+shopt -u nullglob
+
 cat > "$CONTENTS/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

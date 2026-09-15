@@ -15,6 +15,7 @@ struct GeraldineApp: App {
                 .environmentObject(state.keepAwake)
                 .environmentObject(state.powerTools)
                 .environmentObject(state.calendar)
+                .environmentObject(state.aiUsage)
                 .frame(minWidth: 920, minHeight: 620)
         }
         .windowStyle(.hiddenTitleBar)
@@ -29,6 +30,7 @@ struct GeraldineApp: App {
                 .environmentObject(state.monitor)
                 .environmentObject(state.keepAwake)
                 .environmentObject(state.powerTools)
+                .environmentObject(state.aiUsage)
         }
     }
 }

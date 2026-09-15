@@ -22,4 +22,16 @@ final class PrivacyDisclosureContractTests: XCTestCase {
         XCTAssertTrue(text.contains("10 MB"))
         XCTAssertTrue(text.contains("each test"))
     }
+
+    func testCodingUsageDisclosureStaysLocalAndNamesProviders() {
+        let disclosure = AIUsageDisclosure.current
+        XCTAssertEqual(
+            disclosure.destinations,
+            ["Antigravity", "Claude", "Codex", "Grok", "Cursor"]
+        )
+        XCTAssertEqual(
+            disclosure.text,
+            "Reads local sign-in state for Antigravity, Claude, Codex, Grok, and Cursor, then asks each provider for remaining usage. Tokens stay on this Mac and are never sent to Geraldine."
+        )
+    }
 }

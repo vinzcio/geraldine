@@ -13,6 +13,9 @@ let package = Package(
             name: "Geraldine",
             dependencies: ["CThermal"],
             path: "Sources/Geraldine",
+            resources: [
+                .process("Resources")
+            ],
             linkerSettings: [
                 .linkedFramework("CoreFoundation"),
                 .linkedFramework("IOKit"),
@@ -21,7 +24,8 @@ let package = Package(
                 .linkedFramework("Network"),
                 .linkedFramework("ApplicationServices"),
                 .linkedFramework("Carbon"),
-                .linkedFramework("Security")
+                .linkedFramework("Security"),
+                .linkedLibrary("sqlite3")
             ]
         ),
         .testTarget(

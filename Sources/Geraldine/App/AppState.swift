@@ -49,6 +49,7 @@ final class AppState: ObservableObject {
     let keepAwake = KeepAwakeController()
     let powerTools = PowerToolsController()
     let calendar = CalendarSettingsStore()
+    let aiUsage = AIUsageMonitor()
     let hardware = HardwareInfo.current
 
     /// Plain storage, not @Published: both only ever change together with
@@ -87,12 +88,14 @@ final class AppState: ObservableObject {
     weak var mainWindow: NSWindow?
     private var windowVisibilityObservers: [NSObjectProtocol] = []
     private var windowVisibilityCancellable: AnyCancellable?
+    private var aiUsageLayoutCancellable: AnyCancellable?
 
     private init() {
         let raw = UserDefaults.standard.string(forKey: "appShape") ?? AppShape.menuBarAndWindow.rawValue
         appShape = AppShape(rawValue: raw) ?? .menuBarAndWindow
         mainWindowVisible = appShape != .menuBarOnly
         mainWindowPresented = appShape != .menuBarOnly
+        observeAIUsageLayout()
     }
 
     // MARK: - Presentation
@@ -153,6 +156,35 @@ final class AppState: ObservableObject {
 
     func setMenuBarPopoverVisible(_ isVisible: Bool) {
         menuBarPopoverVisible = isVisible
+        if isVisible { aiUsage.refreshIfStale() }
+    }
+
+    func connectAIUsage(_ provider: AICodingProvider) {
+        layout.setShown(.aiUsage(provider), true)
+        aiUsage.connect(provider)
+    }
+
+    func disconnectAIUsage(_ provider: AICodingProvider) {
+        layout.setShown(.aiUsage(provider), false)
+        aiUsage.disconnect(provider)
+    }
+
+    /// Showing a coding-usage tile is what starts remaining-usage fetches.
+    /// Edit Widgets and Settings both go through the layout, so a visible ring
+    /// can never sit on an em dash just because Connect was never pressed.
+    private func observeAIUsageLayout() {
+        aiUsageLayoutCancellable = layout.$items
+            .sink { [weak self] _ in
+                self?.syncAIUsageFromLayout()
+            }
+    }
+
+    private func syncAIUsageFromLayout() {
+        let shown = Set(layout.items.compactMap { item -> AICodingProvider? in
+            guard item.isShown, case .aiUsage(let provider) = item.kind else { return nil }
+            return provider
+        })
+        aiUsage.syncShownProviders(shown)
     }
 
     private func observeVisibility(of window: NSWindow) {
