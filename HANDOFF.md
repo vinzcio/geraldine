@@ -1,14 +1,14 @@
 # Geraldine development handoff
 
-**Updated:** 2026-08-31
+**Updated:** 2026-09-15
 
 Geraldine is a local-only macOS utility. It has no account system, backend, or cross-device sync, and clipboard history must not be reintroduced. Preferences and app state remain on this Mac in `UserDefaults` and Application Support. Preserve unrelated user work and the existing opt-in Dock window-preview behavior.
 
 ## Current state
 
-The selected implementation and decision-spike queue has no open item; [`plans/README.md`](plans/README.md) is the authoritative status and dependency record. The source-only completion gate is documented in [`README.md`](README.md).
+The Plan 001–019 queue is closed; [`plans/README.md`](plans/README.md) remains the historical status record. The source-only completion gate is documented in [`README.md`](README.md).
 
-Packaged-bundle, installed-path, and live interaction/performance/accessibility proof remain unverified by this source pass. Each requires separate authorization and must be reported independently rather than inferred from source tests or compilation.
+**Active pickup:** remaining-usage tiles in the **menu-bar popover**. Showing a tile fetches usage. Claude Max draws Fable + all-models bars; Plus draws all-models only. Cursor draws Cursor models + other models. Codex and Grok stay one pooled bar. Grok uses the grok.com mark. Details: [`docs/product/coding-usage-handoff.md`](docs/product/coding-usage-handoff.md).
 
 ## Architecture and product boundaries
 

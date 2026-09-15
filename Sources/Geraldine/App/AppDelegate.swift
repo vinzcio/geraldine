@@ -11,6 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         state.network.start()
         state.devices.start()
         state.powerTools.start()
+        state.aiUsage.start()
         menuBarController = MenuBarController(state: state)
 
         #if DEBUG
@@ -56,6 +57,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         AppState.shared.network.refreshNameAccess()
         AppState.shared.keepAwake.refreshIdleActivityAccess()
         AppState.shared.powerTools.refreshAccessibility()
+        AppState.shared.aiUsage.refreshIfStale()
     }
 
     /// Clicking the Dock icon (or re-opening) brings the main window back.
@@ -75,5 +77,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         AppState.shared.monitor.flushHistory()
         AppState.shared.keepAwake.shutdown()
         AppState.shared.powerTools.stop()
+        AppState.shared.aiUsage.stop()
     }
 }

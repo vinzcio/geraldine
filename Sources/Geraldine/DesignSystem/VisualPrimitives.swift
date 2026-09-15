@@ -1,8 +1,99 @@
+import AppKit
 import SwiftUI
 
 /// Geraldine's mark: a living instrument aperture drawn as a restrained G.
 /// It remains legible from the menu bar popover to the About panel and avoids
 /// the generic gradient-square-plus-sparkle treatment.
+/// Official Grok mark (grok.com favicon): charcoal plate and white dual-spiral G.
+struct GrokMarkView: View {
+    var size: CGFloat
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: size * 0.22, style: .continuous)
+                .fill(Color(red: 5 / 255, green: 5 / 255, blue: 5 / 255))
+            GrokGShape()
+                .fill(Color(red: 252 / 255, green: 252 / 255, blue: 252 / 255))
+                .padding(size * 0.02)
+        }
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
+    }
+}
+
+struct GrokGShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        let scale = min(rect.width, rect.height) / 512
+        let transform = CGAffineTransform(translationX: rect.minX, y: rect.minY)
+            .scaledBy(x: scale, y: scale)
+        var path = Path()
+        path.addPath(Self.svgPath(Self.upper), transform: transform)
+        path.addPath(Self.svgPath(Self.lower), transform: transform)
+        return path
+    }
+
+    /// White G strokes from grok.com/images/favicon.svg, 512 viewBox.
+    private static let upper = "M210.484 312.759L343.465 210.383C349.984 205.364 359.302 207.322 362.408 215.117C378.758 256.231 371.454 305.64 338.925 339.563C306.397 373.487 261.137 380.927 219.768 363.983L174.577 385.803C239.394 432.008 318.104 420.581 367.289 369.251C406.303 328.564 418.386 273.104 407.088 223.091L407.19 223.198C390.807 149.726 411.218 120.359 453.03 60.3072C454.02 58.8833 455.01 57.4595 456 56L400.978 113.382V113.204L210.45 312.794"
+    private static let lower = "M183.042 337.641C136.519 291.294 144.54 219.567 184.236 178.203C213.59 147.59 261.683 135.096 303.666 153.464L348.755 131.75C340.632 125.627 330.221 119.042 318.275 114.414C264.277 91.2407 199.63 102.774 155.735 148.516C113.513 192.549 100.236 260.254 123.036 318.027C140.069 361.206 112.148 391.748 84.0229 422.575C74.0561 433.503 64.0553 444.431 56 456L183.007 337.677"
+
+    private static func svgPath(_ d: String) -> Path {
+        var path = Path()
+        let scanner = Scanner(string: d)
+        scanner.charactersToBeSkipped = CharacterSet(charactersIn: " ,\n\t")
+        var command: Character = "M"
+        var current = CGPoint.zero
+        var start = CGPoint.zero
+        func number() -> CGFloat? {
+            var value: Double = 0
+            guard scanner.scanDouble(&value) else { return nil }
+            return CGFloat(value)
+        }
+        func point() -> CGPoint? {
+            guard let x = number(), let y = number() else { return nil }
+            return CGPoint(x: x, y: y)
+        }
+        while !scanner.isAtEnd {
+            let peek = scanner.string[scanner.currentIndex]
+            if peek.isLetter {
+                command = peek
+                scanner.currentIndex = scanner.string.index(after: scanner.currentIndex)
+            }
+            switch command {
+            case "M":
+                guard let p = point() else { return path }
+                path.move(to: p)
+                current = p
+                start = p
+                command = "L"
+            case "L":
+                guard let p = point() else { return path }
+                path.addLine(to: p)
+                current = p
+            case "C":
+                guard let c1 = point(), let c2 = point(), let p = point() else { return path }
+                path.addCurve(to: p, control1: c1, control2: c2)
+                current = p
+            case "V":
+                guard let y = number() else { return path }
+                let p = CGPoint(x: current.x, y: y)
+                path.addLine(to: p)
+                current = p
+            case "H":
+                guard let x = number() else { return path }
+                let p = CGPoint(x: x, y: current.y)
+                path.addLine(to: p)
+                current = p
+            case "Z", "z":
+                path.closeSubpath()
+                current = start
+            default:
+                return path
+            }
+        }
+        return path
+    }
+}
+
 struct GeraldineMark: View {
     var size: CGFloat = 40
     var tint: Color = Theme.accent

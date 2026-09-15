@@ -200,9 +200,10 @@ struct WidgetGrid: View {
 
     @ViewBuilder private func widget(for item: WidgetItem) -> some View {
         switch item.kind {
-        case .metric(let metric): MetricWidget(kind: metric, size: item.size)
-        case .keepAwake:          KeepAwakeWidget(size: item.size)
-        case .calendar:           CalendarWidget()
+        case .metric(let metric):      MetricWidget(kind: metric, size: item.size)
+        case .keepAwake:               KeepAwakeWidget(size: item.size)
+        case .calendar:                CalendarWidget()
+        case .aiUsage(let provider):   AIUsageWidget(provider: provider, size: item.size)
         }
     }
 
@@ -261,7 +262,7 @@ struct WidgetGrid: View {
                     .foregroundStyle(.primary)
                 Text(customizing
                      ? "Drag to reorder. Click the arrows or right-click to resize."
-                     : "Live system signals. Drag a tile to rearrange.")
+                     : "Live system signals and remaining coding usage. Drag a tile to rearrange.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
