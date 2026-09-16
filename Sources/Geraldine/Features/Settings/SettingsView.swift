@@ -355,6 +355,10 @@ private struct AIUsageConnectionRow: View {
         case .loading:
             return "Reading remaining usage…"
         case .ready:
+            if provider == .antigravity {
+                return snapshot.displayWindows.map { "\($0.title): \(Int($0.remainingPercent.rounded()))% left" }
+                    .joined(separator: " · ")
+            }
             if let source = snapshot.cachedSourceDescription { return source }
             if let window = snapshot.headline {
                 return window.title

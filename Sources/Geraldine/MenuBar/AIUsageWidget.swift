@@ -94,11 +94,8 @@ struct AIUsageWidget: View {
 
     @ViewBuilder
     private func dataBlock(percentSize: CGFloat, percentMarkSize: CGFloat) -> some View {
-        if snapshot.status == .needsSignIn {
-            Text("Sign in")
-                .font(.caption2.weight(.medium))
-                .foregroundStyle(Theme.warn)
-            UsageRemainingBar(remaining: nil, tint: provider.tint, height: 4)
+        if provider == .antigravity {
+            antigravityQuotas
         } else if showsPairedWindows {
             VStack(spacing: 8) {
                 ForEach(bars.prefix(2)) { window in
@@ -108,6 +105,32 @@ struct AIUsageWidget: View {
         } else {
             remainingHeadline(percent: remaining, percentSize: percentSize, percentMarkSize: percentMarkSize)
             UsageRemainingBar(remaining: remaining, tint: provider.tint, height: 4)
+        }
+    }
+
+    private var antigravityQuotas: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            quotaGroup("Gemini", ids: ["gemini-weekly", "gemini-5h"])
+            quotaGroup("Claude / GPT", ids: ["3p-weekly", "3p-5h"])
+        }
+    }
+
+    private func quotaGroup(_ title: String, ids: [String]) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(title).font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+            ForEach(bars.filter { ids.contains($0.id) }) { window in
+                HStack(spacing: 3) {
+                    Text(window.id.hasSuffix("weekly") ? "Weekly" : "5-hour")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                    UsageRemainingBar(remaining: window.remainingPercent, tint: provider.tint, height: 3)
+                        .frame(width: size == .small ? 18 : 48)
+                    Text("\(Int(window.remainingPercent.rounded()))%")
+                        .font(.system(size: 10, weight: .semibold).monospacedDigit())
+                }
+                .help(window.title + " · " + resetCopy(window.resetsAt))
+            }
         }
     }
 
@@ -278,7 +301,7 @@ struct AIUsageWidget: View {
             return "\(name) usage, updating"
         case .ready:
             if showsPairedWindows {
-                let parts = bars.prefix(2).map { window in
+                let parts = (provider == .antigravity ? bars : Array(bars.prefix(2))).map { window in
                     "\(shortLabel(window)) \(Int(window.remainingPercent.rounded())) percent"
                 }
                 return "\(name) " + parts.joined(separator: ", ")

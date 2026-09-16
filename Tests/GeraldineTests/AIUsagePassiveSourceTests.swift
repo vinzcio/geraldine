@@ -33,7 +33,7 @@ final class AIUsagePassiveSourceTests: XCTestCase {
     func testEveryMissingLocalSourceIsUnavailableWithoutNetworkOrSignIn() async {
         for provider in AICodingProvider.allCases {
             let snapshot = await AIUsageFetcher.fetch(provider, transport: Stub(mustNotCall: true),
-                                                       homeDirectory: home, languageServer: { nil })
+                                                       homeDirectory: home, antigravityCLI: UnavailableCLI())
             guard case .error(let message) = snapshot.status else {
                 XCTFail("\(provider) incorrectly inferred sign-in state"); continue
             }
@@ -44,9 +44,9 @@ final class AIUsagePassiveSourceTests: XCTestCase {
     func testRejectedUsageAccessDoesNotClaimAnyProviderIsSignedOut() async throws {
         try credentials()
         for code in [401, 403] {
-            for provider in AICodingProvider.allCases {
+            for provider in AICodingProvider.allCases where provider != .antigravity {
                 let snapshot = await AIUsageFetcher.fetch(provider, transport: Stub(code: code),
-                                                           homeDirectory: home, languageServer: { nil })
+                                                           homeDirectory: home, antigravityCLI: UnavailableCLI())
                 guard case .error(let message) = snapshot.status else {
                     XCTFail("\(provider) incorrectly inferred sign-in state"); continue
                 }
@@ -59,49 +59,38 @@ final class AIUsagePassiveSourceTests: XCTestCase {
         try credentials()
         for provider in [AICodingProvider.codex, .grok, .cursor] {
             let snapshot = await AIUsageFetcher.fetch(provider, transport: Stub(),
-                                                       homeDirectory: home, languageServer: { nil })
+                                                       homeDirectory: home, antigravityCLI: UnavailableCLI())
             XCTAssertEqual(snapshot.status, .ready, "\(provider)")
         }
     }
 
-    func testAntigravityReadsRunningLocalServerWithoutCredential() async {
-        let snapshot = await AIUsageFetcher.fetch(.antigravity, transport: Stub(local: true),
-                                                   homeDirectory: home,
-                                                   languageServer: { .init(port: 12345, csrf: "local-fixture") })
-        XCTAssertEqual(snapshot.status, .ready)
-        XCTAssertEqual(snapshot.remainingPercent, 40)
+    private struct UnavailableCLI: AntigravityUsageReading {
+        func snapshot(homeDirectory: URL, now: Date) async -> AIUsageSnapshot {
+            .failed(.antigravity, message: AICodingProvider.antigravity.usageUnavailableHint)
+        }
     }
 
     private struct Stub: AIUsageTransporting {
         var code = 200
         var mustNotCall = false
-        var local = false
 
         func data(for request: URLRequest) async throws -> (Data, HTTPURLResponse) {
             XCTAssertFalse(mustNotCall, "Missing source must not initiate authentication or network traffic")
             let url = try XCTUnwrap(request.url)
             var body = "{}"
-            if local {
-                XCTAssertEqual(url.host, "127.0.0.1")
-                XCTAssertTrue(url.path.hasSuffix("/GetUserStatus"))
-                XCTAssertEqual(request.value(forHTTPHeaderField: "X-Codeium-Csrf-Token"), "local-fixture")
-                XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
-                body = #"{"models":{"gemini":{"quotaInfo":{"remainingFraction":0.4}}}}"#
-            } else {
-                XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer fixture")
-                switch url.host {
-                case "chatgpt.com":
-                    XCTAssertEqual(url.path, "/backend-api/wham/usage")
-                    body = #"{"rate_limit":{"primary_window":{"used_percent":25,"limit_window_seconds":18000}}}"#
-                case "cli-chat-proxy.grok.com":
-                    XCTAssertTrue(["/v1/billing", "/v1/user"].contains(url.path))
-                    body = #"{"creditUsagePercent":10}"#
-                case "api2.cursor.sh":
-                    XCTAssertTrue(url.path.hasSuffix("/GetCurrentPeriodUsage"))
-                    body = #"{"planUsage":{"autoPercentUsed":25,"apiPercentUsed":30,"totalPercentUsed":28}}"#
-                default:
-                    XCTAssertNotEqual(code, 200, "Unexpected provider endpoint")
-                }
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer fixture")
+            switch url.host {
+            case "chatgpt.com":
+                XCTAssertEqual(url.path, "/backend-api/wham/usage")
+                body = #"{"rate_limit":{"primary_window":{"used_percent":25,"limit_window_seconds":18000}}}"#
+            case "cli-chat-proxy.grok.com":
+                XCTAssertTrue(["/v1/billing", "/v1/user"].contains(url.path))
+                body = #"{"creditUsagePercent":10}"#
+            case "api2.cursor.sh":
+                XCTAssertTrue(url.path.hasSuffix("/GetCurrentPeriodUsage"))
+                body = #"{"planUsage":{"autoPercentUsed":25,"apiPercentUsed":30,"totalPercentUsed":28}}"#
+            default:
+                XCTAssertNotEqual(code, 200, "Unexpected provider endpoint")
             }
             return (Data(body.utf8), HTTPURLResponse(url: url, statusCode: code, httpVersion: nil, headerFields: nil)!)
         }

@@ -19,6 +19,36 @@ Disclosure copy (also in tests):
 
 > Reads existing usage or reuses the official app or CLI session for provider usage requests. No separate Geraldine sign-in or Keychain access.
 
+## Antigravity CLI-only correction (2026-09-16)
+
+Supersedes the earlier desktop/local-server implementation below. Use only
+`agy --print /usage --output-format json`. On this machine it returned
+`command.name=usage`, `num_turns=0`, zero tokens, and four quota buckets, each
+100% remaining: `gemini-weekly`, `gemini-5h`, `3p-weekly`, `3p-5h`.
+The desktop app was not required. No model prompt, direct credential reads,
+desktop-process discovery, or direct Antigravity HTTP fallback remains.
+
+Geraldine resolves the installed CLI from standard user/Homebrew locations,
+invokes it without a shell or terminal UI, and parses only a successful structured
+usage command with all four valid fractions. CLI authentication remains owned by
+agy. Small, medium, and large tiles show both groups and both time windows;
+Settings and accessibility also expose all four. Quota fractions are converted
+directly to remaining percentages, including 1% and 100%, without generic
+fraction/percent heuristics.
+
+Installed proof: debug build `d62e24462733-dirty`, built
+`2026-09-16T05:17:24Z`, displayed all four 100% values in Settings and the
+actual small popover tile. The tile was visually checked: Gemini and Claude/GPT
+each have Weekly and 5-hour rows. Antigravity usage remains shown. Keep Awake
+was restored ON indefinitely and Stay Active ON after one minute. No permission
+dialog was observed. All 32 focused AI usage tests passed, including execution
+of the exact CLI arguments with a fixture executable, no HTTP fallback, complete
+four-bucket parsing, and malformed/partial/model-response rejection. Scoped
+manual review completed.
+
+See [official CLI usage documentation](https://antigravity.google/docs/cli/commands/usage/).
+The JSON command was verified against the installed CLI, not inferred from docs.
+
 ## All-provider passive usage contract (2026-09-16)
 
 Codex, Grok, and Cursor already read their existing auth files/database and call
