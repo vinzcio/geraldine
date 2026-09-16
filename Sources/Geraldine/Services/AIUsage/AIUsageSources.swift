@@ -1,5 +1,4 @@
 import Foundation
-import Security
 import SQLite3
 
 protocol AIUsageTransporting: Sendable {
@@ -27,20 +26,23 @@ struct AIUsageToken: Equatable, Sendable {
     var accountID: String?
 }
 
+// Credential discovery must never access Keychain, including silent fallbacks.
+// Query-level UI suppression did not prevent the installed macOS prompts.
+// Missing file/database credentials are unavailable; never retry via Security APIs.
 enum AIUsageCredentialStore {
     static func home() -> URL {
         FileManager.default.homeDirectoryForCurrentUser
     }
 
-    static func token(for provider: AICodingProvider) -> AIUsageToken? {
+    static func token(for provider: AICodingProvider, homeDirectory: URL = home()) -> AIUsageToken? {
         switch provider {
-        case .claude:      return claudeToken()
-        case .codex:       return jsonToken(at: home().appendingPathComponent(".codex/auth.json"),
+        case .claude:      return claudeToken(homeDirectory: homeDirectory)
+        case .codex:       return jsonToken(at: homeDirectory.appendingPathComponent(".codex/auth.json"),
                                             paths: [["tokens", "access_token"], ["access_token"]],
                                             accountPaths: [["tokens", "account_id"], ["account_id"]])
-        case .grok:        return grokToken()
-        case .cursor:      return cursorToken()
-        case .antigravity: return antigravityToken()
+        case .grok:        return grokToken(homeDirectory: homeDirectory)
+        case .cursor:      return cursorToken(homeDirectory: homeDirectory)
+        case .antigravity: return antigravityToken(homeDirectory: homeDirectory)
         }
     }
 
@@ -50,20 +52,19 @@ enum AIUsageCredentialStore {
 
     // MARK: Claude
 
-    private static func claudeToken() -> AIUsageToken? {
-        let file = home().appendingPathComponent(".claude/.credentials.json")
+    private static func claudeToken(homeDirectory: URL) -> AIUsageToken? {
+        let file = homeDirectory.appendingPathComponent(".claude/.credentials.json")
         if let token = jsonToken(at: file,
                                  paths: [["claudeAiOauth", "accessToken"], ["accessToken"]]) {
             return token
         }
-        return keychainToken(service: "Claude Code-credentials",
-                             nestedPaths: [["claudeAiOauth", "accessToken"], ["accessToken"]])
+        return nil
     }
 
     // MARK: Grok
 
-    private static func grokToken() -> AIUsageToken? {
-        let url = home().appendingPathComponent(".grok/auth.json")
+    private static func grokToken(homeDirectory: URL) -> AIUsageToken? {
+        let url = homeDirectory.appendingPathComponent(".grok/auth.json")
         guard let json = readJSON(url) else { return nil }
         if let direct = jsonToken(in: json, paths: [["key"], ["access_token"], ["token"]]) {
             return direct
@@ -81,17 +82,17 @@ enum AIUsageCredentialStore {
 
     // MARK: Cursor
 
-    private static func cursorToken() -> AIUsageToken? {
+    private static func cursorToken(homeDirectory: URL) -> AIUsageToken? {
         let authFiles = [
-            home().appendingPathComponent(".cursor/auth.json"),
-            home().appendingPathComponent(".config/cursor/auth.json")
+            homeDirectory.appendingPathComponent(".cursor/auth.json"),
+            homeDirectory.appendingPathComponent(".config/cursor/auth.json")
         ]
         for file in authFiles {
             if let token = jsonToken(at: file, paths: [["accessToken"], ["access_token"], ["token"]]) {
                 return token
             }
         }
-        let db = home().appendingPathComponent(
+        let db = homeDirectory.appendingPathComponent(
             "Library/Application Support/Cursor/User/globalStorage/state.vscdb"
         )
         if let raw = sqliteValue(path: db, key: "cursorAuth/accessToken")
@@ -100,8 +101,7 @@ enum AIUsageCredentialStore {
                 return AIUsageToken(value: token)
             }
         }
-        return keychainToken(service: "cursor-access-token")
-            ?? keychainToken(service: "Cursor")
+        return nil
     }
 
     private static func unwrapCursorAuth(_ raw: String) -> String? {
@@ -117,7 +117,7 @@ enum AIUsageCredentialStore {
 
     // MARK: Antigravity
 
-    private static func antigravityToken() -> AIUsageToken? {
+    private static func antigravityToken(homeDirectory: URL) -> AIUsageToken? {
         let paths: [[String]] = [
             ["token", "access_token"],
             ["token", "accessToken"],
@@ -126,18 +126,16 @@ enum AIUsageCredentialStore {
             ["token"]
         ]
         let files = [
-            home().appendingPathComponent(".gemini/oauth_creds.json"),
-            home().appendingPathComponent(".gemini/antigravity-cli/oauth_creds.json"),
-            home().appendingPathComponent(".agy/oauth_creds.json")
+            homeDirectory.appendingPathComponent(".gemini/oauth_creds.json"),
+            homeDirectory.appendingPathComponent(".gemini/antigravity-cli/oauth_creds.json"),
+            homeDirectory.appendingPathComponent(".agy/oauth_creds.json")
         ]
         for file in files {
             if let token = jsonToken(at: file, paths: paths) {
                 return token
             }
         }
-        return keychainToken(service: "gemini", account: "antigravity", nestedPaths: paths)
-            ?? keychainToken(service: "antigravity", nestedPaths: paths)
-            ?? keychainToken(service: "agy", nestedPaths: paths)
+        return nil
     }
 
     struct LanguageServer: Equatable, Sendable {
@@ -202,51 +200,6 @@ enum AIUsageCredentialStore {
     private static func readJSON(_ url: URL) -> [String: Any]? {
         guard let data = try? Data(contentsOf: url) else { return nil }
         return AIUsageJSON.object(from: data)
-    }
-
-    // Usage discovery and refresh must never open a Keychain permission dialog.
-    // Keep this guard on every query, including after relaunch or a new build.
-    static func keychainToken(service: String, account: String? = nil,
-                              nestedPaths: [[String]] = [],
-                              copyMatching: (CFDictionary, UnsafeMutablePointer<CFTypeRef?>?) -> OSStatus = SecItemCopyMatching) -> AIUsageToken? {
-        var query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-            kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail
-        ]
-        if let account {
-            query[kSecAttrAccount as String] = account
-        }
-        var item: CFTypeRef?
-        let status = copyMatching(query as CFDictionary, &item)
-        guard status == errSecSuccess, let data = item as? Data else { return nil }
-        let payload = unwrapSecretPayload(data)
-        if let json = AIUsageJSON.object(from: payload) {
-            if let token = jsonToken(in: json, paths: nestedPaths.isEmpty
-                                     ? [["accessToken"], ["access_token"], ["token", "access_token"]]
-                                     : nestedPaths) {
-                return token
-            }
-        }
-        if let string = String(data: payload, encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-           !string.isEmpty, !string.hasPrefix("{") {
-            return AIUsageToken(value: string)
-        }
-        return nil
-    }
-
-    /// `go-keyring-base64:` wrappers and raw JSON both show up in macOS keychain items.
-    static func unwrapSecretPayload(_ data: Data) -> Data {
-        guard let string = String(data: data, encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-              !string.isEmpty else { return data }
-        let prefix = "go-keyring-base64:"
-        guard string.hasPrefix(prefix) else { return Data(string.utf8) }
-        let encoded = String(string.dropFirst(prefix.count))
-        return Data(base64Encoded: encoded) ?? Data(string.utf8)
     }
 
     private static func sqliteValue(path: URL, key: String) -> String? {

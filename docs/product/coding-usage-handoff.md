@@ -21,15 +21,24 @@ Disclosure copy (also in tests):
 
 ## No-prompt credential invariant (2026-09-16)
 
-Every AI usage Keychain read must disallow authentication UI, including discovery,
-connect, timer refresh, and refresh on opening the popover. The shared reader uses
-`kSecUseAuthenticationUIFail`; denied reads return no token without an interactive
-retry. File/database sources and silently accessible Keychain items still work.
-If the only credential requires approval, the existing sign-in state is shown.
-Do not request Always Allow, modify credential ACLs, or persist copied secrets.
-Preserve this rule for future providers and rebuilds. Regression coverage lives in
-`AIUsageCredentialStoreTests`. This source change does not update the installed
-build evidence below.
+AI usage must not access Keychain at all. Discovery, connect, timer refresh, and
+popover refresh use existing credential files or local database entries only.
+Missing credentials return the existing sign-in state. The earlier
+`kSecUseAuthenticationUIFail` guard did not stop installed-app prompts and has
+been removed with all Keychain fallbacks. Do not reintroduce silent Keychain
+reads, request Always Allow, change ACLs, or persist copied secrets. Tests cover
+isolated local credential sources; verify the installed startup and refresh
+workflow as well. Historical installed evidence below predates this correction.
+
+## Corrective verification (2026-09-16)
+
+The no-Keychain correction passed 21 focused AI usage tests. The installed debug
+build at `2026-09-16T04:39:13Z` was checked with `nm -u`: zero direct `SecItem` or
+`SecKeychain` imports. Live Settings showed Codex, Grok, and Cursor usage, and
+Claude sign-in needed. A Codex disconnect/reconnect loaded usage again without an
+observed permission dialog. Keep Awake was restored to indefinite and Stay Active
+to its existing one-minute delay. This verifies startup and a live reconnect;
+the menu-bar popover itself was not exercised in this corrective run.
 
 ## Installed build (this machine)
 
@@ -82,7 +91,7 @@ Project root:
 | `Sources/Geraldine/Features/Settings/SettingsView.swift` | Coding Usage card |
 | `Sources/Geraldine/App/AppState.swift` | `aiUsage` + `connectAIUsage` / `disconnectAIUsage` |
 | `Package.swift` | links `sqlite3` (Cursor `state.vscdb`) |
-| `Tests/GeraldineTests/AIUsageParsingTests.swift` | parsers, layout migration, connect persist, go-keyring unwrap |
+| `Tests/GeraldineTests/AIUsageParsingTests.swift` | parsers, layout migration, connect persistence |
 | `Tests/GeraldineTests/PrivacyDisclosureContractTests.swift` | disclosure contract |
 
 Wiring: `AppDelegate` starts/stops the monitor; popover open calls `refreshIfStale()`; `GeraldineApp` and `MenuBarController` inject `state.aiUsage`.
