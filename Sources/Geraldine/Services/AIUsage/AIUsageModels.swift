@@ -36,6 +36,11 @@ struct AIUsageSnapshot: Equatable, Sendable {
     var fetchedAt: Date?
     var sourceLabel: String?
 
+    var cachedSourceDescription: String? {
+        guard sourceLabel == ClaudeUsageCache.sourceLabel, let fetchedAt else { return nil }
+        return "Claude Code cache · updated " + fetchedAt.formatted(date: .abbreviated, time: .shortened)
+    }
+
     static func disconnected(_ provider: AICodingProvider) -> AIUsageSnapshot {
         AIUsageSnapshot(provider: provider, status: .disconnected, plan: nil,
                         windows: [], fetchedAt: nil, sourceLabel: nil)

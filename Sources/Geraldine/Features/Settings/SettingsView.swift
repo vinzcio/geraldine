@@ -355,6 +355,7 @@ private struct AIUsageConnectionRow: View {
         case .loading:
             return "Reading remaining usage…"
         case .ready:
+            if let source = snapshot.cachedSourceDescription { return source }
             if let window = snapshot.headline {
                 return window.title
             }

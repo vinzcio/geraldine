@@ -29,6 +29,8 @@ struct AIUsageWidget: View {
         .background { tileBackground }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityText)
+        .accessibilityValue(snapshot.cachedSourceDescription ?? "")
+        .help(snapshot.cachedSourceDescription ?? accessibilityText)
     }
 
     private var smallBody: some View {
