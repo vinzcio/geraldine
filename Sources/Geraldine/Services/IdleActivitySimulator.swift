@@ -19,7 +19,7 @@ struct IdleActivitySimulationSnapshot: Equatable {
     var errorMessage: String?
 }
 
-/// Simulates activity (mouse nudges / arrow-key pairs) once the user has been
+/// Simulates activity with mouse nudges and Control-key presses once the user has been
 /// idle for a configurable delay. Idleness comes from polling the system's
 /// HIDIdleTime counter — deliberately not a CGEvent tap, so Geraldine never
 /// sits in the delivery path of real keyboard or mouse input.
@@ -27,21 +27,6 @@ struct IdleActivitySimulationSnapshot: Equatable {
 final class IdleActivitySimulationService {
     var onSnapshotChange: ((IdleActivitySimulationSnapshot) -> Void)?
 
-    private enum PulseAction {
-        case mouseNudge
-        case arrowKeyPair([CGKeyCode])
-    }
-
-    private static let arrowLeftKeyCode: CGKeyCode = 123
-    private static let arrowRightKeyCode: CGKeyCode = 124
-    // Keyboard pulses stay limited to opposing horizontal arrow-key pairs. Up
-    // and down are deliberately excluded: they scroll and move list selections
-    // in far more apps than left/right do.
-    private static let arrowKeyPairs = [
-        [arrowLeftKeyCode, arrowRightKeyCode],
-        [arrowRightKeyCode, arrowLeftKeyCode]
-    ]
-    private static let pulseIntervalJitter = 0.6...1.8
     private static let mouseNudgeDistanceRange = 4.0...14.0
     // Our own pulses reset HIDIdleTime. Date is kept for the UI, while uptime
     // gives the detector the same monotonic clock semantics as HIDIdleTime.
@@ -50,7 +35,6 @@ final class IdleActivitySimulationService {
     private static let realInputTolerance: TimeInterval = 0.05
 
     private var idleDelay: TimeInterval
-    private let pulseInterval: TimeInterval
     private var isEnabled = false
     private var isPulsing = false
     private var phase: IdleActivitySimulationPhase = .off
@@ -62,22 +46,31 @@ final class IdleActivitySimulationService {
     private let accessibilityAvailable: () -> Bool
     private let currentIdleDuration: () -> TimeInterval?
     private let injectedPulsePoster: (() -> Bool)?
+    private let uptime: () -> TimeInterval
+    // Random spacing targets the requested 24–30 active seconds per minute.
+    // Reserve 0.1s below the 2.5s maximum gap for ordinary timer lateness.
+    // Multiple events in one pulse still count as only one active second.
+    // Real input and controller pauses take priority.
+    private let nextPulseInterval: () -> TimeInterval
 
     init(
         idleDelay: TimeInterval = 120,
-        pulseInterval: TimeInterval = 30,
         accessibilityAvailable: (() -> Bool)? = nil,
         currentIdleDuration: (() -> TimeInterval?)? = nil,
-        pulsePoster: (() -> Bool)? = nil
+        pulsePoster: (() -> Bool)? = nil,
+        uptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+        nextPulseInterval: @escaping () -> TimeInterval = { Double.random(in: 2...2.4) }
     ) {
         self.idleDelay = idleDelay
-        self.pulseInterval = pulseInterval
         self.accessibilityAvailable = accessibilityAvailable ?? { Permissions.hasAccessibilityAccess() }
         self.currentIdleDuration = currentIdleDuration ?? { Self.currentHIDIdleDuration() }
         injectedPulsePoster = pulsePoster
+        self.uptime = uptime
+        self.nextPulseInterval = nextPulseInterval
     }
 
     var hasScheduledTimer: Bool { timer != nil }
+    var nextFireDate: Date? { timer?.fireDate }
 
     func start(idleDelay newIdleDelay: TimeInterval? = nil) {
         if let newIdleDelay {
@@ -141,7 +134,7 @@ final class IdleActivitySimulationService {
         MainActor.assumeIsolated(callback)
     }
 
-    private func timerFired() {
+    func timerFired() {
         guard isEnabled else { return }
 
         guard accessibilityAvailable() else {
@@ -158,7 +151,7 @@ final class IdleActivitySimulationService {
             // The idle clock restarts at every event, including our own pulses.
             // An idle time noticeably younger than our last pulse therefore
             // means real input arrived since then: the user is back.
-            let nowUptime = ProcessInfo.processInfo.systemUptime
+            let nowUptime = uptime()
             let sinceLastPulse = lastPulseUptime.map { nowUptime - $0 } ?? .greatestFiniteMagnitude
             if idle + Self.realInputTolerance < sinceLastPulse {
                 isPulsing = false
@@ -200,7 +193,7 @@ final class IdleActivitySimulationService {
         }
 
         lastPulse = Date()
-        lastPulseUptime = ProcessInfo.processInfo.systemUptime
+        lastPulseUptime = uptime()
         setPhase(.pulsing)
         return true
     }
@@ -211,45 +204,22 @@ final class IdleActivitySimulationService {
         }
         guard let source = CGEventSource(stateID: .hidSystemState) else { return false }
 
-        for action in randomPulseActions() {
-            switch action {
-            case .mouseNudge:
-                guard postMouseNudge(source: source) else { return false }
-            case .arrowKeyPair(let keyCodes):
-                for keyCode in keyCodes {
-                    guard postKey(keyCode, source: source) else { return false }
-                }
-            }
-        }
-
+        // A bare Control press adds keyboard activity without typing text or
+        // navigating with arrow keys. Always construct both events before posting.
+        guard let keys = Self.makeControlKeyPulse(source: source),
+              postMouseNudge(source: source) else { return false }
+        keys.down.post(tap: .cghidEventTap)
+        keys.up.post(tap: .cghidEventTap)
         return true
     }
 
-    private func nextPulseInterval() -> TimeInterval {
-        max(1, pulseInterval * Double.random(in: Self.pulseIntervalJitter))
-    }
-
-    private func randomPulseActions() -> [PulseAction] {
-        var actions: [PulseAction] = []
-
-        if Bool.random() {
-            actions.append(.mouseNudge)
+    static func makeControlKeyPulse(source: CGEventSource) -> (down: CGEvent, up: CGEvent)? {
+        let controlKey: CGKeyCode = 59
+        guard let down = CGEvent(keyboardEventSource: source, virtualKey: controlKey, keyDown: true),
+              let up = CGEvent(keyboardEventSource: source, virtualKey: controlKey, keyDown: false) else {
+            return nil
         }
-
-        if Bool.random(), let keyCodes = Self.arrowKeyPairs.randomElement() {
-            actions.append(.arrowKeyPair(keyCodes))
-        }
-
-        if actions.isEmpty {
-            if Bool.random(), let keyCodes = Self.arrowKeyPairs.randomElement() {
-                actions.append(.arrowKeyPair(keyCodes))
-            } else {
-                actions.append(.mouseNudge)
-            }
-        }
-
-        actions.shuffle()
-        return actions
+        return (down, up)
     }
 
     private func postMouseNudge(source: CGEventSource) -> Bool {
@@ -273,16 +243,6 @@ final class IdleActivitySimulationService {
             return false
         }
         event.post(tap: .cghidEventTap)
-        return true
-    }
-
-    private func postKey(_ keyCode: CGKeyCode, source: CGEventSource) -> Bool {
-        guard let down = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true),
-              let up = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false) else {
-            return false
-        }
-        down.post(tap: .cghidEventTap)
-        up.post(tap: .cghidEventTap)
         return true
     }
 

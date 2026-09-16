@@ -19,6 +19,18 @@ Disclosure copy (also in tests):
 
 > Reads local sign-in state for Antigravity, Claude, Codex, Grok, and Cursor, then asks each provider for remaining usage. Tokens stay on this Mac and are never sent to Geraldine.
 
+## No-prompt credential invariant (2026-09-16)
+
+Every AI usage Keychain read must disallow authentication UI, including discovery,
+connect, timer refresh, and refresh on opening the popover. The shared reader uses
+`kSecUseAuthenticationUIFail`; denied reads return no token without an interactive
+retry. File/database sources and silently accessible Keychain items still work.
+If the only credential requires approval, the existing sign-in state is shown.
+Do not request Always Allow, modify credential ACLs, or persist copied secrets.
+Preserve this rule for future providers and rebuilds. Regression coverage lives in
+`AIUsageCredentialStoreTests`. This source change does not update the installed
+build evidence below.
+
 ## Installed build (this machine)
 
 Do **not** infer this from source tests. Proven 2026-09-15:

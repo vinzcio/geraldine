@@ -277,7 +277,6 @@ final class KeepAwakeControllerTests: XCTestCase {
         var pulseSucceeds = true
         let simulator = IdleActivitySimulationService(
             idleDelay: 1,
-            pulseInterval: 30,
             accessibilityAvailable: { true },
             currentIdleDuration: { 10 },
             pulsePoster: { pulseSucceeds }
