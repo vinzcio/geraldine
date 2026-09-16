@@ -62,9 +62,27 @@ final class AIUsageCredentialStoreTests: XCTestCase {
     func testCredentialSourceCannotReintroduceTheKeychainFallback() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
-        let source = try String(contentsOf: root.appendingPathComponent("Sources/Geraldine/Services/AIUsage/AIUsageSources.swift"))
-        for forbidden in ["import Security", "SecItemCopyMatching", "SecKeychain", "/usr/bin/security"] {
-            XCTAssertFalse(source.contains(forbidden), "AI usage must not access Keychain: \(forbidden)")
+        let files = [
+            "Sources/Geraldine/Services/AIUsage/AIUsageSources.swift",
+            "Sources/Geraldine/Services/AIUsage/AgentCLI.swift",
+            "Sources/Geraldine/Services/AIUsage/ClaudeCLIUsage.swift",
+            "Sources/Geraldine/Services/AIUsage/CodexCLIUsage.swift",
+            "Sources/Geraldine/Services/AIUsage/GrokCLIUsage.swift",
+            "Sources/Geraldine/Services/AIUsage/CursorCLIUsage.swift",
+            "Sources/Geraldine/Services/AIUsage/AntigravityCLIUsage.swift"
+        ]
+        let httpEndpoints = [
+            "api.anthropic.com", "chatgpt.com", "cli-chat-proxy.grok.com",
+            "api2.cursor.sh", "cursor.com/api/usage"
+        ]
+        for file in files {
+            let source = try String(contentsOf: root.appendingPathComponent(file))
+            for forbidden in ["import Security", "SecItemCopyMatching", "SecKeychain", "/usr/bin/security"] {
+                XCTAssertFalse(source.contains(forbidden), "AI usage must not access Keychain in \(file): \(forbidden)")
+            }
+            for endpoint in httpEndpoints {
+                XCTAssertFalse(source.contains(endpoint), "AI usage must not call \(endpoint) in \(file)")
+            }
         }
     }
 

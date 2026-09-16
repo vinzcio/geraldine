@@ -193,154 +193,28 @@ enum AIUsageFetcher {
                       transport: any AIUsageTransporting,
                       now: Date = Date(),
                       homeDirectory: URL = AIUsageCredentialStore.home(),
-                      antigravityCLI: any AntigravityUsageReading = AntigravityCLIUsage()) async -> AIUsageSnapshot {
+                      antigravityCLI: any AntigravityUsageReading = AntigravityCLIUsage(),
+                      claudeCLI: any ProviderUsageReading = ClaudeCLIUsage(),
+                      codexCLI: any ProviderUsageReading = CodexCLIUsage(),
+                      grokCLI: any ProviderUsageReading = GrokCLIUsage(),
+                      cursorCLI: any ProviderUsageReading = CursorCLIUsage()) async -> AIUsageSnapshot {
+        // Usage is CLI-only. Transport remains in the signature so tests can
+        // assert Geraldine never opens an HTTP usage request.
+        _ = transport
         switch provider {
-        case .claude:      return await fetchClaude(transport: transport, now: now, homeDirectory: homeDirectory)
-        case .codex:       return await fetchCodex(transport: transport, now: now, homeDirectory: homeDirectory)
-        case .grok:        return await fetchGrok(transport: transport, now: now, homeDirectory: homeDirectory)
-        case .cursor:      return await fetchCursor(transport: transport, now: now, homeDirectory: homeDirectory)
+        case .claude:      return await claudeCLI.snapshot(homeDirectory: homeDirectory, now: now)
+        case .codex:       return await codexCLI.snapshot(homeDirectory: homeDirectory, now: now)
+        case .grok:        return await grokCLI.snapshot(homeDirectory: homeDirectory, now: now)
+        case .cursor:      return await cursorCLI.snapshot(homeDirectory: homeDirectory, now: now)
         case .antigravity: return await antigravityCLI.snapshot(homeDirectory: homeDirectory, now: now)
         }
     }
 
     static func fetchClaude(transport: any AIUsageTransporting, now: Date,
-                            homeDirectory: URL = AIUsageCredentialStore.home()) async -> AIUsageSnapshot {
-        let cached = ClaudeUsageCache.snapshot(homeDirectory: homeDirectory)
-        if let cached, !ClaudeUsageCache.isStale(cached, now: now) {
-            return cached
-        }
-        guard let token = AIUsageCredentialStore.token(for: .claude, homeDirectory: homeDirectory) else {
-            if let cached { return cached }
-            return .failed(.claude, message: "Usage unavailable. Run /usage in Claude Code, then refresh.")
-        }
-        var request = URLRequest(url: URL(string: "https://api.anthropic.com/api/oauth/usage")!)
-        request.httpMethod = "GET"
-        request.timeoutInterval = 12
-        request.setValue("Bearer \(token.value)", forHTTPHeaderField: "Authorization")
-        request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
-        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-        request.setValue("cli", forHTTPHeaderField: "x-app")
-        request.setValue("Geraldine", forHTTPHeaderField: "User-Agent")
-        let live = await get(request, transport: transport, parse: { AIUsageParser.claude(from: $0, now: now) },
-                             provider: .claude)
-        if live.status == .ready { return live }
-        return cached ?? live
+                            homeDirectory: URL = AIUsageCredentialStore.home(),
+                            claudeCLI: any ProviderUsageReading = ClaudeCLIUsage()) async -> AIUsageSnapshot {
+        _ = transport
+        return await claudeCLI.snapshot(homeDirectory: homeDirectory, now: now)
     }
-
-    private static func fetchCodex(transport: any AIUsageTransporting, now: Date, homeDirectory: URL) async -> AIUsageSnapshot {
-        guard let token = AIUsageCredentialStore.token(for: .codex, homeDirectory: homeDirectory) else {
-            return .failed(.codex, message: AICodingProvider.codex.usageUnavailableHint)
-        }
-        var request = URLRequest(url: URL(string: "https://chatgpt.com/backend-api/wham/usage")!)
-        request.httpMethod = "GET"
-        request.timeoutInterval = 12
-        request.setValue("Bearer \(token.value)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue("codex-cli", forHTTPHeaderField: "User-Agent")
-        if let account = token.accountID {
-            request.setValue(account, forHTTPHeaderField: "ChatGPT-Account-Id")
-        }
-        return await get(request, transport: transport, parse: { AIUsageParser.codex(from: $0, now: now) },
-                         provider: .codex)
-    }
-
-    private static func fetchGrok(transport: any AIUsageTransporting, now: Date, homeDirectory: URL) async -> AIUsageSnapshot {
-        guard let token = AIUsageCredentialStore.token(for: .grok, homeDirectory: homeDirectory) else {
-            return .failed(.grok, message: AICodingProvider.grok.usageUnavailableHint)
-        }
-        do {
-            let billing = try await authorizedGet(
-                URL(string: "https://cli-chat-proxy.grok.com/v1/billing?format=credits")!,
-                token: token.value,
-                transport: transport
-            )
-            let user = try? await authorizedGet(
-                URL(string: "https://cli-chat-proxy.grok.com/v1/user?include=subscription")!,
-                token: token.value,
-                transport: transport
-            )
-            switch AIUsageParser.grok(from: billing, user: user, now: now) {
-            case .success(let snapshot): return snapshot
-            case .failure(let error): return .failed(.grok, message: error.message)
-            }
-        } catch {
-            return mapHTTPError(error, provider: .grok)
-        }
-    }
-
-    private static func fetchCursor(transport: any AIUsageTransporting, now: Date, homeDirectory: URL) async -> AIUsageSnapshot {
-        guard let token = AIUsageCredentialStore.token(for: .cursor, homeDirectory: homeDirectory) else {
-            return .failed(.cursor, message: AICodingProvider.cursor.usageUnavailableHint)
-        }
-        var period = URLRequest(url: URL(string: "https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage")!)
-        period.httpMethod = "POST"
-        period.timeoutInterval = 12
-        period.httpBody = Data("{}".utf8)
-        period.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        period.setValue("1", forHTTPHeaderField: "Connect-Protocol-Version")
-        period.setValue("Bearer \(token.value)", forHTTPHeaderField: "Authorization")
-        period.setValue("Geraldine", forHTTPHeaderField: "User-Agent")
-        let periodResult = await get(period, transport: transport,
-                                     parse: { AIUsageParser.cursor(from: $0, now: now) },
-                                     provider: .cursor)
-        if periodResult.status == .ready { return periodResult }
-
-        var summary = URLRequest(url: URL(string: "https://cursor.com/api/usage-summary")!)
-        summary.httpMethod = "GET"
-        summary.timeoutInterval = 12
-        summary.setValue("Bearer \(token.value)", forHTTPHeaderField: "Authorization")
-        summary.setValue("Geraldine", forHTTPHeaderField: "User-Agent")
-        return await get(summary, transport: transport,
-                         parse: { AIUsageParser.cursor(from: $0, now: now) },
-                         provider: .cursor)
-    }
-
-    private static func authorizedGet(_ url: URL, token: String,
-                                      transport: any AIUsageTransporting) async throws -> Data {
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.timeoutInterval = 12
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue("Geraldine", forHTTPHeaderField: "User-Agent")
-        let (data, response) = try await transport.data(for: request)
-        guard (200..<400).contains(response.statusCode) else {
-            throw AIUsageHTTPError(status: response.statusCode)
-        }
-        return data
-    }
-
-    private static func get(_ request: URLRequest,
-                            transport: any AIUsageTransporting,
-                            parse: (Data) -> Result<AIUsageSnapshot, AIUsageParseError>,
-                            provider: AICodingProvider) async -> AIUsageSnapshot {
-        do {
-            let (data, response) = try await transport.data(for: request)
-            if response.statusCode == 401 || response.statusCode == 403 {
-                return .failed(provider, message: "\(provider.title) usage access was rejected. Refresh usage in the official app or CLI, then retry.")
-            }
-            guard (200..<400).contains(response.statusCode) else {
-                return .failed(provider, message: "\(provider.title) returned HTTP \(response.statusCode).")
-            }
-            switch parse(data) {
-            case .success(let snapshot): return snapshot
-            case .failure(let error): return .failed(provider, message: error.message)
-            }
-        } catch {
-            return mapHTTPError(error, provider: provider)
-        }
-    }
-
-    private static func mapHTTPError(_ error: Error, provider: AICodingProvider) -> AIUsageSnapshot {
-        if let http = error as? AIUsageHTTPError {
-            if http.status == 401 || http.status == 403 { return .failed(provider, message: "\(provider.title) usage access was rejected. Refresh usage in the official app or CLI, then retry.") }
-            return .failed(provider, message: "\(provider.title) returned HTTP \(http.status).")
-        }
-        return .failed(provider, message: "Could not reach \(provider.title).")
-    }
-}
-
-private struct AIUsageHTTPError: Error {
-    var status: Int
 }
 

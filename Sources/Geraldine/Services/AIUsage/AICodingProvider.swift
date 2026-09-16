@@ -49,9 +49,9 @@ enum AICodingProvider: String, CaseIterable, Codable, Identifiable, Sendable {
         switch self {
         case .antigravity: return "Usage unavailable. Run /usage in the Antigravity CLI (agy), then refresh."
         case .claude:      return "Usage unavailable. Run /usage in Claude Code, then refresh."
-        case .codex:       return "Usage unavailable. Refresh usage in Codex, then retry."
-        case .grok:        return "Usage unavailable. Refresh usage in the Grok CLI, then retry."
-        case .cursor:      return "Usage unavailable. Refresh usage in Cursor, then retry."
+        case .codex:       return "Usage unavailable. Run /usage in the Codex CLI, then refresh."
+        case .grok:        return "Usage unavailable. Run /usage in the Grok CLI, then refresh."
+        case .cursor:      return "Usage unavailable. Run /usage in the Cursor Agent CLI, then refresh."
         }
     }
 

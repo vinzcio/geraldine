@@ -1,0 +1,86 @@
+import XCTest
+@testable import Geraldine
+
+final class AIUsageGrokCursorCLITests: XCTestCase {
+    private static let grokTerminal = """
+    Weekly limit (X Premium+)██████████████████████████████100%Resets: September 17, 01:27
+    Weekly limit left: 0%
+    """
+
+    private static let cursorTerminal = """
+    Usage • Ultra                                                                                           Resets Oct 6
+    Monthly plan and on-demand usage
+
+    Category        Current             Usage
+    Included        53% used
+      Auto          47% used
+      API           100% used
+    On-Demand       Disabled
+    """
+
+    func testGrokParsesTUIWeeklyLimitAndRejectsModelErrors() throws {
+        let now = Date(timeIntervalSince1970: 3)
+        let ready = try GrokCLIUsage.parse(Data(Self.grokTerminal.utf8), now: now).get()
+        XCTAssertEqual(ready.sourceLabel, GrokCLIUsage.sourceLabel)
+        XCTAssertEqual(ready.plan, "X Premium+")
+        XCTAssertEqual(ready.windows.first?.id, "pool")
+        XCTAssertEqual(ready.windows.first?.usedPercent, 100)
+        XCTAssertEqual(ready.windows.first?.remainingPercent, 0)
+        let jsonReady = try GrokCLIUsage.parse(Data(#"{"creditUsagePercent":10}"#.utf8), now: now).get()
+        XCTAssertEqual(jsonReady.windows.first?.usedPercent, 10)
+        guard case .failure = GrokCLIUsage.parse(
+            Data(#"{"type":"error","message":"API error (status 402 Payment Required)"}"#.utf8),
+            now: now
+        ) else {
+            return XCTFail("Model or payment errors are not usage windows")
+        }
+        XCTAssertNil(GrokCLIUsage.parseTerminal("API error (status 402 Payment Required): Grok Build usage balance exhausted", now: now))
+    }
+
+    func testCursorParsesTUIMetersAndRejectsUnauthenticatedOrModelTurns() throws {
+        let now = Date(timeIntervalSince1970: 4)
+        let ready = try CursorCLIUsage.parse(Data(Self.cursorTerminal.utf8), now: now).get()
+        XCTAssertEqual(ready.sourceLabel, CursorCLIUsage.sourceLabel)
+        XCTAssertEqual(ready.plan, "Ultra")
+        XCTAssertEqual(ready.windows.first(where: { $0.id == "autoPercentUsed" })?.usedPercent, 47)
+        XCTAssertEqual(ready.windows.first(where: { $0.id == "apiPercentUsed" })?.usedPercent, 100)
+        XCTAssertEqual(ready.windows.first(where: { $0.id == "totalPercentUsed" })?.usedPercent, 53)
+        let body = Data(#"{"planUsage":{"autoPercentUsed":25,"apiPercentUsed":30,"totalPercentUsed":28}}"#.utf8)
+        let jsonReady = try CursorCLIUsage.parse(body, now: now).get()
+        XCTAssertEqual(jsonReady.windows.first(where: { $0.id == "autoPercentUsed" })?.usedPercent, 25)
+        guard case .failure = CursorCLIUsage.parse(
+            Data(#"{"status":"unauthenticated","isAuthenticated":false}"#.utf8),
+            now: now
+        ) else {
+            return XCTFail("Unauthenticated Cursor CLI must be unavailable")
+        }
+        guard case .failure = CursorCLIUsage.parse(
+            Data(#"{"num_turns":1,"planUsage":{"autoPercentUsed":25}}"#.utf8),
+            now: now
+        ) else {
+            return XCTFail("A model turn is not structured Cursor usage")
+        }
+        XCTAssertNil(CursorCLIUsage.parseTerminal("Not logged in. Run /login first.", now: now))
+    }
+
+    func testMissingGrokAndCursorCLIsStayUnavailableWithoutHTTP() async {
+        let root = ProcessInfo.processInfo.environment["GERALDINE_CREDENTIAL_TEST_ROOT"]
+            .map { URL(fileURLWithPath: $0) } ?? FileManager.default.temporaryDirectory
+        let home = root.appendingPathComponent("missing-cli-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: home) }
+        try? FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        for provider in [AICodingProvider.grok, .cursor] {
+            let snapshot = await AIUsageFetcher.fetch(provider, transport: NoHTTP(), homeDirectory: home)
+            guard case .error = snapshot.status else {
+                XCTFail("\(provider) must not invent usage"); continue
+            }
+        }
+    }
+
+    private struct NoHTTP: AIUsageTransporting {
+        func data(for request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+            XCTFail("Grok and Cursor must only use their CLIs")
+            throw URLError(.unsupportedURL)
+        }
+    }
+}
