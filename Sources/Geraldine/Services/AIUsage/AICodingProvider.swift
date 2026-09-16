@@ -45,13 +45,13 @@ enum AICodingProvider: String, CaseIterable, Codable, Identifiable, Sendable {
         }
     }
 
-    var signInHint: String {
+    var usageUnavailableHint: String {
         switch self {
-        case .antigravity: return "Sign in with the Antigravity app or the agy CLI on this Mac."
-        case .claude:      return "Sign in with Claude Code (`claude`) on this Mac."
-        case .codex:       return "Sign in with the Codex CLI (`codex`) on this Mac."
-        case .grok:        return "Sign in with the Grok CLI (`grok`) on this Mac."
-        case .cursor:      return "Sign in to the Cursor app or `cursor-agent` on this Mac."
+        case .antigravity: return "Usage unavailable. Open Antigravity to read its local quota, then refresh."
+        case .claude:      return "Usage unavailable. Run /usage in Claude Code, then refresh."
+        case .codex:       return "Usage unavailable. Refresh usage in Codex, then retry."
+        case .grok:        return "Usage unavailable. Refresh usage in the Grok CLI, then retry."
+        case .cursor:      return "Usage unavailable. Refresh usage in Cursor, then retry."
         }
     }
 
@@ -98,6 +98,6 @@ struct AIUsageDisclosure: Equatable, Sendable {
     }
 
     var text: String {
-        "Reads local sign-in state for Antigravity, Claude, Codex, Grok, and Cursor, then asks each provider for remaining usage. Tokens stay on this Mac and are never sent to Geraldine."
+        "For Antigravity, Claude, Codex, Grok, and Cursor, reads existing usage or reuses the local sign-in from the official app or CLI to request remaining usage directly from its provider. No separate Geraldine sign-in or Keychain access. Show or hide usage tiles below."
     }
 }

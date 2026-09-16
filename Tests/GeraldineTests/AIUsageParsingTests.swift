@@ -200,7 +200,7 @@ final class AIUsageParsingTests: XCTestCase {
             XCTAssertTrue(text.contains(name), "missing \(name)")
         }
         XCTAssertTrue(text.contains("local sign-in"))
-        XCTAssertTrue(text.contains("never sent to Geraldine"))
+        XCTAssertTrue(text.contains("No separate Geraldine sign-in or Keychain access"))
     }
 
     func testWidgetKindRoundTripForEveryProvider() {

@@ -151,8 +151,10 @@ enum AIUsageCredentialStore {
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
         do { try process.run() } catch { return nil }
-        process.waitUntilExit()
+        // Drain while ps is running: a large process list can fill the pipe and
+        // block process exit if we wait first.
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
         guard let output = String(data: data, encoding: .utf8) else { return nil }
         for line in output.split(separator: "\n") {
             let command = String(line)
@@ -248,13 +250,17 @@ enum ClaudeUsageCache {
 enum AIUsageFetcher {
     static func fetch(_ provider: AICodingProvider,
                       transport: any AIUsageTransporting,
-                      now: Date = Date()) async -> AIUsageSnapshot {
+                      now: Date = Date(),
+                      homeDirectory: URL = AIUsageCredentialStore.home(),
+                      languageServer: @Sendable () -> AIUsageCredentialStore.LanguageServer? = {
+                          AIUsageCredentialStore.antigravityLanguageServer()
+                      }) async -> AIUsageSnapshot {
         switch provider {
-        case .claude:      return await fetchClaude(transport: transport, now: now)
-        case .codex:       return await fetchCodex(transport: transport, now: now)
-        case .grok:        return await fetchGrok(transport: transport, now: now)
-        case .cursor:      return await fetchCursor(transport: transport, now: now)
-        case .antigravity: return await fetchAntigravity(transport: transport, now: now)
+        case .claude:      return await fetchClaude(transport: transport, now: now, homeDirectory: homeDirectory)
+        case .codex:       return await fetchCodex(transport: transport, now: now, homeDirectory: homeDirectory)
+        case .grok:        return await fetchGrok(transport: transport, now: now, homeDirectory: homeDirectory)
+        case .cursor:      return await fetchCursor(transport: transport, now: now, homeDirectory: homeDirectory)
+        case .antigravity: return await fetchAntigravity(transport: transport, now: now, homeDirectory: homeDirectory, server: languageServer())
         }
     }
 
@@ -278,9 +284,9 @@ enum AIUsageFetcher {
                          provider: .claude)
     }
 
-    private static func fetchCodex(transport: any AIUsageTransporting, now: Date) async -> AIUsageSnapshot {
-        guard let token = AIUsageCredentialStore.token(for: .codex) else {
-            return .needsSignIn(.codex)
+    private static func fetchCodex(transport: any AIUsageTransporting, now: Date, homeDirectory: URL) async -> AIUsageSnapshot {
+        guard let token = AIUsageCredentialStore.token(for: .codex, homeDirectory: homeDirectory) else {
+            return .failed(.codex, message: AICodingProvider.codex.usageUnavailableHint)
         }
         var request = URLRequest(url: URL(string: "https://chatgpt.com/backend-api/wham/usage")!)
         request.httpMethod = "GET"
@@ -295,9 +301,9 @@ enum AIUsageFetcher {
                          provider: .codex)
     }
 
-    private static func fetchGrok(transport: any AIUsageTransporting, now: Date) async -> AIUsageSnapshot {
-        guard let token = AIUsageCredentialStore.token(for: .grok) else {
-            return .needsSignIn(.grok)
+    private static func fetchGrok(transport: any AIUsageTransporting, now: Date, homeDirectory: URL) async -> AIUsageSnapshot {
+        guard let token = AIUsageCredentialStore.token(for: .grok, homeDirectory: homeDirectory) else {
+            return .failed(.grok, message: AICodingProvider.grok.usageUnavailableHint)
         }
         do {
             let billing = try await authorizedGet(
@@ -319,9 +325,9 @@ enum AIUsageFetcher {
         }
     }
 
-    private static func fetchCursor(transport: any AIUsageTransporting, now: Date) async -> AIUsageSnapshot {
-        guard let token = AIUsageCredentialStore.token(for: .cursor) else {
-            return .needsSignIn(.cursor)
+    private static func fetchCursor(transport: any AIUsageTransporting, now: Date, homeDirectory: URL) async -> AIUsageSnapshot {
+        guard let token = AIUsageCredentialStore.token(for: .cursor, homeDirectory: homeDirectory) else {
+            return .failed(.cursor, message: AICodingProvider.cursor.usageUnavailableHint)
         }
         var period = URLRequest(url: URL(string: "https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage")!)
         period.httpMethod = "POST"
@@ -346,14 +352,15 @@ enum AIUsageFetcher {
                          provider: .cursor)
     }
 
-    private static func fetchAntigravity(transport: any AIUsageTransporting, now: Date) async -> AIUsageSnapshot {
-        if let snapshot = await fetchAntigravityLocal(transport: transport, now: now),
+    private static func fetchAntigravity(transport: any AIUsageTransporting, now: Date,
+                                         homeDirectory: URL, server: AIUsageCredentialStore.LanguageServer?) async -> AIUsageSnapshot {
+        if let snapshot = await fetchAntigravityLocal(transport: transport, now: now, server: server),
            snapshot.status == .ready {
             return snapshot
         }
-        guard let token = AIUsageCredentialStore.token(for: .antigravity) else {
-            if AIUsageCredentialStore.antigravityLanguageServer() == nil {
-                return .needsSignIn(.antigravity)
+        guard let token = AIUsageCredentialStore.token(for: .antigravity, homeDirectory: homeDirectory) else {
+            if server == nil {
+                return .failed(.antigravity, message: AICodingProvider.antigravity.usageUnavailableHint)
             }
             return .failed(.antigravity, message: "Antigravity is running but quota could not be read.")
         }
@@ -395,8 +402,8 @@ enum AIUsageFetcher {
     }
 
     private static func fetchAntigravityLocal(transport: any AIUsageTransporting,
-                                              now: Date) async -> AIUsageSnapshot? {
-        guard let server = AIUsageCredentialStore.antigravityLanguageServer() else { return nil }
+                                              now: Date, server: AIUsageCredentialStore.LanguageServer?) async -> AIUsageSnapshot? {
+        guard let server else { return nil }
         let url = URL(string: "http://127.0.0.1:\(server.port)/exa.language_server_pb.LanguageServerService/GetUserStatus")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -440,7 +447,7 @@ enum AIUsageFetcher {
         do {
             let (data, response) = try await transport.data(for: request)
             if response.statusCode == 401 || response.statusCode == 403 {
-                return .needsSignIn(provider)
+                return .failed(provider, message: "\(provider.title) usage access was rejected. Refresh usage in the official app or CLI, then retry.")
             }
             guard (200..<400).contains(response.statusCode) else {
                 return .failed(provider, message: "\(provider.title) returned HTTP \(response.statusCode).")
@@ -456,7 +463,7 @@ enum AIUsageFetcher {
 
     private static func mapHTTPError(_ error: Error, provider: AICodingProvider) -> AIUsageSnapshot {
         if let http = error as? AIUsageHTTPError {
-            if http.status == 401 || http.status == 403 { return .needsSignIn(provider) }
+            if http.status == 401 || http.status == 403 { return .failed(provider, message: "\(provider.title) usage access was rejected. Refresh usage in the official app or CLI, then retry.") }
             return .failed(provider, message: "\(provider.title) returned HTTP \(http.status).")
         }
         return .failed(provider, message: "Could not reach \(provider.title).")

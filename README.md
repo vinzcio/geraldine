@@ -10,8 +10,8 @@ The app is a SwiftUI executable with feature surfaces under `Sources/Geraldine/F
 
 AI usage discovery, connection, popover refresh, and background polling must never
 access Keychain. `AIUsageCredentialStore` reads only existing credential files
-and Cursor local database entries. Missing credentials return unavailable/sign-in
-needed. There is no Security API or command-line Keychain fallback, including
+and Cursor local database entries. Missing or rejected usage access is reported
+as unavailable, never inferred to mean the user is signed out. There is no Security API or command-line Keychain fallback, including
 supposedly silent reads. Query-level prompt suppression proved insufficient in
 the installed app and was removed.
 
@@ -27,6 +27,26 @@ Other providers whose credentials exist only in Keychain may be unavailable.
 Regression tests use isolated synthetic credential files, including missing and
 malformed data. Installed verification must also check startup and usage refresh;
 a mocked query flag is not proof that dialogs are suppressed.
+
+### Existing sessions for every coding assistant
+
+Showing a usage tile immediately reads the existing source; there is no separate
+Geraldine connection or login. Settings uses **Show Usage / Hide Usage**.
+Missing data or a rejected usage request must not offer Sign In or initiate OAuth.
+Keep the source distinctions explicit:
+
+| Provider | Existing source |
+| --- | --- |
+| Claude | Account-matched Claude Code usage cache, then an existing file token |
+| Codex | Existing Codex auth file used directly for the provider usage endpoint |
+| Grok | Existing Grok auth file used directly for billing/usage |
+| Cursor | Existing auth file or read-only Cursor database token used for usage |
+| Antigravity | Running local language server quota first, then an existing file token |
+
+Not every provider exposes a readable usage cache. Do not invent cached quota
+from per-session token counts or copy secrets out of Keychain. If Antigravity is
+not running and no file token is available, report unavailable and explain that
+its app must be opened before retrying. Do not launch it automatically.
 
 ## Stay Active timing
 

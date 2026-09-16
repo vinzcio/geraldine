@@ -9,7 +9,7 @@ This is the pickup doc for the Dockset-style remaining-usage rings in Geraldine�
 
 Geraldine can connect local sign-ins for **Antigravity, Claude, Codex, Grok, and Cursor** and show remaining allowance as circular **% left** tiles in the popover widget grid.
 
-- Settings → **Coding Usage**: Connect / Sign In / Disconnect per provider.
+- Settings → **Coding Usage**: Show Usage / Hide Usage per provider. Existing sessions are reused; no separate sign-in.
 - Connecting a provider shows its popover tile. Disconnecting hides it.
 - Small/medium: ring + name (Dockset analog). Large: every quota window + reset copy.
 - Headline number is the **tightest** remaining window (lowest % left).
@@ -17,7 +17,37 @@ Geraldine can connect local sign-ins for **Antigravity, Claude, Codex, Grok, and
 
 Disclosure copy (also in tests):
 
-> Reads local sign-in state for Antigravity, Claude, Codex, Grok, and Cursor, then asks each provider for remaining usage. Tokens stay on this Mac and are never sent to Geraldine.
+> Reads existing usage or reuses the official app or CLI session for provider usage requests. No separate Geraldine sign-in or Keychain access.
+
+## All-provider passive usage contract (2026-09-16)
+
+Codex, Grok, and Cursor already read their existing auth files/database and call
+usage endpoints directly. Preserve these working sources; do not add a connection
+handshake. Claude reads its existing cache first. Antigravity reads the running
+local language server first, then file credentials if present. On this machine
+Antigravity was installed but not running, and no local database was available.
+
+Missing local sources and HTTP 401/403 now report usage unavailable or usage access
+rejected, without inferring that the official app is signed out. Settings and tile
+actions use Show Usage, Hide Usage, and Refresh; no Sign In action is offered.
+Provider credentials remain read-only. No auth refresh, Keychain access, automatic
+app launch, or model prompt is performed by usage discovery.
+
+Live testing also found Antigravity process discovery could stall on a full
+stdout pipe: it waited for `ps` before draining output. Drain output first, then
+wait for exit. Keep this ordering so a large process list cannot leave quota
+discovery permanently loading.
+
+Installed verification: debug build `740f006ad803-dirty` at
+`2026-09-16T05:05:52Z` showed Claude 94%, Codex 43%, Grok 0%, and Cursor's
+other-model pool 0% remaining. Enabling Antigravity resolved to usage unavailable
+with the open-app instruction; no Sign In or permission dialog was observed.
+Its tile was returned to its prior hidden state. Keep Awake was enabled
+indefinitely and Stay Active remained enabled after one minute. All 30 focused
+AI usage tests passed, including missing sources, rejected access for all five
+providers, existing-token direct requests, and local Antigravity quota.
+Scoped manual review and installed Settings verification completed; the popover
+was not exercised in this pass.
 
 ## No-prompt credential invariant (2026-09-16)
 
