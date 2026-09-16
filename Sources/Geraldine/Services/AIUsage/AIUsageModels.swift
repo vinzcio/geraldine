@@ -7,6 +7,7 @@ struct AIUsageWindow: Equatable, Identifiable, Sendable {
     /// 0...100 used.
     var usedPercent: Double
     var resetsAt: Date?
+    var durationSeconds: TimeInterval? = nil
 
     var remainingPercent: Double {
         AIUsageMath.clampPercent(100 - usedPercent)
@@ -74,12 +75,17 @@ struct AIUsageSnapshot: Equatable, Sendable {
         )
     }
 
-    /// Bars the popover actually draws. Codex and Grok are one pooled line.
-    /// Cursor always shows Cursor models + other models. Claude shows all-models
-    /// usage, plus a Fable bar only when the plan has a dedicated Fable window.
+    /// Display actual quota windows. Claude includes weekly scopes and its
+    /// five-hour window; Codex Plus splits supplied windows. Other Codex plans
+    /// and Grok stay pooled. Weekly precedes five-hour, matching Antigravity.
     var displayWindows: [AIUsageWindow] {
         switch provider {
         case .codex:
+            let standard = windows.filter { $0.id == "primary" || $0.id == "secondary" }
+            if plan?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "plus",
+               standard.contains(where: { $0.durationSeconds == 5 * 60 * 60 }) {
+                return standard.sorted { ($0.durationSeconds ?? 0) > ($1.durationSeconds ?? 0) }
+            }
             if let tightest = windows.min(by: { $0.remainingPercent < $1.remainingPercent }) {
                 return [tightest]
             }
@@ -100,8 +106,11 @@ struct AIUsageSnapshot: Equatable, Sendable {
                     || window.title.lowercased().contains("fable")
             }
             var shown: [AIUsageWindow] = []
-            if let fable { shown.append(fable) }
             if let allModels { shown.append(allModels) }
+            if let fable { shown.append(fable) }
+            if let fiveHour = windows.first(where: { $0.id == "five_hour" }) {
+                shown.append(fiveHour)
+            }
             return shown.isEmpty ? Array(windows.prefix(1)) : shown
         case .antigravity:
             return windows

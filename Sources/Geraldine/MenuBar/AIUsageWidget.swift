@@ -14,6 +14,10 @@ struct AIUsageWidget: View {
     private var snapshot: AIUsageSnapshot { usage.snapshot(for: provider) }
     private var bars: [AIUsageWindow] { snapshot.displayWindows }
     private var showsPairedWindows: Bool { snapshot.status == .ready && bars.count >= 2 }
+    private var usesTimeWindowRows: Bool {
+        provider == .claude || (provider == .codex &&
+            snapshot.plan?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "plus")
+    }
     private var remaining: Double? { bars.first?.remainingPercent ?? snapshot.remainingPercent }
 
     var body: some View {
@@ -30,7 +34,7 @@ struct AIUsageWidget: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityText)
         .accessibilityValue(snapshot.cachedSourceDescription ?? "")
-        .help(snapshot.cachedSourceDescription ?? accessibilityText)
+        .help(usesTimeWindowRows ? quotaTooltip : (snapshot.cachedSourceDescription ?? accessibilityText))
     }
 
     private var smallBody: some View {
@@ -96,6 +100,16 @@ struct AIUsageWidget: View {
     private func dataBlock(percentSize: CGFloat, percentMarkSize: CGFloat) -> some View {
         if provider == .antigravity {
             antigravityQuotas
+        } else if usesTimeWindowRows {
+            if size == .large {
+                timeWindowRows(compact: false)
+            } else {
+                ViewThatFits(in: .vertical) {
+                    timeWindowRows(compact: false)
+                    timeWindowRows(compact: true)
+                }
+                .animation(nil, value: bars.count)
+            }
         } else if showsPairedWindows {
             VStack(spacing: 8) {
                 ForEach(bars.prefix(2)) { window in
@@ -106,6 +120,57 @@ struct AIUsageWidget: View {
             remainingHeadline(percent: remaining, percentSize: percentSize, percentMarkSize: percentMarkSize)
             UsageRemainingBar(remaining: remaining, tint: provider.tint, height: 4)
         }
+    }
+
+    // Opus design: compact typography/spacing only; quota bars remain 4pt.
+    private func timeWindowRows(compact: Bool) -> some View {
+        VStack(spacing: compact ? 4 : 8) {
+            ForEach(bars) { window in
+                VStack(spacing: compact ? 2 : 4) {
+                    HStack(alignment: .firstTextBaseline, spacing: 4) {
+                        Text(timeWindowLabel(window, abbreviated: size == .small))
+                            .font(.system(size: compact ? 10 : 11))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.85)
+                        Spacer(minLength: 0)
+                        Text("\(Int(window.remainingPercent.rounded()))%")
+                            .font(.system(size: compact ? 12 : 16, weight: .semibold).monospacedDigit())
+                            .foregroundStyle(.primary)
+                            .fixedSize()
+                    }
+                    .frame(height: compact ? 15 : 19)
+                    UsageRemainingBar(remaining: window.remainingPercent, tint: provider.tint, height: 4)
+                }
+            }
+        }
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func timeWindowLabel(_ window: AIUsageWindow, abbreviated: Bool) -> String {
+        if provider == .claude {
+            if window.id == "five_hour" { return abbreviated ? "5h" : "5-hour session" }
+            if window.id == "seven_day" { return abbreviated ? "Week · All" : "Weekly · All models" }
+            if window.title == "Fable" { return abbreviated ? "Week · Fable" : "Weekly · Fable" }
+        }
+        if provider == .codex {
+            if window.durationSeconds == 18_000 { return abbreviated ? "5h" : "5-hour session" }
+            if window.durationSeconds == 604_800 { return abbreviated ? "Week" : "Weekly" }
+        }
+        return window.title
+    }
+
+    private var quotaTooltip: String {
+        var lines = [provider.title]
+        for window in bars {
+            var line = "\(timeWindowLabel(window, abbreviated: false)) · \(Int(window.remainingPercent.rounded()))% left"
+            if let reset = window.resetsAt {
+                line += " · resets " + reset.formatted(date: .abbreviated, time: .shortened)
+            }
+            lines.append(line)
+        }
+        if let source = snapshot.cachedSourceDescription { lines.append(source) }
+        return lines.joined(separator: "\n")
     }
 
     private var antigravityQuotas: some View {
@@ -300,6 +365,11 @@ struct AIUsageWidget: View {
         case .loading:
             return "\(name) usage, updating"
         case .ready:
+            if usesTimeWindowRows {
+                return provider.title + " " + bars.map {
+                    "\(timeWindowLabel($0, abbreviated: false)), \(Int($0.remainingPercent.rounded())) percent"
+                }.joined(separator: ", ")
+            }
             if showsPairedWindows {
                 let parts = (provider == .antigravity ? bars : Array(bars.prefix(2))).map { window in
                     "\(shortLabel(window)) \(Int(window.remainingPercent.rounded())) percent"

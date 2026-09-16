@@ -52,6 +52,20 @@ buckets: Gemini weekly/5-hour and Claude/GPT weekly/5-hour. The CLI handles its 
 existing authentication; Geraldine never queries Keychain. Missing CLI or invalid
 output is unavailable, not zero quota or signed out.
 
+### Time windows and account plans
+
+Claude shows its five-hour allowance alongside weekly all-model and Fable
+allowances when present. Codex Plus shows returned weekly/five-hour windows;
+other Codex plans keep their pooled display. Read the current response's plan
+and `limit_window_seconds` on every refresh; never assume a primary window is
+five hours or synthesize one from the plan name. The current Pro account returns
+one weekly window. Grok and Cursor's existing displays are unchanged.
+
+The bounded [Claude Opus design](docs/product/claude-opus-quota-design.md) defines
+the compact rows, full labels, reset tooltip, and original cache timestamp.
+All supplied Claude windows must reach both the renderer and accessibility text;
+do not truncate them to two rows.
+
 ## Stay Active timing
 
 Once the selected idle delay has elapsed, Stay Active posts a mouse nudge and a
