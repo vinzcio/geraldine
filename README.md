@@ -6,6 +6,44 @@ Geraldine is native macOS 14+ local-only freeware for Mac care and small system 
 
 The app is a SwiftUI executable with feature surfaces under `Sources/Geraldine/Features`, AppKit integration for app and menu-bar behavior, and an `AppState` composition root that owns the monitoring and utility services. Shared visual behavior lives in the semantic `Theme`, `Components`, and `Motion` layers. The package also includes the small C `CThermal` target. `Package.swift` declares no third-party packages and links only Apple system frameworks.
 
+## AI usage credentials: no permission dialogs
+
+AI usage discovery, connection, popover refresh, and background polling must never
+request Keychain approval. All Keychain fallbacks in `AIUsageCredentialStore`
+use `kSecUseAuthenticationUIFail` on each read. If macOS requires interaction,
+the credential is unavailable and the provider uses its existing sign-in state;
+there must be no interactive retry. Existing file/database credentials and silently
+accessible Keychain items still work. A provider whose only credential requires
+approval may therefore be unavailable even when its own app is signed in.
+
+This is a per-query invariant, not an approval remembered for one executable:
+preserve it across launches, builds, and new providers. Do not fix missing usage by
+changing Keychain ACLs, asking users to select Always Allow, or copying secrets to
+new storage. `AIUsageCredentialStoreTests` covers prompt suppression, denied reads
+without retries, and successful silent reads using synthetic credentials.
+
+Apple documents the noninteractive behavior in
+[`kSecUseAuthenticationUIFail`](https://developer.apple.com/documentation/security/ksecuseauthenticationuifail).
+
+## Stay Active timing
+
+Once the selected idle delay has elapsed, Stay Active posts a mouse nudge and a
+paired Control-key press/release at a newly randomized interval of 2.0–2.4
+seconds. Activity is counted as distinct one-second intervals containing a
+successful pulse: the cadence targets 24–30 of 60 seconds (40–50%), with 0.1
+seconds of allowance for timer lateness before reaching a 2.5-second gap. Events
+within one nudge do not count as multiple active seconds. Pulses return the
+pointer to its starting position. Keyboard pulses use only the Control modifier,
+never arrow keys or text characters.
+
+Real input restarts the idle delay. Turning the feature off, stopping/pausing
+Keep Awake, or losing Accessibility access stops pulses. The 40–50% target applies
+to uninterrupted pulsing minutes, excluding those states and time when macOS
+suspends or stalls the process. This is Geraldine's event coverage definition,
+not a guarantee about another app's activity score. Deterministic rolling-minute
+tests and a 60-second real-run-loop test verify cadence with a synthetic event
+sink, without sending test input into the user's apps.
+
 ## Source verification
 
 The canonical source gate stages only `Package.swift`, `Sources`, and `Tests` outside OneDrive, runs the full suite, and performs a separate clean release compilation:

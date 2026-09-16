@@ -204,19 +204,23 @@ enum AIUsageCredentialStore {
         return AIUsageJSON.object(from: data)
     }
 
-    private static func keychainToken(service: String, account: String? = nil,
-                                      nestedPaths: [[String]] = []) -> AIUsageToken? {
+    // Usage discovery and refresh must never open a Keychain permission dialog.
+    // Keep this guard on every query, including after relaunch or a new build.
+    static func keychainToken(service: String, account: String? = nil,
+                              nestedPaths: [[String]] = [],
+                              copyMatching: (CFDictionary, UnsafeMutablePointer<CFTypeRef?>?) -> OSStatus = SecItemCopyMatching) -> AIUsageToken? {
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
+            kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail
         ]
         if let account {
             query[kSecAttrAccount as String] = account
         }
         var item: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        let status = copyMatching(query as CFDictionary, &item)
         guard status == errSecSuccess, let data = item as? Data else { return nil }
         let payload = unwrapSecretPayload(data)
         if let json = AIUsageJSON.object(from: payload) {

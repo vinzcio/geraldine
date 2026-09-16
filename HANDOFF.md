@@ -12,6 +12,9 @@ The Plan 001–019 queue is closed; [`plans/README.md`](plans/README.md) remains
 
 ## Architecture and product boundaries
 
+- After every authorized rebuild/reinstall on Vincent's Mac, turn on **Keep Awake** and **Stay Active** and verify both in the running installed app. Preserve the existing duration and activity-delay choices. This is a post-install workflow requirement, not a change to app launch defaults.
+- Stay Active uses mouse nudges and paired Control-key pulses at randomized 2.0–2.4-second intervals after idle activation, targeting 24–30 distinct active seconds (40–50%) per uninterrupted minute. No arrow keys. Preserve the real-input, stop, pause, and permission handling; see the timing contract and tests in `README.md`.
+
 - `Package.swift` defines a native SwiftUI executable plus the C `CThermal` target and no third-party package graph.
 - `AppState` composes feature services; AppKit owns app, menu-bar, Finder, Dock, and other system integration seams.
 - Extend the established semantic `Theme`, `Components`, and `Motion` layers, plus `GeraldineMark` and `EyeView`, instead of creating parallel styling primitives.
