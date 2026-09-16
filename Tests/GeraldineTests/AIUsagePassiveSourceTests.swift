@@ -15,52 +15,46 @@ final class AIUsagePassiveSourceTests: XCTestCase {
         if let home { try FileManager.default.removeItem(at: home) }
     }
 
-    private func credentials() throws {
+    func testEveryMissingCLIIsUnavailableWithoutNetworkOrSignIn() async {
+        for provider in AICodingProvider.allCases {
+            let snapshot = await AIUsageFetcher.fetch(
+                provider,
+                transport: Stub(mustNotCall: true),
+                homeDirectory: home,
+                antigravityCLI: UnavailableCLI(),
+                claudeCLI: UnavailableProvider(.claude),
+                codexCLI: UnavailableProvider(.codex),
+                grokCLI: UnavailableProvider(.grok),
+                cursorCLI: UnavailableProvider(.cursor)
+            )
+            guard case .error(let message) = snapshot.status else {
+                XCTFail("\(provider) incorrectly inferred sign-in state"); continue
+            }
+            XCTAssertTrue(message.contains("Usage unavailable") || message.contains("CLI"))
+        }
+    }
+
+    func testFileTokensAndHTTPAreNeverUsedWhenACLIIsMissing() async throws {
         let fixtures = [
             ".claude/.credentials.json": #"{"accessToken":"fixture"}"#,
             ".codex/auth.json": #"{"access_token":"fixture"}"#,
             ".grok/auth.json": #"{"key":"fixture"}"#,
-            ".cursor/auth.json": #"{"accessToken":"fixture"}"#,
-            ".gemini/oauth_creds.json": #"{"access_token":"fixture"}"#
+            ".cursor/auth.json": #"{"accessToken":"fixture"}"#
         ]
         for (path, json) in fixtures {
             let url = home.appendingPathComponent(path)
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try Data(json.utf8).write(to: url)
         }
-    }
-
-    func testEveryMissingLocalSourceIsUnavailableWithoutNetworkOrSignIn() async {
-        for provider in AICodingProvider.allCases {
-            let snapshot = await AIUsageFetcher.fetch(provider, transport: Stub(mustNotCall: true),
-                                                       homeDirectory: home, antigravityCLI: UnavailableCLI())
-            guard case .error(let message) = snapshot.status else {
-                XCTFail("\(provider) incorrectly inferred sign-in state"); continue
+        for provider in [AICodingProvider.claude, .codex, .grok, .cursor] {
+            let snapshot = await AIUsageFetcher.fetch(
+                provider,
+                transport: Stub(mustNotCall: true),
+                homeDirectory: home
+            )
+            guard case .error = snapshot.status else {
+                XCTFail("\(provider) used a file token instead of a CLI"); continue
             }
-            XCTAssertTrue(message.contains("Usage unavailable"))
-        }
-    }
-
-    func testRejectedUsageAccessDoesNotClaimAnyProviderIsSignedOut() async throws {
-        try credentials()
-        for code in [401, 403] {
-            for provider in AICodingProvider.allCases where provider != .antigravity {
-                let snapshot = await AIUsageFetcher.fetch(provider, transport: Stub(code: code),
-                                                           homeDirectory: home, antigravityCLI: UnavailableCLI())
-                guard case .error(let message) = snapshot.status else {
-                    XCTFail("\(provider) incorrectly inferred sign-in state"); continue
-                }
-                XCTAssertTrue(message.contains("usage access was rejected"))
-            }
-        }
-    }
-
-    func testExistingCredentialsAreReusedWithoutConnectionHandshake() async throws {
-        try credentials()
-        for provider in [AICodingProvider.codex, .grok, .cursor] {
-            let snapshot = await AIUsageFetcher.fetch(provider, transport: Stub(),
-                                                       homeDirectory: home, antigravityCLI: UnavailableCLI())
-            XCTAssertEqual(snapshot.status, .ready, "\(provider)")
         }
     }
 
@@ -70,29 +64,20 @@ final class AIUsagePassiveSourceTests: XCTestCase {
         }
     }
 
+    private struct UnavailableProvider: ProviderUsageReading {
+        var provider: AICodingProvider
+        init(_ provider: AICodingProvider) { self.provider = provider }
+        func snapshot(homeDirectory: URL, now: Date) async -> AIUsageSnapshot {
+            .failed(provider, message: provider.usageUnavailableHint)
+        }
+    }
+
     private struct Stub: AIUsageTransporting {
-        var code = 200
         var mustNotCall = false
 
         func data(for request: URLRequest) async throws -> (Data, HTTPURLResponse) {
-            XCTAssertFalse(mustNotCall, "Missing source must not initiate authentication or network traffic")
-            let url = try XCTUnwrap(request.url)
-            var body = "{}"
-            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer fixture")
-            switch url.host {
-            case "chatgpt.com":
-                XCTAssertEqual(url.path, "/backend-api/wham/usage")
-                body = #"{"rate_limit":{"primary_window":{"used_percent":25,"limit_window_seconds":18000}}}"#
-            case "cli-chat-proxy.grok.com":
-                XCTAssertTrue(["/v1/billing", "/v1/user"].contains(url.path))
-                body = #"{"creditUsagePercent":10}"#
-            case "api2.cursor.sh":
-                XCTAssertTrue(url.path.hasSuffix("/GetCurrentPeriodUsage"))
-                body = #"{"planUsage":{"autoPercentUsed":25,"apiPercentUsed":30,"totalPercentUsed":28}}"#
-            default:
-                XCTAssertNotEqual(code, 200, "Unexpected provider endpoint")
-            }
-            return (Data(body.utf8), HTTPURLResponse(url: url, statusCode: code, httpVersion: nil, headerFields: nil)!)
+            XCTAssertFalse(mustNotCall, "Usage must not initiate authentication or network traffic")
+            throw URLError(.unsupportedURL)
         }
     }
 }
