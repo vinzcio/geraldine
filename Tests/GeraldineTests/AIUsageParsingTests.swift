@@ -163,15 +163,6 @@ final class AIUsageParsingTests: XCTestCase {
         XCTAssertEqual(snapshot.headline?.id, "apiPercentUsed")
     }
 
-    func testGoKeyringBase64UnwrapsNestedAccessTokenJSON() {
-        let inner = #"{"token":{"access_token":"ya29.example","token_type":"Bearer"}}"#
-        let wrapped = "go-keyring-base64:" + Data(inner.utf8).base64EncodedString()
-        let payload = AIUsageCredentialStore.unwrapSecretPayload(Data(wrapped.utf8))
-        let json = try? JSONSerialization.jsonObject(with: payload) as? [String: Any]
-        let token = ((json?["token"] as? [String: Any])?["access_token"] as? String)
-        XCTAssertEqual(token, "ya29.example")
-    }
-
     func testAntigravityModelQuotaUsesRemainingFraction() throws {
         let data = """
         {

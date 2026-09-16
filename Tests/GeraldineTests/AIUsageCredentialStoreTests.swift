@@ -1,31 +1,75 @@
 import XCTest
-import Security
+import SQLite3
 @testable import Geraldine
 
 final class AIUsageCredentialStoreTests: XCTestCase {
-    func testEveryKeychainReadDisallowsPromptsAndDoesNotRetryDenial() {
-        for status in [errSecInteractionNotAllowed, errSecAuthFailed, errSecItemNotFound] {
-            for service in ["Claude Code-credentials", "cursor-access-token", "Cursor", "gemini", "antigravity", "agy"] {
-                var calls = 0
-                let token = AIUsageCredentialStore.keychainToken(service: service) { query, _ in
-                    calls += 1
-                    let values = query as NSDictionary
-                    XCTAssertEqual(values[kSecUseAuthenticationUI] as? String, kSecUseAuthenticationUIFail as String)
-                    XCTAssertEqual(values[kSecAttrService] as? String, service)
-                    return status
-                }
-                XCTAssertNil(token)
-                XCTAssertEqual(calls, 1)
+    private var home: URL!
+
+    override func setUpWithError() throws {
+        let root = ProcessInfo.processInfo.environment["GERALDINE_CREDENTIAL_TEST_ROOT"]
+            .map { URL(fileURLWithPath: $0) } ?? FileManager.default.temporaryDirectory
+        home = root.appendingPathComponent("credentials-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws {
+        if let home { try FileManager.default.removeItem(at: home) }
+    }
+
+    func testMissingCredentialsStayUnavailableAcrossRepeatedDiscovery() {
+        for _ in 0..<3 {
+            for provider in AICodingProvider.allCases {
+                XCTAssertNil(AIUsageCredentialStore.token(for: provider, homeDirectory: home))
             }
         }
     }
 
-    func testSilentlyAccessibleTokenStillWorks() {
-        let token = AIUsageCredentialStore.keychainToken(service: "gemini", account: "antigravity") { query, result in
-            XCTAssertEqual((query as NSDictionary)[kSecAttrAccount] as? String, "antigravity")
-            result?.pointee = Data("test-token".utf8) as CFData
-            return errSecSuccess
+    func testExistingFileCredentialsRemainReadableForEveryProvider() throws {
+        try write(".claude/.credentials.json", #"{"claudeAiOauth":{"accessToken":"claude-fixture"}}"#)
+        try write(".codex/auth.json", #"{"tokens":{"access_token":"codex-fixture","account_id":"account-fixture"}}"#)
+        try write(".grok/auth.json", #"{"key":"grok-fixture"}"#)
+        try write(".cursor/auth.json", #"{"accessToken":"cursor-fixture"}"#)
+        try write(".gemini/oauth_creds.json", #"{"token":{"access_token":"antigravity-fixture"}}"#)
+        for provider in AICodingProvider.allCases {
+            XCTAssertEqual(AIUsageCredentialStore.token(for: provider, homeDirectory: home)?.value,
+                           "\(provider.rawValue)-fixture")
         }
-        XCTAssertEqual(token, AIUsageToken(value: "test-token"))
+        XCTAssertEqual(AIUsageCredentialStore.token(for: .codex, homeDirectory: home)?.accountID,
+                       "account-fixture")
+    }
+
+    func testMalformedCredentialsDoNotFallBackToKeychain() throws {
+        for path in [".claude/.credentials.json", ".codex/auth.json", ".grok/auth.json",
+                     ".cursor/auth.json", ".gemini/oauth_creds.json"] {
+            try write(path, "invalid JSON")
+        }
+        for provider in AICodingProvider.allCases {
+            XCTAssertNil(AIUsageCredentialStore.token(for: provider, homeDirectory: home))
+        }
+    }
+
+    func testCursorDatabaseCredentialsRemainReadable() throws {
+        let path = home.appendingPathComponent("Library/Application Support/Cursor/User/globalStorage/state.vscdb")
+        try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+        var db: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(path.path, &db), SQLITE_OK)
+        defer { sqlite3_close(db) }
+        XCTAssertEqual(sqlite3_exec(db, "CREATE TABLE ItemTable (key TEXT, value TEXT); INSERT INTO ItemTable VALUES ('cursorAuth/accessToken', 'cursor-db-fixture');", nil, nil, nil), SQLITE_OK)
+        XCTAssertEqual(AIUsageCredentialStore.token(for: .cursor, homeDirectory: home)?.value, "cursor-db-fixture")
+    }
+
+    func testCredentialSourceCannotReintroduceTheKeychainFallback() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(contentsOf: root.appendingPathComponent("Sources/Geraldine/Services/AIUsage/AIUsageSources.swift"))
+        for forbidden in ["import Security", "SecItemCopyMatching", "SecKeychain", "/usr/bin/security"] {
+            XCTAssertFalse(source.contains(forbidden), "AI usage must not access Keychain: \(forbidden)")
+        }
+    }
+
+    private func write(_ path: String, _ text: String) throws {
+        let url = home.appendingPathComponent(path)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(text.utf8).write(to: url)
     }
 }

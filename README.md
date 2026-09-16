@@ -9,21 +9,18 @@ The app is a SwiftUI executable with feature surfaces under `Sources/Geraldine/F
 ## AI usage credentials: no permission dialogs
 
 AI usage discovery, connection, popover refresh, and background polling must never
-request Keychain approval. All Keychain fallbacks in `AIUsageCredentialStore`
-use `kSecUseAuthenticationUIFail` on each read. If macOS requires interaction,
-the credential is unavailable and the provider uses its existing sign-in state;
-there must be no interactive retry. Existing file/database credentials and silently
-accessible Keychain items still work. A provider whose only credential requires
-approval may therefore be unavailable even when its own app is signed in.
+access Keychain. `AIUsageCredentialStore` reads only existing credential files
+and Cursor local database entries. Missing credentials return unavailable/sign-in
+needed. There is no Security API or command-line Keychain fallback, including
+supposedly silent reads. Query-level prompt suppression proved insufficient in
+the installed app and was removed.
 
-This is a per-query invariant, not an approval remembered for one executable:
-preserve it across launches, builds, and new providers. Do not fix missing usage by
-changing Keychain ACLs, asking users to select Always Allow, or copying secrets to
-new storage. `AIUsageCredentialStoreTests` covers prompt suppression, denied reads
-without retries, and successful silent reads using synthetic credentials.
-
-Apple documents the noninteractive behavior in
-[`kSecUseAuthenticationUIFail`](https://developer.apple.com/documentation/security/ksecuseauthenticationuifail).
+Preserve this invariant across new providers and rebuilds. Do not change Keychain
+ACLs, request Always Allow, or copy credentials into new storage to work around
+it. Providers whose credentials exist only in Keychain may be unavailable.
+Regression tests use isolated synthetic credential files, including missing and
+malformed data. Installed verification must also check startup and usage refresh;
+a mocked query flag is not proof that dialogs are suppressed.
 
 ## Stay Active timing
 
