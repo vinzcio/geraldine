@@ -47,7 +47,7 @@ enum AICodingProvider: String, CaseIterable, Codable, Identifiable, Sendable {
 
     var usageUnavailableHint: String {
         switch self {
-        case .antigravity: return "Usage unavailable. Open Antigravity to read its local quota, then refresh."
+        case .antigravity: return "Usage unavailable. Run /usage in the Antigravity CLI (agy), then refresh."
         case .claude:      return "Usage unavailable. Run /usage in Claude Code, then refresh."
         case .codex:       return "Usage unavailable. Refresh usage in Codex, then retry."
         case .grok:        return "Usage unavailable. Refresh usage in the Grok CLI, then retry."

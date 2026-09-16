@@ -41,12 +41,16 @@ Keep the source distinctions explicit:
 | Codex | Existing Codex auth file used directly for the provider usage endpoint |
 | Grok | Existing Grok auth file used directly for billing/usage |
 | Cursor | Existing auth file or read-only Cursor database token used for usage |
-| Antigravity | Running local language server quota first, then an existing file token |
+| Antigravity | Installed `agy --print /usage --output-format json`; CLI owns authentication |
 
 Not every provider exposes a readable usage cache. Do not invent cached quota
-from per-session token counts or copy secrets out of Keychain. If Antigravity is
-not running and no file token is available, report unavailable and explain that
-its app must be opened before retrying. Do not launch it automatically.
+from per-session token counts or copy secrets out of Keychain. Antigravity must
+use only its CLI, never the desktop app, language-server discovery, copied tokens,
+or direct cloud requests. The CLI's built-in usage command returns structured
+quota data with zero model turns. Validate that command response and show all four
+buckets: Gemini weekly/5-hour and Claude/GPT weekly/5-hour. The CLI handles its own
+existing authentication; Geraldine never queries Keychain. Missing CLI or invalid
+output is unavailable, not zero quota or signed out.
 
 ## Stay Active timing
 

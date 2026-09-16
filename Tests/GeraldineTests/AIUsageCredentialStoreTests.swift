@@ -30,10 +30,11 @@ final class AIUsageCredentialStoreTests: XCTestCase {
         try write(".grok/auth.json", #"{"key":"grok-fixture"}"#)
         try write(".cursor/auth.json", #"{"accessToken":"cursor-fixture"}"#)
         try write(".gemini/oauth_creds.json", #"{"token":{"access_token":"antigravity-fixture"}}"#)
-        for provider in AICodingProvider.allCases {
+        for provider in AICodingProvider.allCases where provider != .antigravity {
             XCTAssertEqual(AIUsageCredentialStore.token(for: provider, homeDirectory: home)?.value,
                            "\(provider.rawValue)-fixture")
         }
+        XCTAssertNil(AIUsageCredentialStore.token(for: .antigravity, homeDirectory: home))
         XCTAssertEqual(AIUsageCredentialStore.token(for: .codex, homeDirectory: home)?.accountID,
                        "account-fixture")
     }

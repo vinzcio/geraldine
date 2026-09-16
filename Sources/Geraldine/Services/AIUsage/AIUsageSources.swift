@@ -42,12 +42,8 @@ enum AIUsageCredentialStore {
                                             accountPaths: [["tokens", "account_id"], ["account_id"]])
         case .grok:        return grokToken(homeDirectory: homeDirectory)
         case .cursor:      return cursorToken(homeDirectory: homeDirectory)
-        case .antigravity: return antigravityToken(homeDirectory: homeDirectory)
+        case .antigravity: return nil // Authentication belongs exclusively to the agy CLI.
         }
-    }
-
-    static func hasLocalSignIn(_ provider: AICodingProvider) -> Bool {
-        token(for: provider) != nil || (provider == .antigravity && antigravityLanguageServer() != nil)
     }
 
     // MARK: Claude
@@ -113,66 +109,6 @@ enum AIUsageCredentialStore {
         }
         let trimmed = raw.trimmingCharacters(in: CharacterSet(charactersIn: "\" \n"))
         return trimmed.isEmpty ? nil : trimmed
-    }
-
-    // MARK: Antigravity
-
-    private static func antigravityToken(homeDirectory: URL) -> AIUsageToken? {
-        let paths: [[String]] = [
-            ["token", "access_token"],
-            ["token", "accessToken"],
-            ["access_token"],
-            ["accessToken"],
-            ["token"]
-        ]
-        let files = [
-            homeDirectory.appendingPathComponent(".gemini/oauth_creds.json"),
-            homeDirectory.appendingPathComponent(".gemini/antigravity-cli/oauth_creds.json"),
-            homeDirectory.appendingPathComponent(".agy/oauth_creds.json")
-        ]
-        for file in files {
-            if let token = jsonToken(at: file, paths: paths) {
-                return token
-            }
-        }
-        return nil
-    }
-
-    struct LanguageServer: Equatable, Sendable {
-        var port: Int
-        var csrf: String?
-    }
-
-    static func antigravityLanguageServer() -> LanguageServer? {
-        let pipe = Pipe()
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/ps")
-        process.arguments = ["-ax", "-o", "command="]
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-        do { try process.run() } catch { return nil }
-        // Drain while ps is running: a large process list can fill the pipe and
-        // block process exit if we wait first.
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        guard let output = String(data: data, encoding: .utf8) else { return nil }
-        for line in output.split(separator: "\n") {
-            let command = String(line)
-            let lowered = command.lowercased()
-            guard lowered.contains("language_server"), lowered.contains("antigravity") else { continue }
-            let csrf = flagValue(in: command, name: "--csrf_token")
-            if let portText = flagValue(in: command, name: "--extension_server_port"),
-               let port = Int(portText) {
-                return LanguageServer(port: port, csrf: csrf)
-            }
-        }
-        return nil
-    }
-
-    private static func flagValue(in command: String, name: String) -> String? {
-        let parts = command.split(whereSeparator: { $0.isWhitespace }).map(String.init)
-        guard let index = parts.firstIndex(of: name), index + 1 < parts.count else { return nil }
-        return parts[index + 1]
     }
 
     // MARK: Shared readers
@@ -252,15 +188,13 @@ enum AIUsageFetcher {
                       transport: any AIUsageTransporting,
                       now: Date = Date(),
                       homeDirectory: URL = AIUsageCredentialStore.home(),
-                      languageServer: @Sendable () -> AIUsageCredentialStore.LanguageServer? = {
-                          AIUsageCredentialStore.antigravityLanguageServer()
-                      }) async -> AIUsageSnapshot {
+                      antigravityCLI: any AntigravityUsageReading = AntigravityCLIUsage()) async -> AIUsageSnapshot {
         switch provider {
         case .claude:      return await fetchClaude(transport: transport, now: now, homeDirectory: homeDirectory)
         case .codex:       return await fetchCodex(transport: transport, now: now, homeDirectory: homeDirectory)
         case .grok:        return await fetchGrok(transport: transport, now: now, homeDirectory: homeDirectory)
         case .cursor:      return await fetchCursor(transport: transport, now: now, homeDirectory: homeDirectory)
-        case .antigravity: return await fetchAntigravity(transport: transport, now: now, homeDirectory: homeDirectory, server: languageServer())
+        case .antigravity: return await antigravityCLI.snapshot(homeDirectory: homeDirectory, now: now)
         }
     }
 
@@ -350,79 +284,6 @@ enum AIUsageFetcher {
         return await get(summary, transport: transport,
                          parse: { AIUsageParser.cursor(from: $0, now: now) },
                          provider: .cursor)
-    }
-
-    private static func fetchAntigravity(transport: any AIUsageTransporting, now: Date,
-                                         homeDirectory: URL, server: AIUsageCredentialStore.LanguageServer?) async -> AIUsageSnapshot {
-        if let snapshot = await fetchAntigravityLocal(transport: transport, now: now, server: server),
-           snapshot.status == .ready {
-            return snapshot
-        }
-        guard let token = AIUsageCredentialStore.token(for: .antigravity, homeDirectory: homeDirectory) else {
-            if server == nil {
-                return .failed(.antigravity, message: AICodingProvider.antigravity.usageUnavailableHint)
-            }
-            return .failed(.antigravity, message: "Antigravity is running but quota could not be read.")
-        }
-        var load = URLRequest(url: URL(string: "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist")!)
-        load.httpMethod = "POST"
-        load.timeoutInterval = 12
-        load.setValue("Bearer \(token.value)", forHTTPHeaderField: "Authorization")
-        load.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        load.setValue("antigravity", forHTTPHeaderField: "User-Agent")
-        load.httpBody = try? JSONSerialization.data(withJSONObject: [
-            "metadata": [
-                "ideType": "ANTIGRAVITY",
-                "platform": "PLATFORM_UNSPECIFIED",
-                "pluginType": "GEMINI"
-            ]
-        ])
-        let loaded = try? await transport.data(for: load)
-        var project: String?
-        if let loaded, loaded.1.statusCode < 400,
-           let json = AIUsageJSON.object(from: loaded.0) {
-            project = AIUsageJSON.string(json["cloudaicompanionProject"])
-            if case .success(let parsed) = AIUsageParser.antigravity(from: loaded.0, now: now),
-               parsed.status == .ready, parsed.headline != nil {
-                return parsed
-            }
-        }
-        var models = URLRequest(url: URL(string: "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels")!)
-        models.httpMethod = "POST"
-        models.timeoutInterval = 12
-        models.setValue("Bearer \(token.value)", forHTTPHeaderField: "Authorization")
-        models.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        models.setValue("antigravity", forHTTPHeaderField: "User-Agent")
-        var body: [String: Any] = [:]
-        if let project { body["project"] = project }
-        models.httpBody = try? JSONSerialization.data(withJSONObject: body)
-        return await get(models, transport: transport,
-                         parse: { AIUsageParser.antigravity(from: $0, now: now) },
-                         provider: .antigravity)
-    }
-
-    private static func fetchAntigravityLocal(transport: any AIUsageTransporting,
-                                              now: Date, server: AIUsageCredentialStore.LanguageServer?) async -> AIUsageSnapshot? {
-        guard let server else { return nil }
-        let url = URL(string: "http://127.0.0.1:\(server.port)/exa.language_server_pb.LanguageServerService/GetUserStatus")!
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.timeoutInterval = 6
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("1", forHTTPHeaderField: "Connect-Protocol-Version")
-        if let csrf = server.csrf {
-            request.setValue(csrf, forHTTPHeaderField: "X-Codeium-Csrf-Token")
-        }
-        request.httpBody = try? JSONSerialization.data(withJSONObject: [
-            "metadata": [
-                "ideName": "antigravity",
-                "extensionName": "antigravity",
-                "locale": "en"
-            ]
-        ])
-        return await get(request, transport: transport,
-                         parse: { AIUsageParser.antigravity(from: $0, now: now) },
-                         provider: .antigravity)
     }
 
     private static func authorizedGet(_ url: URL, token: String,
