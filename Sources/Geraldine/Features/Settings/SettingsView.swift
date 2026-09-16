@@ -359,6 +359,12 @@ private struct AIUsageConnectionRow: View {
                 return snapshot.displayWindows.map { "\($0.title): \(Int($0.remainingPercent.rounded()))% left" }
                     .joined(separator: " · ")
             }
+            if provider == .claude || (provider == .codex && snapshot.displayWindows.count > 1) {
+                let windows = snapshot.displayWindows.map {
+                    "\($0.title): \(Int($0.remainingPercent.rounded()))% left"
+                }.joined(separator: " · ")
+                return [windows, snapshot.cachedSourceDescription].compactMap { $0 }.joined(separator: " · ")
+            }
             if let source = snapshot.cachedSourceDescription { return source }
             if let window = snapshot.headline {
                 return window.title

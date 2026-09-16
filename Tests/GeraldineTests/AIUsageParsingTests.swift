@@ -17,7 +17,7 @@ final class AIUsageParsingTests: XCTestCase {
         XCTAssertEqual(snapshot.windows.first { $0.id == "five_hour" }?.remainingPercent, 65)
         XCTAssertEqual(snapshot.windows.first { $0.id == "seven_day" }?.remainingPercent, 29)
         XCTAssertEqual(snapshot.windows.first { $0.id == "seven_day" }?.title, "All models")
-        XCTAssertEqual(snapshot.displayWindows.map(\.id), ["seven_day"])
+        XCTAssertEqual(snapshot.displayWindows.map(\.id), ["seven_day", "five_hour"])
         XCTAssertEqual(snapshot.headline?.id, "seven_day")
         XCTAssertEqual(snapshot.remainingPercent, 29)
     }
@@ -39,7 +39,7 @@ final class AIUsageParsingTests: XCTestCase {
         """.data(using: .utf8)!
 
         let snapshot = try unwrap(AIUsageParser.claude(from: data, now: Date(timeIntervalSince1970: 0)))
-        XCTAssertEqual(snapshot.displayWindows.map(\.title), ["Fable", "All models"])
+        XCTAssertEqual(snapshot.displayWindows.map(\.title), ["All models", "Fable"])
         XCTAssertEqual(snapshot.displayWindows.first { $0.title == "Fable" }?.remainingPercent, 100)
         XCTAssertEqual(snapshot.displayWindows.first { $0.id == "seven_day" }?.remainingPercent, 98)
     }
@@ -56,10 +56,10 @@ final class AIUsageParsingTests: XCTestCase {
         """.data(using: .utf8)!
 
         let snapshot = try unwrap(AIUsageParser.claude(from: data, now: Date(timeIntervalSince1970: 0)))
-        XCTAssertEqual(snapshot.displayWindows.map(\.id), ["seven_day_overage_included", "seven_day"])
-        XCTAssertEqual(snapshot.displayWindows.map(\.title), ["Fable", "All models"])
-        XCTAssertEqual(snapshot.displayWindows.first?.remainingPercent, 60)
-        XCTAssertEqual(snapshot.displayWindows.last?.remainingPercent, 88)
+        XCTAssertEqual(snapshot.displayWindows.map(\.id), ["seven_day", "seven_day_overage_included", "five_hour"])
+        XCTAssertEqual(snapshot.displayWindows.map(\.title), ["All models", "Fable", "5-hour"])
+        XCTAssertEqual(snapshot.displayWindows.first?.remainingPercent, 88)
+        XCTAssertEqual(snapshot.displayWindows.last?.remainingPercent, 95)
     }
 
     func testCodexAndGrokDrawASinglePooledBar() throws {

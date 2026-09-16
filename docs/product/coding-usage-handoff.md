@@ -19,6 +19,35 @@ Disclosure copy (also in tests):
 
 > Reads existing usage or reuses the official app or CLI session for provider usage requests. No separate Geraldine sign-in or Keychain access.
 
+## Claude five-hour and Codex plan windows (2026-09-16)
+
+Claude now displays its five-hour cache window alongside weekly All and Fable
+(if present). The ordering is weekly all-models, weekly Fable, five-hour,
+matching the existing Antigravity convention. Codex Plus splits actual returned
+weekly/five-hour windows; non-Plus plans remain pooled. Window labels derive from
+the API duration, not a fixed primary=Session assumption. This machine's live
+Codex response was `plan_type=pro`, with a single primary window of 604800 seconds.
+
+Claude Opus supplied the layout before implementation. See
+[the accepted design](claude-opus-quota-design.md). Small/medium time-window rows
+choose regular or compact metrics by measured fit, while retaining 4pt bars and
+the existing tile geometry. Tooltips list every window and its absolute reset
+plus Claude's original cache timestamp. Grok, Cursor, and Antigravity layouts
+remain unchanged.
+
+Verification: 38 focused usage tests passed, including missing windows, Claude's
+five-hour window becoming the limiting quota, Plus/Pro/other plan transitions,
+and the actual Pro weekly-only response shape. Installed debug build
+`8a4aa266e5ef-dirty` at `2026-09-16T05:30:22Z` showed Claude All 94%, Fable
+94%, five-hour 79%; Codex Weekly 39%. Keep Awake was restored ON indefinitely,
+Stay Active ON after one minute. Five background SwiftUI renders verified Claude
+at 126/146/300/608pt widths and Codex Plus at 146pt; all labels and bars fit.
+These renders used the production widget code with fixture snapshots injected
+only in an owned scratch copy of the monitor. No fixture or test mutability was
+added to the production monitor. Current-account values were checked in installed
+Settings; the Plus display was fixture-verified without changing the user's login.
+Scoped local manual review found no remaining actionable issues.
+
 ## Antigravity CLI-only correction (2026-09-16)
 
 Supersedes the earlier desktop/local-server implementation below. Use only

@@ -409,11 +409,23 @@ enum AIUsageParser {
                 }
                 return nil
             }()
+        let duration = AIUsageJSON.number(object["limit_window_seconds"])
+        let windowTitle: String
+        if id == "primary" || id == "secondary" {
+            switch duration {
+            case 18_000: windowTitle = "5-hour"
+            case 604_800: windowTitle = "Weekly"
+            default: windowTitle = AIUsageJSON.string(object["name"]) ?? title
+            }
+        } else {
+            windowTitle = AIUsageJSON.string(object["name"]) ?? title
+        }
         return AIUsageWindow(
             id: id,
-            title: AIUsageJSON.string(object["name"]) ?? title,
+            title: windowTitle,
             usedPercent: AIUsageMath.percent(from: used),
-            resetsAt: reset
+            resetsAt: reset,
+            durationSeconds: duration
         )
     }
 
