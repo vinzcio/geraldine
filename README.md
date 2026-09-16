@@ -17,7 +17,13 @@ the installed app and was removed.
 
 Preserve this invariant across new providers and rebuilds. Do not change Keychain
 ACLs, request Always Allow, or copy credentials into new storage to work around
-it. Providers whose credentials exist only in Keychain may be unavailable.
+it. Claude reads the existing `~/.claude.json` usage snapshot first, without
+accessing credentials or making a network request. The cached account must match
+the signed-in account. Settings and the tile tooltip show its original update
+time; refreshing Geraldine rereads the file, while Claude Code owns updating it.
+If no snapshot or file credential is available, run `/usage` in Claude Code and
+refresh Geraldine. Missing usage does not mean Claude is signed out.
+Other providers whose credentials exist only in Keychain may be unavailable.
 Regression tests use isolated synthetic credential files, including missing and
 malformed data. Installed verification must also check startup and usage refresh;
 a mocked query flag is not proof that dialogs are suppressed.

@@ -219,6 +219,32 @@ enum AIUsageCredentialStore {
     }
 }
 
+// Claude owns authentication and refreshes this snapshot itself. Reading it must
+// preserve its account identity and original timestamp, never imply a fresh fetch.
+enum ClaudeUsageCache {
+    static let sourceLabel = "Claude Code (cached)"
+
+    static func snapshot(homeDirectory: URL) -> AIUsageSnapshot? {
+        let file = homeDirectory.appendingPathComponent(".claude.json")
+        guard let data = try? Data(contentsOf: file),
+              let json = AIUsageJSON.object(from: data),
+              let account = AIUsageJSON.dictionary(json["oauthAccount"]),
+              let accountID = AIUsageJSON.string(account["accountUuid"]),
+              !accountID.isEmpty,
+              let cache = AIUsageJSON.dictionary(json["cachedUsageUtilization"]),
+              AIUsageJSON.string(cache["accountUuid"]) == accountID,
+              let milliseconds = AIUsageJSON.number(cache["fetchedAtMs"]),
+              milliseconds.isFinite, milliseconds > 0,
+              let utilization = AIUsageJSON.dictionary(cache["utilization"]),
+              let usageData = try? JSONSerialization.data(withJSONObject: utilization),
+              case .success(var snapshot) = AIUsageParser.claude(
+                from: usageData, now: Date(timeIntervalSince1970: milliseconds / 1000)
+              ) else { return nil }
+        snapshot.sourceLabel = sourceLabel
+        return snapshot
+    }
+}
+
 enum AIUsageFetcher {
     static func fetch(_ provider: AICodingProvider,
                       transport: any AIUsageTransporting,
@@ -232,9 +258,13 @@ enum AIUsageFetcher {
         }
     }
 
-    private static func fetchClaude(transport: any AIUsageTransporting, now: Date) async -> AIUsageSnapshot {
-        guard let token = AIUsageCredentialStore.token(for: .claude) else {
-            return .needsSignIn(.claude)
+    static func fetchClaude(transport: any AIUsageTransporting, now: Date,
+                            homeDirectory: URL = AIUsageCredentialStore.home()) async -> AIUsageSnapshot {
+        if let snapshot = ClaudeUsageCache.snapshot(homeDirectory: homeDirectory) {
+            return snapshot
+        }
+        guard let token = AIUsageCredentialStore.token(for: .claude, homeDirectory: homeDirectory) else {
+            return .failed(.claude, message: "Usage unavailable. Run /usage in Claude Code, then refresh.")
         }
         var request = URLRequest(url: URL(string: "https://api.anthropic.com/api/oauth/usage")!)
         request.httpMethod = "GET"

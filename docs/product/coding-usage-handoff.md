@@ -23,14 +23,37 @@ Disclosure copy (also in tests):
 
 AI usage must not access Keychain at all. Discovery, connect, timer refresh, and
 popover refresh use existing credential files or local database entries only.
-Missing credentials return the existing sign-in state. The earlier
+Claude first reads its account-matched local usage cache; missing Claude usage
+is unavailable, not evidence that the user is signed out. The earlier
 `kSecUseAuthenticationUIFail` guard did not stop installed-app prompts and has
 been removed with all Keychain fallbacks. Do not reintroduce silent Keychain
 reads, request Always Allow, change ACLs, or persist copied secrets. Tests cover
 isolated local credential sources; verify the installed startup and refresh
 workflow as well. Historical installed evidence below predates this correction.
 
-## Corrective verification (2026-09-16)
+## Claude local usage correction (2026-09-16)
+
+Claude Code was already authenticated. A real Opus prompt returned
+`OPUS_AUTH_OK`; Claude's own `/usage` reported 21% session and 6% weekly usage.
+Geraldine now prefers `~/.claude.json` → `cachedUsageUtilization.utilization`,
+validates its `accountUuid` against `oauthAccount.accountUuid`, and preserves
+`fetchedAtMs` as the snapshot timestamp. Settings and the tile tooltip expose
+the cached source and update time. No new connection, credential copy, Keychain
+read, or background model prompt is required. Geraldine refresh rereads the
+snapshot; Claude Code owns refreshing that snapshot. Existing file-token HTTP
+support remains a fallback when no valid snapshot exists. Missing both sources
+shows usage unavailable with a `/usage` refresh instruction, never Sign In.
+
+Verification: all 26 focused AI usage tests passed, including cache identity,
+original timestamp, rereading changed snapshots, and zero-network cached reads.
+Installed debug build `6fb2237d904a-dirty`, built
+`2026-09-16T04:52:55Z`, showed Claude **94% left** in Settings with
+“Claude Code cache · updated Sep 16, 2026 at 12:46 PM”, without Sign In or
+an observed permission dialog. Keep Awake was restored ON indefinitely and
+Stay Active remained ON after one minute. This pass verified the actual Settings
+surface; it did not exercise the menu-bar popover.
+
+## Earlier corrective verification (2026-09-16, superseded for Claude)
 
 The no-Keychain correction passed 21 focused AI usage tests. The installed debug
 build at `2026-09-16T04:39:13Z` was checked with `nm -u`: zero direct `SecItem` or
@@ -68,7 +91,7 @@ The user runs the **installed** app, not `~/Library/Caches/GeraldineBuild/Gerald
 1. Click the Geraldine menu-bar item → popover.
 2. **Edit Widgets…** and enable Codex / Claude / Cursor / Grok / Antigravity, **or** open the main window → Settings → **Coding Usage** → Connect.
 3. Expect Codex and Grok to populate immediately on this Mac (see live probe below).
-4. Claude and Antigravity will likely show sign-in/error until those CLIs rotate their tokens (open `claude` / `agy` once).
+4. Claude reads its existing local usage cache. If unavailable, run `/usage` in Claude Code and refresh Geraldine. Antigravity may still require its own app to refresh authentication.
 
 UserDefaults key for connected providers: `geraldine.aiUsage.connected` (`[String]` of `AICodingProvider.rawValue`). Widget visibility still lives in `geraldine.widgetLayout.v3` as kinds `ai.codex`, `ai.claude`, `ai.cursor`, `ai.grok`, `ai.antigravity`.
 
@@ -128,7 +151,7 @@ Fail closed: missing creds → `.needsSignIn`; 401/403 → `.needsSignIn`; other
 - **Do not** compute remaining from `totalSpend/limit` when spend exceeds included limit. Use the `*PercentUsed` fields.
 - Headline will be **0%** here because the API-model pool is empty; large tile still shows included ~67% and Cursor models ~76%.
 
-### Claude — signed in, access token stale
+### Historical Claude credential probe — superseded by local usage cache
 
 - Prefer `~/.claude/.credentials.json` (`claudeAiOauth.accessToken`) — **absent on this Mac**
 - Then keychain service `Claude Code-credentials` (JSON with `claudeAiOauth`)
@@ -161,7 +184,7 @@ Last source run: AI usage tests green, including Cursor percent-used windows and
 ## Open work (pick up here)
 
 1. **Live popover pass** — Connect Codex and Grok in Settings, confirm rings in the popover, resize/reorder, Disconnect hides the tile. Check both compact and wide popover widths. Do not hammer relaunch.
-2. **Claude OAuth refresh** — On 401, use `refreshToken` the way Claude Code does, write the rotated blob back to the same keychain item, then retry usage. Until then, “open Claude Code once” is the workaround.
+2. **Claude usage** — Implemented through the existing local cache. Do not add OAuth rotation or Keychain access.
 3. **Antigravity refresh / local LS** — Same 401 story; optionally refresh Google token. When the app is open, prefer GetUserStatus so quota works without cloud token.
 4. **Cursor headline policy** — Tightest-window makes this account show 0% while included usage is ~67%. Decide whether Cursor should headline `totalPercentUsed` (“Included”) instead.
 5. **Menu-bar status item** — Not wired. A later change could let an `aiUsage` tile drive the status item the way the first metric does.
