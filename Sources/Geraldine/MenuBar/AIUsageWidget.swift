@@ -37,7 +37,7 @@ struct AIUsageWidget: View {
         VStack(alignment: .leading, spacing: 6) {
             tileHeader(nameFont: .caption2.weight(.semibold), markSize: 16)
             Spacer(minLength: 0)
-            if snapshot.status == .ready || snapshot.status == .needsSignIn {
+            if snapshot.status == .ready {
                 dataBlock(percentSize: 22, percentMarkSize: 11)
             } else {
                 statusLine
@@ -151,12 +151,12 @@ struct AIUsageWidget: View {
         let compact = size == .small
         switch snapshot.status {
         case .disconnected:
-            Text("Not connected")
+            Text("Usage hidden")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
         case .needsSignIn:
-            Text(compact ? "Sign in" : provider.signInHint)
+            Text(compact ? "Unavailable" : provider.usageUnavailableHint)
                 .font(.caption2)
                 .foregroundStyle(Theme.warn)
                 .lineLimit(compact ? 1 : 2)
@@ -184,9 +184,8 @@ struct AIUsageWidget: View {
         HStack(spacing: 8) {
             switch snapshot.status {
             case .disconnected:
-                button("Connect") { connect() }
+                button("Show Usage") { connect() }
             case .needsSignIn:
-                button("Sign In") { usage.openSignIn(for: provider) }
                 button("Retry") { usage.connect(provider) }
             case .loading:
                 ProgressView().controlSize(.mini)
@@ -272,9 +271,9 @@ struct AIUsageWidget: View {
         let name = provider.title
         switch snapshot.status {
         case .disconnected:
-            return "\(name) usage, not connected"
+            return "\(name) usage, hidden"
         case .needsSignIn:
-            return "\(name) usage, sign in needed"
+            return "\(name) usage, unavailable"
         case .loading:
             return "\(name) usage, updating"
         case .ready:

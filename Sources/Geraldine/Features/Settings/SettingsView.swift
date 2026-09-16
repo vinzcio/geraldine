@@ -349,9 +349,9 @@ private struct AIUsageConnectionRow: View {
     private var detail: String {
         switch snapshot.status {
         case .disconnected:
-            return provider.signInHint
+            return "Show usage from the existing app or CLI session."
         case .needsSignIn:
-            return "Local sign-in was not found. Open the official app or CLI, then retry."
+            return provider.usageUnavailableHint
         case .loading:
             return "Reading remaining usage…"
         case .ready:
@@ -368,15 +368,15 @@ private struct AIUsageConnectionRow: View {
     @ViewBuilder private var connectionButton: some View {
         switch snapshot.status {
         case .disconnected:
-            Button("Connect") { state.connectAIUsage(provider) }
+            Button("Show Usage") { state.connectAIUsage(provider) }
                 .buttonStyle(.soft(Theme.accent))
         case .needsSignIn:
-            Button("Sign In") { usage.openSignIn(for: provider) }
+            Button("Refresh") { usage.connect(provider) }
                 .buttonStyle(.soft(Theme.warn))
         case .loading:
             ProgressView().controlSize(.small)
         case .ready, .error:
-            Button("Disconnect") { state.disconnectAIUsage(provider) }
+            Button("Hide Usage") { state.disconnectAIUsage(provider) }
                 .buttonStyle(.quiet(Theme.accent, compact: true))
         }
     }
