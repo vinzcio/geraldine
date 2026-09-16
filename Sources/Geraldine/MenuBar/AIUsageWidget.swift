@@ -13,7 +13,7 @@ struct AIUsageWidget: View {
 
     private var snapshot: AIUsageSnapshot { usage.snapshot(for: provider) }
     private var bars: [AIUsageWindow] { snapshot.displayWindows }
-    private var showsPairedWindows: Bool { snapshot.status == .ready && bars.count >= 2 }
+    private var showsPairedWindows: Bool { snapshot.hasDisplayableUsage && bars.count >= 2 }
     private var usesTimeWindowRows: Bool {
         provider == .claude || (provider == .codex &&
             snapshot.plan?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "plus")
@@ -41,7 +41,7 @@ struct AIUsageWidget: View {
         VStack(alignment: .leading, spacing: 6) {
             tileHeader(nameFont: .caption2.weight(.semibold), markSize: 16)
             Spacer(minLength: 0)
-            if snapshot.status == .ready {
+            if snapshot.hasDisplayableUsage {
                 dataBlock(percentSize: 22, percentMarkSize: 11)
             } else {
                 statusLine
@@ -56,7 +56,7 @@ struct AIUsageWidget: View {
                 actionRow
             }
             Spacer(minLength: 0)
-            if snapshot.status == .ready {
+            if snapshot.hasDisplayableUsage {
                 dataBlock(percentSize: 26, percentMarkSize: 13)
             } else {
                 statusLine
@@ -76,7 +76,7 @@ struct AIUsageWidget: View {
                 }
                 actionRow
             }
-            if snapshot.status == .ready {
+            if snapshot.hasDisplayableUsage {
                 dataBlock(percentSize: 26, percentMarkSize: 13)
             } else {
                 statusLine
