@@ -130,6 +130,12 @@ struct AIUsageSnapshot: Equatable, Sendable {
     }
 
     var remainingPercent: Double? { headline?.remainingPercent }
+
+    /// Ready tiles, and tiles that already have bars from a previous fetch,
+    /// can keep showing numbers while a shared refresh runs.
+    var hasDisplayableUsage: Bool {
+        status == .ready || !windows.isEmpty
+    }
 }
 
 struct AIUsageParseError: Error, Equatable {

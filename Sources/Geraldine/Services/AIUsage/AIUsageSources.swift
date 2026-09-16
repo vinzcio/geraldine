@@ -181,6 +181,11 @@ enum ClaudeUsageCache {
         snapshot.sourceLabel = sourceLabel
         return snapshot
     }
+
+    static func isStale(_ snapshot: AIUsageSnapshot, now: Date) -> Bool {
+        guard let fetchedAt = snapshot.fetchedAt else { return true }
+        return now.timeIntervalSince(fetchedAt) >= AIUsageMonitor.refreshInterval
+    }
 }
 
 enum AIUsageFetcher {
@@ -200,10 +205,12 @@ enum AIUsageFetcher {
 
     static func fetchClaude(transport: any AIUsageTransporting, now: Date,
                             homeDirectory: URL = AIUsageCredentialStore.home()) async -> AIUsageSnapshot {
-        if let snapshot = ClaudeUsageCache.snapshot(homeDirectory: homeDirectory) {
-            return snapshot
+        let cached = ClaudeUsageCache.snapshot(homeDirectory: homeDirectory)
+        if let cached, !ClaudeUsageCache.isStale(cached, now: now) {
+            return cached
         }
         guard let token = AIUsageCredentialStore.token(for: .claude, homeDirectory: homeDirectory) else {
+            if let cached { return cached }
             return .failed(.claude, message: "Usage unavailable. Run /usage in Claude Code, then refresh.")
         }
         var request = URLRequest(url: URL(string: "https://api.anthropic.com/api/oauth/usage")!)
@@ -214,8 +221,10 @@ enum AIUsageFetcher {
         request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
         request.setValue("cli", forHTTPHeaderField: "x-app")
         request.setValue("Geraldine", forHTTPHeaderField: "User-Agent")
-        return await get(request, transport: transport, parse: { AIUsageParser.claude(from: $0, now: now) },
-                         provider: .claude)
+        let live = await get(request, transport: transport, parse: { AIUsageParser.claude(from: $0, now: now) },
+                             provider: .claude)
+        if live.status == .ready { return live }
+        return cached ?? live
     }
 
     private static func fetchCodex(transport: any AIUsageTransporting, now: Date, homeDirectory: URL) async -> AIUsageSnapshot {

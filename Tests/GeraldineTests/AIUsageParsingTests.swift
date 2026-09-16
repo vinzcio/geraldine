@@ -303,6 +303,233 @@ final class AIUsageMonitorTests: XCTestCase {
         XCTAssertEqual(defaults.stringArray(forKey: AIUsageMonitor.connectedKey), ["codex"])
     }
 
+    func testPopoverOpensShareOneRefreshAndDoNotRefetchInsideTheCadence() async throws {
+        let suiteName = "AIUsageMonitorSharedRefresh.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let clock = TestClock(start: Date(timeIntervalSince1970: 5_000))
+        let log = FetchLog()
+        let monitor = AIUsageMonitor(defaults: defaults, transport: ScriptedAIUsageTransport(status: 200, body: Data()), now: clock.now) { provider, date in
+            log.record(provider, at: date)
+            return usageFixture(provider, at: date, remaining: 40)
+        }
+
+        monitor.syncShownProviders([.claude, .antigravity])
+        await waitUntil { monitor.lastRefresh != nil && !monitor.isRefreshing }
+        XCTAssertEqual(Set(log.providers), [.claude, .antigravity])
+        XCTAssertEqual(log.providers.count, 2)
+        XCTAssertEqual(monitor.snapshot(for: .claude).status, .ready)
+        XCTAssertEqual(monitor.snapshot(for: .antigravity).status, .ready)
+        let firstRefresh = try XCTUnwrap(monitor.lastRefresh)
+
+        log.reset()
+        monitor.refreshIfStale()
+        monitor.refreshIfStale()
+        clock.advance(30)
+        monitor.refreshIfStale()
+        await waitUntil { !monitor.isRefreshing }
+        XCTAssertTrue(log.providers.isEmpty, "Opening the popover again inside the shared cadence must not start another fetch")
+        XCTAssertEqual(monitor.lastRefresh, firstRefresh)
+
+        clock.advance(AIUsageMonitor.refreshInterval)
+        monitor.refreshIfStale()
+        await waitUntil { monitor.lastRefresh != firstRefresh && !monitor.isRefreshing }
+        XCTAssertEqual(Set(log.providers), [.claude, .antigravity])
+        XCTAssertEqual(log.providers.count, 2)
+    }
+
+    func testInFlightSharedRefreshCoalescesPerProviderAndPopoverOpens() async throws {
+        let suiteName = "AIUsageMonitorCoalesce.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let clock = TestClock(start: Date(timeIntervalSince1970: 8_000))
+        let log = FetchLog()
+        let gate = FetchGate()
+        let monitor = AIUsageMonitor(defaults: defaults, transport: ScriptedAIUsageTransport(status: 200, body: Data()), now: clock.now) { provider, date in
+            log.record(provider, at: date)
+            await gate.wait(for: provider)
+            return usageFixture(provider, at: date, remaining: provider == .antigravity ? 70 : 90)
+        }
+
+        monitor.syncShownProviders([.claude, .antigravity])
+        await waitUntil { log.providers.count == 2 }
+
+        monitor.refreshIfStale()
+        monitor.refreshConnected()
+        monitor.connect(.claude)
+        XCTAssertEqual(log.providers.count, 2, "In-flight providers must not start a second fetch")
+
+        gate.releaseAll()
+        await waitUntil { !monitor.isRefreshing && monitor.snapshot(for: .antigravity).status == .ready }
+        XCTAssertEqual(Set(log.providers), [.claude, .antigravity])
+        XCTAssertEqual(monitor.snapshot(for: .claude).remainingPercent, 90)
+        XCTAssertEqual(monitor.snapshot(for: .antigravity).remainingPercent, 70)
+        XCTAssertNotNil(monitor.lastRefresh)
+    }
+
+    func testReadyTilesStayReadableDuringSharedRefresh() async throws {
+        let suiteName = "AIUsageMonitorSilentRefresh.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let clock = TestClock(start: Date(timeIntervalSince1970: 9_000))
+        let log = FetchLog()
+        let gate = FetchGate()
+        let monitor = AIUsageMonitor(defaults: defaults, transport: ScriptedAIUsageTransport(status: 200, body: Data()), now: clock.now) { provider, date in
+            log.record(provider, at: date)
+            await gate.wait(for: provider)
+            return usageFixture(provider, at: date, remaining: 55)
+        }
+
+        monitor.connect(.antigravity)
+        await waitUntil { log.providers.count == 1 }
+        gate.releaseAll()
+        await waitUntil { monitor.snapshot(for: .antigravity).status == .ready }
+        XCTAssertTrue(monitor.snapshot(for: .antigravity).hasDisplayableUsage)
+
+        clock.advance(AIUsageMonitor.refreshInterval)
+        gate.reset()
+        monitor.refreshIfStale()
+        await waitUntil { log.providers.count == 2 }
+        XCTAssertEqual(monitor.snapshot(for: .antigravity).status, .ready)
+        XCTAssertEqual(monitor.snapshot(for: .antigravity).remainingPercent, 55)
+        XCTAssertTrue(monitor.snapshot(for: .antigravity).hasDisplayableUsage)
+        gate.releaseAll()
+        await waitUntil { !monitor.isRefreshing }
+    }
+
+    func testShowingANewTileJoinsTheSharedPathWithoutRefreshingOthers() async throws {
+        let suiteName = "AIUsageMonitorNewTile.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let clock = TestClock(start: Date(timeIntervalSince1970: 10_000))
+        let log = FetchLog()
+        let monitor = AIUsageMonitor(defaults: defaults, transport: ScriptedAIUsageTransport(status: 200, body: Data()), now: clock.now) { provider, date in
+            log.record(provider, at: date)
+            return usageFixture(provider, at: date, remaining: 33)
+        }
+
+        monitor.connect(.claude)
+        await waitUntil { monitor.snapshot(for: .claude).status == .ready }
+        log.reset()
+
+        monitor.syncShownProviders([.claude, .codex])
+        await waitUntil { monitor.snapshot(for: .codex).status == .ready }
+        XCTAssertEqual(log.providers, [.codex])
+        XCTAssertEqual(monitor.snapshot(for: .claude).status, .ready)
+        monitor.refreshIfStale()
+        await waitUntil { !monitor.isRefreshing }
+        XCTAssertEqual(log.providers, [.codex], "A fresh shared clock must not refetch already-current tiles")
+    }
+
+    private func waitUntil(_ timeout: TimeInterval = 1, predicate: @escaping () -> Bool) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if predicate() { return }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTFail("Timed out waiting for usage monitor state")
+    }
+}
+
+private func usageFixture(_ provider: AICodingProvider, at date: Date, remaining: Double) -> AIUsageSnapshot {
+    AIUsageSnapshot(
+        provider: provider,
+        status: .ready,
+        plan: nil,
+        windows: [AIUsageWindow(id: "pool", title: "Weekly", usedPercent: 100 - remaining, resetsAt: nil)],
+        fetchedAt: date,
+        sourceLabel: "test"
+    )
+}
+
+private final class TestClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var current: Date
+
+    init(start: Date) {
+        current = start
+    }
+
+    var now: () -> Date {
+        { [self] in
+            lock.lock()
+            defer { lock.unlock() }
+            return current
+        }
+    }
+
+    func advance(_ interval: TimeInterval) {
+        lock.lock()
+        current = current.addingTimeInterval(interval)
+        lock.unlock()
+    }
+}
+
+private final class FetchLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [AICodingProvider] = []
+
+    var providers: [AICodingProvider] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recorded
+    }
+
+    func record(_ provider: AICodingProvider, at date: Date) {
+        _ = date
+        lock.lock()
+        recorded.append(provider)
+        lock.unlock()
+    }
+
+    func reset() {
+        lock.lock()
+        recorded.removeAll()
+        lock.unlock()
+    }
+}
+
+private final class FetchGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuations: [AICodingProvider: [CheckedContinuation<Void, Never>]] = [:]
+    private var closed = false
+
+    func wait(for provider: AICodingProvider) async {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            if closed {
+                lock.unlock()
+                continuation.resume()
+                return
+            }
+            continuations[provider, default: []].append(continuation)
+            lock.unlock()
+        }
+    }
+
+    func releaseAll() {
+        lock.lock()
+        closed = true
+        let waiting = continuations
+        continuations.removeAll()
+        lock.unlock()
+        for group in waiting.values {
+            for continuation in group {
+                continuation.resume()
+            }
+        }
+    }
+
+    func reset() {
+        lock.lock()
+        closed = false
+        continuations.removeAll()
+        lock.unlock()
+    }
 }
 
 struct ScriptedAIUsageTransport: AIUsageTransporting {

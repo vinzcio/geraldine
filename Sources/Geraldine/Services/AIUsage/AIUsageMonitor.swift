@@ -8,24 +8,32 @@ import Foundation
 final class AIUsageMonitor: ObservableObject {
     @Published private(set) var snapshots: [AICodingProvider: AIUsageSnapshot]
     @Published private(set) var lastRefresh: Date?
+    @Published private(set) var isRefreshing = false
 
     private let defaults: UserDefaults
     private let transport: any AIUsageTransporting
     private let now: () -> Date
+    private let fetchUsage: UsageFetching
     private var refreshTask: Task<Void, Never>?
     private var timer: Timer?
     private var inFlight = Set<AICodingProvider>()
+    private var queued = Set<AICodingProvider>()
+
+    typealias UsageFetching = @Sendable (AICodingProvider, Date) async -> AIUsageSnapshot
 
     static let connectedKey = "geraldine.aiUsage.connected"
-    static let refreshInterval: TimeInterval = 5 * 60
-    static let staleInterval: TimeInterval = 30
+    nonisolated static let refreshInterval: TimeInterval = 5 * 60
 
     init(defaults: UserDefaults = .standard,
          transport: any AIUsageTransporting = URLSessionAIUsageTransport(),
-         now: @escaping () -> Date = Date.init) {
+         now: @escaping () -> Date = Date.init,
+         fetchUsage: UsageFetching? = nil) {
         self.defaults = defaults
         self.transport = transport
         self.now = now
+        self.fetchUsage = fetchUsage ?? { provider, date in
+            await AIUsageFetcher.fetch(provider, transport: transport, now: date)
+        }
         var initial: [AICodingProvider: AIUsageSnapshot] = [:]
         for provider in AICodingProvider.allCases {
             initial[provider] = .disconnected(provider)
@@ -44,9 +52,9 @@ final class AIUsageMonitor: ObservableObject {
 
     func start() {
         guard timer == nil else { return }
-        refreshConnected()
+        refreshIfStale()
         let timer = Timer(timeInterval: Self.refreshInterval, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refreshConnected() }
+            Task { @MainActor in self?.refreshIfStale() }
         }
         timer.tolerance = 15
         RunLoop.main.add(timer, forMode: .common)
@@ -59,24 +67,30 @@ final class AIUsageMonitor: ObservableObject {
         refreshTask?.cancel()
         refreshTask = nil
         inFlight.removeAll()
+        queued.removeAll()
+        isRefreshing = false
     }
 
+    /// Popover open, become-active, and the 5-minute timer all use this one
+    /// shared clock. An in-flight batch is reused instead of starting another.
     func refreshIfStale() {
-        let staleBefore = now().addingTimeInterval(-Self.staleInterval)
-        if let lastRefresh, lastRefresh > staleBefore { return }
-        refreshConnected()
+        guard refreshTask == nil else { return }
+        guard needsSharedRefresh else { return }
+        let providers = connectedProviders()
+        guard !providers.isEmpty else { return }
+        startBatch(Set(providers))
     }
 
     func refreshConnected() {
-        let providers = AICodingProvider.allCases.filter { isConnected($0) }
+        let providers = connectedProviders()
         guard !providers.isEmpty else { return }
-        refresh(providers)
+        enqueue(providers)
     }
 
     func connect(_ provider: AICodingProvider) {
         persistConnected(provider, connected: true)
-        snapshots[provider] = .loading(provider, preserving: snapshots[provider])
-        refresh([provider])
+        markLoadingIfEmpty(provider)
+        enqueue([provider])
         NotificationCenter.default.post(name: .aiUsageConnectionDidChange, object: provider)
     }
 
@@ -95,7 +109,7 @@ final class AIUsageMonitor: ObservableObject {
             let shouldConnect = shown.contains(provider)
             if shouldConnect && !isConnected(provider) {
                 persistConnected(provider, connected: true)
-                snapshots[provider] = .loading(provider, preserving: snapshots[provider])
+                markLoadingIfEmpty(provider)
                 toConnect.append(provider)
                 NotificationCenter.default.post(name: .aiUsageConnectionDidChange, object: provider)
             } else if !shouldConnect && isConnected(provider) {
@@ -105,7 +119,7 @@ final class AIUsageMonitor: ObservableObject {
             }
         }
         if !toConnect.isEmpty {
-            refresh(toConnect)
+            enqueue(toConnect)
         }
     }
 
@@ -137,21 +151,44 @@ final class AIUsageMonitor: ObservableObject {
         defaults.set(Array(stored).sorted(), forKey: Self.connectedKey)
     }
 
-    private func refresh(_ providers: [AICodingProvider]) {
-        let pending = providers.filter { !inFlight.contains($0) }
-        guard !pending.isEmpty else { return }
-        inFlight.formUnion(pending)
-        for provider in pending {
-            let current = snapshots[provider]
-            if current?.status != .loading {
-                snapshots[provider] = .loading(provider, preserving: current)
-            }
+    private func connectedProviders() -> [AICodingProvider] {
+        AICodingProvider.allCases.filter { isConnected($0) }
+    }
+
+    private var needsSharedRefresh: Bool {
+        guard let lastRefresh else { return true }
+        return now().timeIntervalSince(lastRefresh) >= Self.refreshInterval
+    }
+
+    private func markLoadingIfEmpty(_ provider: AICodingProvider) {
+        let current = snapshots[provider]
+        if current?.hasDisplayableUsage != true {
+            snapshots[provider] = .loading(provider, preserving: current)
         }
-        refreshTask = Task { [transport, now] in
+    }
+
+    private func enqueue(_ providers: [AICodingProvider]) {
+        let wanted = Set(providers).subtracting(inFlight)
+        guard !wanted.isEmpty else { return }
+        if refreshTask != nil {
+            queued.formUnion(wanted)
+            return
+        }
+        startBatch(wanted)
+    }
+
+    private func startBatch(_ providers: Set<AICodingProvider>) {
+        guard !providers.isEmpty else { return }
+        inFlight.formUnion(providers)
+        isRefreshing = true
+        for provider in providers {
+            markLoadingIfEmpty(provider)
+        }
+        refreshTask = Task { [fetchUsage, now] in
             await withTaskGroup(of: (AICodingProvider, AIUsageSnapshot).self) { group in
-                for provider in pending {
+                for provider in providers {
                     group.addTask {
-                        let snapshot = await AIUsageFetcher.fetch(provider, transport: transport, now: now())
+                        let snapshot = await fetchUsage(provider, now())
                         return (provider, snapshot)
                     }
                 }
@@ -164,6 +201,14 @@ final class AIUsageMonitor: ObservableObject {
             }
             await MainActor.run {
                 self.lastRefresh = now()
+                self.refreshTask = nil
+                let followUp = self.queued
+                self.queued.removeAll()
+                if followUp.isEmpty {
+                    self.isRefreshing = false
+                } else {
+                    self.startBatch(followUp)
+                }
             }
         }
     }
