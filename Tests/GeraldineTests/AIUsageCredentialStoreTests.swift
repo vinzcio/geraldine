@@ -77,8 +77,11 @@ final class AIUsageCredentialStoreTests: XCTestCase {
         ]
         for file in files {
             let source = try String(contentsOf: root.appendingPathComponent(file))
-            for forbidden in ["import Security", "SecItemCopyMatching", "SecKeychain", "/usr/bin/security"] {
-                XCTAssertFalse(source.contains(forbidden), "AI usage must not access Keychain in \(file): \(forbidden)")
+            for forbidden in [
+                "import Security", "SecItemCopyMatching", "SecKeychain", "/usr/bin/security",
+                "cursor_login", "agent login", "authenticateWithExistingLogin"
+            ] {
+                XCTAssertFalse(source.contains(forbidden), "AI usage must not start a login flow in \(file): \(forbidden)")
             }
             for endpoint in httpEndpoints {
                 XCTAssertFalse(source.contains(endpoint), "AI usage must not call \(endpoint) in \(file)")

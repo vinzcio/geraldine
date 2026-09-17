@@ -336,9 +336,13 @@ private struct AIUsageConnectionRow: View {
             }
             Spacer(minLength: 8)
             if snapshot.status == .ready, let remaining = snapshot.remainingPercent {
-                Text("\(Int(remaining.rounded()))% left")
-                    .font(.caption.monospacedDigit().weight(.semibold))
-                    .foregroundStyle(UsageRemainingRing.tint(for: remaining, brand: provider.tint))
+                // Cursor's two pools are listed in the caption. A single tightest
+                // number would be the exhausted Other-models bar (0%) on this plan.
+                if provider != .cursor || snapshot.displayWindows.count < 2 {
+                    Text("\(Int(remaining.rounded()))% left")
+                        .font(.caption.monospacedDigit().weight(.semibold))
+                        .foregroundStyle(UsageRemainingRing.tint(for: remaining, brand: provider.tint))
+                }
             }
             connectionButton
         }
@@ -359,7 +363,7 @@ private struct AIUsageConnectionRow: View {
                 return snapshot.displayWindows.map { "\($0.title): \(Int($0.remainingPercent.rounded()))% left" }
                     .joined(separator: " · ")
             }
-            if provider == .claude || (provider == .codex && snapshot.displayWindows.count > 1) {
+            if provider == .cursor || provider == .claude || (provider == .codex && snapshot.displayWindows.count > 1) {
                 let windows = snapshot.displayWindows.map {
                     "\($0.title): \(Int($0.remainingPercent.rounded()))% left"
                 }.joined(separator: " · ")

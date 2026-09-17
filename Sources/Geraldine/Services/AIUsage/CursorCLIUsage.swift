@@ -1,8 +1,9 @@
 import Foundation
 
 /// Cursor owns authentication. Account meters come from the Agent CLI `/usage`
-/// pager. Headless `--print /usage` is not that command and is rejected when it
-/// is a model turn or an unauthenticated stub.
+/// pager, using the local app/CLI session already on this Mac. Geraldine never
+/// starts a browser or ACP login. Headless `--print /usage` is not that command
+/// and is rejected when it is a model turn or an unauthenticated stub.
 struct CursorCLIUsage: ProviderUsageReading {
     static let sourceLabel = "Cursor CLI"
 
@@ -14,80 +15,43 @@ struct CursorCLIUsage: ProviderUsageReading {
         guard let executable = AgentCLI.executable(named: "cursor-agent", homeDirectory: homeDirectory) else {
             return .failed(.cursor, message: "Cursor Agent CLI was not found.")
         }
-        ensureAuthenticated(executable: executable, homeDirectory: homeDirectory)
+        var environment = [
+            "TERM": "xterm-256color",
+            "COLORFGBG": "15;0"
+        ]
+        // Reuse the official Cursor app session. The TUI otherwise opens an
+        // OAuth splash whenever its own JWT looks stale, even if the app is
+        // signed in. Passing the local token is not a new login.
+        if let token = AIUsageCredentialStore.token(for: .cursor, homeDirectory: homeDirectory)?.value {
+            environment["CURSOR_AUTH_TOKEN"] = token
+        }
         let text = AgentPTY.capture(
             executable: executable,
             arguments: ["--trust", "--workspace", homeDirectory.path],
             homeDirectory: homeDirectory,
-            environment: [
-                "TERM": "xterm-256color",
-                "COLORFGBG": "15;0"
-            ],
+            environment: environment,
             replyColorQuery: true,
             steps: [
                 .init(afterContaining: "Plan, search", afterSeconds: 0.3, write: Data("/usage".utf8)),
                 .init(afterContaining: "Show plan and on-demand usage", afterSeconds: 0.2, write: Data("\r".utf8))
             ],
-            stopContaining: ["Included", "% used"],
+            stopContaining: [
+                "Included",
+                "% used",
+                "Not logged in",
+                "Monthly plan and on-demand"
+            ],
+            abortContaining: [
+                "Press any key to log in",
+                "Signing in with the browser",
+                "If your browser didn't open"
+            ],
             timeout: 22
         )
         switch Self.parse(Data(text.utf8), now: now) {
         case .success(let snapshot): return snapshot
         case .failure(let error): return .failed(.cursor, message: error.message)
         }
-    }
-
-    /// Reuse the desktop Cursor login. `agent login` would open a browser;
-    /// ACP `cursor_login` binds the CLI to that existing session.
-    private func ensureAuthenticated(executable: URL, homeDirectory: URL) {
-        let status = AgentCLI.run(
-            executable: executable,
-            arguments: ["status", "--format", "json"],
-            homeDirectory: homeDirectory
-        )
-        if let json = AIUsageJSON.object(from: status.data),
-           json["isAuthenticated"] as? Bool == true {
-            return
-        }
-        authenticateWithExistingLogin(executable: executable, homeDirectory: homeDirectory)
-    }
-
-    private func authenticateWithExistingLogin(executable: URL, homeDirectory: URL) {
-        let process = Process()
-        let output = Pipe()
-        let input = Pipe()
-        process.executableURL = executable
-        process.arguments = ["acp"]
-        process.currentDirectoryURL = homeDirectory
-        process.standardInput = input
-        process.standardOutput = output
-        process.standardError = FileHandle.nullDevice
-        do { try process.run() } catch { return }
-        let requests = [
-            #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientInfo":{"name":"geraldine","version":"0.1.0"},"clientCapabilities":{}}}"#,
-            #"{"jsonrpc":"2.0","id":2,"method":"authenticate","params":{"methodId":"cursor_login"}}"#
-        ]
-        for line in requests {
-            input.fileHandleForWriting.write(Data((line + "\n").utf8))
-        }
-        let deadline = Date().addingTimeInterval(15)
-        var collected = Data()
-        while Date() < deadline {
-            let chunk = output.fileHandleForReading.availableData
-            if !chunk.isEmpty {
-                collected.append(chunk)
-                let text = String(data: collected, encoding: .utf8) ?? ""
-                if text.contains(#""id":2"#) || text.contains(#""id": 2"#) { break }
-            } else if !process.isRunning {
-                collected.append(output.fileHandleForReading.readDataToEndOfFile())
-                break
-            } else {
-                Thread.sleep(forTimeInterval: 0.05)
-            }
-        }
-        input.fileHandleForWriting.closeFile()
-        if process.isRunning { process.terminate() }
-        process.waitUntilExit()
     }
 
     static func parse(_ data: Data, now: Date) -> Result<AIUsageSnapshot, AIUsageParseError> {
@@ -116,14 +80,18 @@ struct CursorCLIUsage: ProviderUsageReading {
 
     static func parseTerminal(_ text: String, now: Date) -> AIUsageSnapshot? {
         let stripped = AgentPTY.stripANSI(text)
+        guard !stripped.localizedCaseInsensitiveContains("not logged in"),
+              !stripped.localizedCaseInsensitiveContains("press any key to log in"),
+              !stripped.localizedCaseInsensitiveContains("signing in with the browser") else {
+            return nil
+        }
         guard stripped.localizedCaseInsensitiveContains("show plan and on-demand usage")
                 || stripped.localizedCaseInsensitiveContains("monthly plan and on-demand")
                 || stripped.contains("Included") else { return nil }
-        guard !stripped.localizedCaseInsensitiveContains("not logged in") else { return nil }
         let named: [(id: String, title: String, pattern: String)] = [
-            ("totalPercentUsed", "Included", #"Included\s+([0-9]+(?:\.[0-9]+)?)%\s+used"#),
-            ("autoPercentUsed", "Cursor models", #"Auto\s+([0-9]+(?:\.[0-9]+)?)%\s+used"#),
-            ("apiPercentUsed", "Other models", #"API\s+([0-9]+(?:\.[0-9]+)?)%\s+used"#)
+            ("totalPercentUsed", "Included", #"Included[:\s]+([0-9]+(?:\.[0-9]+)?)%\s+used"#),
+            ("autoPercentUsed", "Cursor models", #"Auto[:\s]+([0-9]+(?:\.[0-9]+)?)%\s+used"#),
+            ("apiPercentUsed", "Other models", #"API[:\s]+([0-9]+(?:\.[0-9]+)?)%\s+used"#)
         ]
         var windows: [AIUsageWindow] = []
         for item in named {

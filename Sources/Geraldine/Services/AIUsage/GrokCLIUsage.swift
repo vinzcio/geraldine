@@ -25,6 +25,7 @@ struct GrokCLIUsage: ProviderUsageReading {
             environment: [
                 "TERM": "xterm-256color",
                 "COLORFGBG": "15;0",
+                "COLORTERM": "truecolor",
                 "GROK_APPEARANCE": "dark",
                 "GROK_AGENT_DASHBOARD": "0"
             ],
@@ -33,7 +34,13 @@ struct GrokCLIUsage: ProviderUsageReading {
                 .init(afterContaining: "Grok Build", afterSeconds: 0.2, write: Data("/usage".utf8)),
                 .init(afterContaining: nil, afterSeconds: 0.6, write: Data("\r".utf8))
             ],
-            stopContaining: ["Weekly limit left", "Weekly limit"],
+            stopContaining: [
+                "Weekly limit left",
+                "Weekly limit",
+                "Monthly limit",
+                "No billing data",
+                "Couldn't load usage"
+            ],
             timeout: 18
         )
         switch Self.parse(Data(text.utf8), now: now) {
@@ -68,30 +75,43 @@ struct GrokCLIUsage: ProviderUsageReading {
     static func parseTerminal(_ text: String, now: Date) -> AIUsageSnapshot? {
         let stripped = AgentPTY.stripANSI(text)
         guard !stripped.localizedCaseInsensitiveContains("API error"),
-              !stripped.localizedCaseInsensitiveContains("Payment Required") else {
+              !stripped.localizedCaseInsensitiveContains("Payment Required"),
+              !stripped.localizedCaseInsensitiveContains("No billing data"),
+              !stripped.localizedCaseInsensitiveContains("Couldn't load usage") else {
             return nil
         }
-        let remainingPattern = #"Weekly limit left:\s*([0-9]+(?:\.[0-9]+)?)%"#
-        let usedPattern = #"Weekly limit\s*\([^)]*\)[^\d]{0,80}([0-9]+(?:\.[0-9]+)?)%"#
         var used: Double?
-        if let remaining = firstDouble(remainingPattern, in: stripped) {
+        var plan: String?
+        var title = "Weekly"
+        if let remaining = firstDouble(#"(?:Weekly|Monthly) limit left:\s*([0-9]+(?:\.[0-9]+)?)%"#, in: stripped) {
             used = AIUsageMath.clampPercent(100 - remaining)
-        } else {
-            used = firstDouble(usedPattern, in: stripped)
+        }
+        let barPattern = #"((?:Weekly|Monthly) limit)\s*\(([^)]+)\)[\s\S]{0,800}?([0-9]+(?:\.[0-9]+)?)%"#
+        if let regex = try? NSRegularExpression(pattern: barPattern, options: [.caseInsensitive]),
+           let match = regex.firstMatch(in: stripped, range: NSRange(stripped.startIndex..., in: stripped)) {
+            if let titleRange = Range(match.range(at: 1), in: stripped) {
+                let label = String(stripped[titleRange])
+                title = label.lowercased().contains("monthly") ? "Monthly" : "Weekly"
+            }
+            if let planRange = Range(match.range(at: 2), in: stripped) {
+                plan = String(stripped[planRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            if used == nil,
+               let percentRange = Range(match.range(at: 3), in: stripped),
+               let percent = Double(stripped[percentRange]) {
+                used = percent
+            }
+        }
+        if used == nil, stripped.localizedCaseInsensitiveContains("You hit your weekly limit") {
+            used = 100
         }
         guard let used, used.isFinite, (0...100).contains(used) else { return nil }
-        var plan: String?
-        if let regex = try? NSRegularExpression(pattern: #"Weekly limit\s*\(([^)]+)\)"#),
-           let match = regex.firstMatch(in: stripped, range: NSRange(stripped.startIndex..., in: stripped)),
-           let range = Range(match.range(at: 1), in: stripped) {
-            plan = String(stripped[range]).trimmingCharacters(in: .whitespacesAndNewlines)
-        }
         return AIUsageSnapshot(
             provider: .grok,
             status: .ready,
             plan: plan,
             windows: [
-                AIUsageWindow(id: "pool", title: "Weekly", usedPercent: AIUsageMath.percent(from: used))
+                AIUsageWindow(id: "pool", title: title, usedPercent: AIUsageMath.percent(from: used))
             ],
             fetchedAt: now,
             sourceLabel: sourceLabel
