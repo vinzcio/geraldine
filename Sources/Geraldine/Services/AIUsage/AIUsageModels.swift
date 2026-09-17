@@ -94,6 +94,9 @@ struct AIUsageSnapshot: Equatable, Sendable {
             if let pool = windows.first(where: { $0.id == "pool" }) { return [pool] }
             return Array(windows.prefix(1))
         case .cursor:
+            // Dashboard and CLI both meter two included pools: Cursor models
+            // (Auto/Composer) and Other models (API). totalPercentUsed is only
+            // a rollup of those two, not a third limit.
             let cursorModels = windows.first { $0.id == "autoPercentUsed" }
             let otherModels = windows.first { $0.id == "apiPercentUsed" }
             let pair = [cursorModels, otherModels].compactMap { $0 }

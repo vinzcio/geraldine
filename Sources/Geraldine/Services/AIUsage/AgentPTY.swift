@@ -19,6 +19,7 @@ enum AgentPTY {
         replyColorQuery: Bool = false,
         steps: [Step],
         stopContaining: [String],
+        abortContaining: [String] = [],
         timeout: TimeInterval
     ) -> String {
         let master = posix_openpt(O_RDWR | O_NOCTTY)
@@ -44,8 +45,12 @@ enum AgentPTY {
         process.standardOutput = FileHandle(fileDescriptor: slave, closeOnDealloc: false)
         process.standardError = FileHandle(fileDescriptor: slave, closeOnDealloc: false)
         var env = ProcessInfo.processInfo.environment
+        env.removeValue(forKey: "NO_COLOR")
+        env.removeValue(forKey: "CI")
         env["COLUMNS"] = "120"
         env["LINES"] = "40"
+        env["TERM"] = env["TERM"].flatMap { $0.isEmpty ? nil : $0 } ?? "xterm-256color"
+        env["COLORTERM"] = env["COLORTERM"] ?? "truecolor"
         environment.forEach { env[$0.key] = $0.value }
         process.environment = env
         do { try process.run() } catch {
@@ -54,6 +59,7 @@ enum AgentPTY {
             return ""
         }
         close(slave)
+        setNonBlocking(master)
         _ = setpgid(process.processIdentifier, process.processIdentifier)
         kill(process.processIdentifier, SIGWINCH)
 
@@ -61,40 +67,30 @@ enum AgentPTY {
         var collected = Data()
         var nextStep = 0
         var lastStepAt = started
-        var repliedColor = false
-        var repliedCursor = false
-        var repliedVersion = false
-        let handle = FileHandle(fileDescriptor: master, closeOnDealloc: false)
+        var queries = QueryResponder()
         defer {
             terminate(process)
             close(master)
         }
 
         while Date().timeIntervalSince(started) < timeout {
-            let chunk = handle.availableData
-            if !chunk.isEmpty {
+            if let chunk = readAvailable(master), !chunk.isEmpty {
                 collected.append(chunk)
             } else if !process.isRunning {
-                let rest = handle.availableData
-                collected.append(rest)
+                if let rest = readAvailable(master) {
+                    collected.append(rest)
+                }
                 break
             } else {
                 Thread.sleep(forTimeInterval: 0.05)
             }
 
             let text = decode(collected)
-            if !repliedCursor, text.contains("[6n") {
-                writeMaster(master, Data("\u{1b}[1;1R".utf8))
-                repliedCursor = true
+            if abortContaining.contains(where: { containsLoose(text, $0) }) {
+                break
             }
-            if !repliedVersion, text.contains("[>0q") {
-                writeMaster(master, Data("\u{1b}P>|xterm-256color\u{1b}\\".utf8))
-                repliedVersion = true
-            }
-            if replyColorQuery, !repliedColor, text.contains("]11;?") {
-                writeMaster(master, Data("\u{1b}]11;rgb:1e1e/1e1e/1e1e\u{07}".utf8))
-                writeMaster(master, Data("\u{1b}]10;rgb:ffff/ffff/ffff\u{07}".utf8))
-                repliedColor = true
+            for reply in queries.replies(for: text, colorQuery: replyColorQuery) {
+                writeMaster(master, reply)
             }
             if nextStep < steps.count {
                 let step = steps[nextStep]
@@ -106,15 +102,87 @@ enum AgentPTY {
                     lastStepAt = Date()
                 }
             } else if stopContaining.contains(where: { containsLoose(text, $0) }) {
-                Thread.sleep(forTimeInterval: 0.7)
-                collected.append(handle.availableData)
+                let drainUntil = Date().addingTimeInterval(0.9)
+                while Date() < drainUntil {
+                    if let extra = readAvailable(master), !extra.isEmpty {
+                        collected.append(extra)
+                    } else {
+                        Thread.sleep(forTimeInterval: 0.05)
+                    }
+                }
                 break
             }
         }
         return stripANSI(decode(collected))
     }
 
-    private static func containsLoose(_ text: String, _ needle: String) -> Bool {
+    /// Answers the queries Grok (and similar TUIs) send before they will paint.
+    /// A PTY that ignores DA / kitty keyboard / cursor-position hangs on a blank screen.
+    struct QueryResponder {
+        var cursor = false
+        var version = false
+        var color = false
+        var deviceAttributes = false
+        var kittyKeyboard = false
+        var trustedDirectory = false
+
+        mutating func replies(for text: String, colorQuery: Bool) -> [Data] {
+            var out: [Data] = []
+            if !cursor, text.contains("[6n") {
+                out.append(Data("\u{1b}[1;1R".utf8))
+                cursor = true
+            }
+            if !version, text.contains("[>0q") {
+                out.append(Data("\u{1b}P>|xterm-256color\u{1b}\\".utf8))
+                version = true
+            }
+            if !deviceAttributes, text.contains("\u{1b}[c") || text.contains("\u{1b}[0c") {
+                out.append(Data("\u{1b}[?62;1;4;6;9;15;22;29c".utf8))
+                deviceAttributes = true
+            }
+            if !kittyKeyboard, text.contains("[?u") {
+                out.append(Data("\u{1b}[?0u".utf8))
+                kittyKeyboard = true
+            }
+            if colorQuery, !color, text.contains("]11;?") {
+                out.append(Data("\u{1b}]11;rgb:1e1e/1e1e/1e1e\u{07}".utf8))
+                out.append(Data("\u{1b}]10;rgb:ffff/ffff/ffff\u{07}".utf8))
+                color = true
+            }
+            if !trustedDirectory, AgentPTY.containsLoose(text, "Do you trust the contents of this directory") {
+                out.append(Data("y\r".utf8))
+                trustedDirectory = true
+            }
+            return out
+        }
+    }
+
+    private static func setNonBlocking(_ fd: Int32) {
+        let flags = fcntl(fd, F_GETFL)
+        guard flags >= 0 else { return }
+        _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
+    }
+
+    /// nil = nothing ready yet; empty = EOF.
+    private static func readAvailable(_ fd: Int32) -> Data? {
+        var buffer = [UInt8](repeating: 0, count: 65_536)
+        let count = buffer.withUnsafeMutableBytes { raw -> Int in
+            guard let base = raw.baseAddress else { return -1 }
+            return read(fd, base, raw.count)
+        }
+        if count > 0 {
+            return Data(buffer.prefix(count))
+        }
+        if count == 0 {
+            return Data()
+        }
+        if errno == EAGAIN || errno == EWOULDBLOCK {
+            return nil
+        }
+        return Data()
+    }
+
+    static func containsLoose(_ text: String, _ needle: String) -> Bool {
         if text.contains(needle) { return true }
         let compact = text.filter { !$0.isWhitespace && !$0.isNewline }
         let target = needle.filter { !$0.isWhitespace && !$0.isNewline }
