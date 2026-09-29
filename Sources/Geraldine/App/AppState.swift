@@ -36,6 +36,19 @@ enum AppShape: String, CaseIterable, Identifiable {
 
     var showsMenuBar: Bool { self != .windowOnly }
     var showsDock: Bool { self != .menuBarOnly }
+
+    /// `open -a` and Dock clicks fire reopen. Menu-bar-only must not
+    /// order the dashboard window on screen; that mounts the live
+    /// SwiftUI shell and saturates WindowServer.
+    var showsMainWindowOnReopen: Bool { self != .menuBarOnly }
+}
+
+enum MainWindowRevealPolicy {
+    /// SwiftUI's Window scene restores as visible. Menu-bar-only has to
+    /// order that window out unless the user asked for the dashboard.
+    static func shouldHideRestoredWindow(shape: AppShape, userRequested: Bool) -> Bool {
+        shape == .menuBarOnly && !userRequested
+    }
 }
 
 @MainActor
@@ -81,11 +94,18 @@ final class AppState: ObservableObject {
         didSet {
             UserDefaults.standard.set(appShape.rawValue, forKey: "appShape")
             applyActivationPolicy()
+            if !appShape.showsMainWindowOnReopen {
+                mainWindowRevealRequested = false
+                hideInitialWindowIfNeeded()
+            }
         }
     }
 
     /// The main window, captured once it exists (see WindowAccessor).
     weak var mainWindow: NSWindow?
+    /// True only after an explicit `showMainWindow()` / Dock click that
+    /// should present the dashboard in menu-bar-only.
+    private var mainWindowRevealRequested = false
     private var windowVisibilityObservers: [NSObjectProtocol] = []
     private var windowVisibilityCancellable: AnyCancellable?
     private var aiUsageLayoutCancellable: AnyCancellable?
@@ -110,6 +130,7 @@ final class AppState: ObservableObject {
         removeWindowVisibilityObservers()
         mainWindow = window
         window.isReleasedWhenClosed = false
+        window.isRestorable = appShape != .menuBarOnly
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
         observeVisibility(of: window)
@@ -120,13 +141,16 @@ final class AppState: ObservableObject {
 
     func hideInitialWindowIfNeeded() {
         guard let window = mainWindow else { return }
-        if appShape == .menuBarOnly {
+        if MainWindowRevealPolicy.shouldHideRestoredWindow(
+            shape: appShape, userRequested: mainWindowRevealRequested
+        ) {
             window.orderOut(nil)
             refreshMainWindowVisibility()
         }
     }
 
     func showMainWindow() {
+        mainWindowRevealRequested = true
         applyActivationPolicy()
         NSApp.activate(ignoringOtherApps: true)
         mainWindow?.makeKeyAndOrderFront(nil)
@@ -221,6 +245,17 @@ final class AppState: ObservableObject {
         guard let mainWindow else {
             mainWindowVisible = false
             mainWindowPresented = false
+            return
+        }
+        // Menu-bar-only must keep the SwiftUI shell unmounted even if the
+        // Window scene restores as visible. Mounting the dashboard is what
+        // drove the 60 fps layout loop and froze WindowServer.
+        if MainWindowRevealPolicy.shouldHideRestoredWindow(
+            shape: appShape, userRequested: mainWindowRevealRequested
+        ) {
+            if mainWindow.isVisible { mainWindow.orderOut(nil) }
+            if mainWindowPresented { mainWindowPresented = false }
+            mainWindowVisible = false
             return
         }
         // Presented = the window exists on screen (open, not miniaturized),
