@@ -42,6 +42,20 @@ struct MenuBarView: View {
     }
 
     var body: some View {
+        Group {
+            if state.menuBarPopoverVisible {
+                populatedPopover
+            } else {
+                // Keep the hosting view cheap while the panel is ordered out.
+                // Mounting WidgetGrid here laid out at 60 fps and froze WindowServer.
+                Color.clear
+                    .frame(width: MenuBarPanelPlacement.preferredWidth, height: 1)
+            }
+        }
+        .geraldineSurfaceActive(state.menuBarPopoverVisible)
+    }
+
+    private var populatedPopover: some View {
         ScrollView(.vertical) {
             content
                 .background(GeometryReader { proxy in
@@ -62,10 +76,12 @@ struct MenuBarView: View {
         }
         .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.raised, style: .continuous))
         .onPreferenceChange(MenuHeightKey.self) { height in
-            contentHeight = height
-            onContentHeightChange(min(height, maxHeight))
+            guard height.isFinite, height > 0 else { return }
+            let next = min(height, maxHeight)
+            guard abs(next - contentHeight) >= 1 else { return }
+            contentHeight = next
+            onContentHeightChange(next)
         }
-        .geraldineSurfaceActive(state.menuBarPopoverVisible)
     }
 
     private var content: some View {

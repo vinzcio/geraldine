@@ -24,6 +24,26 @@ enum MenuBarStatusAnimationPolicy {
         oldNumber == newNumber &&
         hasAnimationValues
     }
+
+    /// GPU and thermal samples land a few dozen milliseconds after the
+    /// 1 Hz monitor tick. Retargeting an in-flight roll/crossfade/shimmer
+    /// onto those sparkline-only updates keeps the status-item display
+    /// link compositing at full frame rate.
+    static func shouldRetargetInFlight(
+        animationInFlight: Bool,
+        sameKind: Bool,
+        sameSource: Bool,
+        oldNumber: String,
+        newNumber: String
+    ) -> Bool {
+        guard animationInFlight else { return false }
+        return !sameKind || !sameSource || oldNumber != newNumber
+    }
+
+    static func shouldStartAnimation(elapsedSinceLast: TimeInterval,
+                                     minimumInterval: TimeInterval) -> Bool {
+        elapsedSinceLast >= minimumInterval
+    }
 }
 
 enum MenuBarPanelPlacement {
@@ -74,7 +94,12 @@ final class MenuBarController: NSObject, NSWindowDelegate {
     /// on every unchanged sample (~1/s), keeping the display link compositing
     /// images half of every second forever.
     private let statusShimmerCooldown: TimeInterval = 10
+    /// Digit rolls at the 1 Hz monitor cadence keep WindowServer compositing
+    /// the status item. Space them so a noisy CPU readout cannot retrigger
+    /// a 60 fps display link every sample.
+    private let statusAnimationMinInterval: TimeInterval = 0.8
     private var lastShimmerStart: CFTimeInterval = -.infinity
+    private var lastStatusAnimationAt: CFTimeInterval = -.infinity
     private var statusRenderPending = false
 
     private enum StatusAnimationMode {
@@ -213,12 +238,13 @@ final class MenuBarController: NSObject, NSWindowDelegate {
         #endif
 
         // Render once after each monitor refresh. objectWillChange fires before every
-        // published assignment, so the scheduler coalesces that burst onto the next
-        // main-loop turn without allowing the menu bar to lag the popover by a sample.
+        // published assignment, and GPU/thermal samples hop back onto the main
+        // actor a moment later — debounce folds that burst into one draw.
         monitorSink = state.monitor.objectWillChange
-            .sink { [weak self] _ in Task { @MainActor in self?.scheduleStatusRender() } }
+            .debounce(for: .milliseconds(80), scheduler: RunLoop.main)
+            .sink { [weak self] _ in self?.scheduleStatusRender() }
         layoutSink = state.layout.objectWillChange
-            .sink { [weak self] _ in Task { @MainActor in self?.renderStatusItem() } }
+            .sink { [weak self] _ in self?.scheduleStatusRender() }
     }
 
     private func scheduleStatusRender() {
@@ -401,13 +427,21 @@ final class MenuBarController: NSObject, NSWindowDelegate {
 
         // A new sample can arrive before a digit roll finishes. Retarget from the
         // image currently on screen so the number never snaps back to the last
-        // completed plan. The short dissolve is interruption-safe and keeps the
-        // status item's final compact footprint fixed throughout.
+        // completed plan — but only when the displayed identity actually
+        // changed. Sparkline-only ticks must not restart the display link.
         if statusAnimMode != nil {
-            animateStatusCrossfade(button: button,
-                                   from: button.image ?? drawStatus(currentStatusPlan),
-                                   to: nextImage(),
-                                   targetPlan: nextPlan)
+            if MenuBarStatusAnimationPolicy.shouldRetargetInFlight(
+                animationInFlight: true,
+                sameKind: currentStatusPlan.kind == nextPlan.kind,
+                sameSource: currentStatusPlan.sourceID == nextPlan.sourceID,
+                oldNumber: splitLabel(currentStatusPlan.label).number,
+                newNumber: splitLabel(nextPlan.label).number
+            ) {
+                animateStatusCrossfade(button: button,
+                                       from: button.image ?? drawStatus(currentStatusPlan),
+                                       to: nextImage(),
+                                       targetPlan: nextPlan)
+            }
             self.currentStatusPlan = nextPlan
             return
         }
@@ -423,7 +457,12 @@ final class MenuBarController: NSObject, NSWindowDelegate {
             return
         }
 
-        if shouldAnimateStatus(from: currentStatusPlan, to: nextPlan) {
+        if shouldAnimateStatus(from: currentStatusPlan, to: nextPlan),
+           MenuBarStatusAnimationPolicy.shouldStartAnimation(
+            elapsedSinceLast: CACurrentMediaTime() - lastStatusAnimationAt,
+            minimumInterval: statusAnimationMinInterval
+           ) {
+            lastStatusAnimationAt = CACurrentMediaTime()
             animateStatusItem(button: button, from: currentStatusPlan, to: nextPlan) {}
             self.currentStatusPlan = nextPlan
             return

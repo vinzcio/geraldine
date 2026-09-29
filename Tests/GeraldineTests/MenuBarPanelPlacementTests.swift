@@ -22,4 +22,22 @@ struct MenuBarPanelPlacementTests {
         #expect(frame.maxX == visibleFrame.maxX - MenuBarPanelPlacement.edgeInset)
         #expect(frame.maxY == visibleFrame.maxY - MenuBarPanelPlacement.edgeInset)
     }
+
+    @Test func menuBarOnlyDoesNotShowMainWindowOnReopen() {
+        #expect(AppShape.menuBarOnly.showsMainWindowOnReopen == false)
+        #expect(AppShape.menuBarAndWindow.showsMainWindowOnReopen == true)
+        #expect(AppShape.windowOnly.showsMainWindowOnReopen == true)
+    }
+
+    @Test func menuBarOnlyHidesRestoredWindowUntilUserAsks() {
+        #expect(MainWindowRevealPolicy.shouldHideRestoredWindow(
+            shape: .menuBarOnly, userRequested: false
+        ))
+        #expect(!MainWindowRevealPolicy.shouldHideRestoredWindow(
+            shape: .menuBarOnly, userRequested: true
+        ))
+        #expect(!MainWindowRevealPolicy.shouldHideRestoredWindow(
+            shape: .menuBarAndWindow, userRequested: false
+        ))
+    }
 }

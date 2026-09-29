@@ -13,6 +13,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         state.powerTools.start()
         state.aiUsage.start()
         menuBarController = MenuBarController(state: state)
+        // SwiftUI restores the Window scene as visible. Hide it on the next
+        // turn after the hosting window exists so menu-bar-only does not
+        // mount the dashboard layout loop.
+        DispatchQueue.main.async {
+            AppState.shared.hideInitialWindowIfNeeded()
+        }
 
         #if DEBUG
         // Dev helper: `--appearance dark|light` forces the app's appearance for
@@ -61,9 +67,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Clicking the Dock icon (or re-opening) brings the main window back.
+    /// Menu-bar-only stays in the extra: `open -a` and the Keep Awake URL
+    /// must not mount the dashboard window.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        AppState.shared.showMainWindow()
-        AppState.shared.refreshFullDiskAccess()
+        let state = AppState.shared
+        if state.appShape.showsMainWindowOnReopen {
+            state.showMainWindow()
+        } else {
+            state.hideInitialWindowIfNeeded()
+        }
+        state.refreshFullDiskAccess()
         return true
     }
 
