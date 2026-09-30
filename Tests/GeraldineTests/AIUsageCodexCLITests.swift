@@ -64,6 +64,48 @@ final class AIUsageCodexCLITests: XCTestCase {
         XCTAssertEqual(snapshot.sourceLabel, CodexCLIUsage.sourceLabel)
     }
 
+    func testEnvironmentPutsHomeLocalBinAheadOfGuiPath() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent("codex-path-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let localBin = home.appendingPathComponent(".local/bin")
+        try FileManager.default.createDirectory(at: localBin, withIntermediateDirectories: true)
+        let path = AgentCLI.environment(homeDirectory: home)["PATH"] ?? ""
+        XCTAssertTrue(path.hasPrefix(localBin.path + ":"), path)
+        XCTAssertTrue(path.contains("/usr/bin"), path)
+    }
+
+    func testFetcherFindsNodeOnGuiPathViaHomeLocalBin() async throws {
+        let root = ProcessInfo.processInfo.environment["GERALDINE_CREDENTIAL_TEST_ROOT"]
+            .map { URL(fileURLWithPath: $0) } ?? FileManager.default.temporaryDirectory
+        let home = root.appendingPathComponent("codex-node-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let bin = home.appendingPathComponent(".local/bin")
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        let node = """
+        #!/bin/sh
+        read _init
+        echo '{"id":1,"result":{}}'
+        read _initialized
+        read _usage
+        cat <<'USAGE'
+        {"id":2,"result":{"rateLimits":{"primary":{"usedPercent":81,"windowDurationMins":10080,"resetsAt":1789812650},"planType":"pro"}}}
+        USAGE
+        """
+        try Data(node.utf8).write(to: bin.appendingPathComponent("node"))
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: bin.appendingPathComponent("node").path)
+        let executable = bin.appendingPathComponent("codex")
+        try Data("#!/usr/bin/env node\nprocess.exit(2)\n".utf8).write(to: executable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+        let snapshot = await AIUsageFetcher.fetch(
+            .codex,
+            transport: NoHTTP(),
+            now: Date(timeIntervalSince1970: 11),
+            homeDirectory: home
+        )
+        XCTAssertEqual(snapshot.status, .ready)
+        XCTAssertEqual(snapshot.windows.first?.remainingPercent, 19)
+    }
+
     private struct NoHTTP: AIUsageTransporting {
         func data(for request: URLRequest) async throws -> (Data, HTTPURLResponse) {
             XCTFail("Codex must only use its CLI")

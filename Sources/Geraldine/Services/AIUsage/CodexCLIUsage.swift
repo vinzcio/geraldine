@@ -19,6 +19,7 @@ struct CodexCLIUsage: ProviderUsageReading {
         process.executableURL = executable
         process.arguments = ["app-server", "--stdio"]
         process.currentDirectoryURL = homeDirectory
+        process.environment = AgentCLI.environment(homeDirectory: homeDirectory)
         process.standardInput = input
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice
