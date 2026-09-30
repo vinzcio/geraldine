@@ -44,7 +44,7 @@ enum AgentPTY {
         process.standardInput = FileHandle(fileDescriptor: slave, closeOnDealloc: false)
         process.standardOutput = FileHandle(fileDescriptor: slave, closeOnDealloc: false)
         process.standardError = FileHandle(fileDescriptor: slave, closeOnDealloc: false)
-        var env = ProcessInfo.processInfo.environment
+        var env = AgentCLI.environment(homeDirectory: homeDirectory)
         env.removeValue(forKey: "NO_COLOR")
         env.removeValue(forKey: "CI")
         env["COLUMNS"] = "120"

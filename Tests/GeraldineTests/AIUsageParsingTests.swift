@@ -310,9 +310,9 @@ final class AIUsageMonitorTests: XCTestCase {
 
         let clock = TestClock(start: Date(timeIntervalSince1970: 5_000))
         let log = FetchLog()
-        let monitor = AIUsageMonitor(defaults: defaults, transport: ScriptedAIUsageTransport(status: 200, body: Data()), now: clock.now) { provider, date in
-            log.record(provider, at: date)
-            return usageFixture(provider, at: date, remaining: 40)
+        let monitor = AIUsageMonitor(defaults: defaults, transport: ScriptedAIUsageTransport(status: 200, body: Data()), now: clock.now) { identity, date in
+            log.record(identity.provider, at: date)
+            return usageFixture(identity.provider, at: date, remaining: 40)
         }
 
         monitor.syncShownProviders([.claude, .antigravity])
@@ -347,10 +347,10 @@ final class AIUsageMonitorTests: XCTestCase {
         let clock = TestClock(start: Date(timeIntervalSince1970: 8_000))
         let log = FetchLog()
         let gate = FetchGate()
-        let monitor = AIUsageMonitor(defaults: defaults, transport: ScriptedAIUsageTransport(status: 200, body: Data()), now: clock.now) { provider, date in
-            log.record(provider, at: date)
-            await gate.wait(for: provider)
-            return usageFixture(provider, at: date, remaining: provider == .antigravity ? 70 : 90)
+        let monitor = AIUsageMonitor(defaults: defaults, transport: ScriptedAIUsageTransport(status: 200, body: Data()), now: clock.now) { identity, date in
+            log.record(identity.provider, at: date)
+            await gate.wait(for: identity.provider)
+            return usageFixture(identity.provider, at: date, remaining: identity.provider == .antigravity ? 70 : 90)
         }
 
         monitor.syncShownProviders([.claude, .antigravity])
@@ -377,10 +377,10 @@ final class AIUsageMonitorTests: XCTestCase {
         let clock = TestClock(start: Date(timeIntervalSince1970: 9_000))
         let log = FetchLog()
         let gate = FetchGate()
-        let monitor = AIUsageMonitor(defaults: defaults, transport: ScriptedAIUsageTransport(status: 200, body: Data()), now: clock.now) { provider, date in
-            log.record(provider, at: date)
-            await gate.wait(for: provider)
-            return usageFixture(provider, at: date, remaining: 55)
+        let monitor = AIUsageMonitor(defaults: defaults, transport: ScriptedAIUsageTransport(status: 200, body: Data()), now: clock.now) { identity, date in
+            log.record(identity.provider, at: date)
+            await gate.wait(for: identity.provider)
+            return usageFixture(identity.provider, at: date, remaining: 55)
         }
 
         monitor.connect(.antigravity)
@@ -407,9 +407,9 @@ final class AIUsageMonitorTests: XCTestCase {
 
         let clock = TestClock(start: Date(timeIntervalSince1970: 10_000))
         let log = FetchLog()
-        let monitor = AIUsageMonitor(defaults: defaults, transport: ScriptedAIUsageTransport(status: 200, body: Data()), now: clock.now) { provider, date in
-            log.record(provider, at: date)
-            return usageFixture(provider, at: date, remaining: 33)
+        let monitor = AIUsageMonitor(defaults: defaults, transport: ScriptedAIUsageTransport(status: 200, body: Data()), now: clock.now) { identity, date in
+            log.record(identity.provider, at: date)
+            return usageFixture(identity.provider, at: date, remaining: 33)
         }
 
         monitor.connect(.claude)

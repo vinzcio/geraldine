@@ -36,6 +36,8 @@ struct AIUsageSnapshot: Equatable, Sendable {
     var windows: [AIUsageWindow]
     var fetchedAt: Date?
     var sourceLabel: String?
+    /// The signed-in email the CLI or its profile reports, when it reports one.
+    var accountEmail: String? = nil
 
     var cachedSourceDescription: String? {
         guard sourceLabel == ClaudeUsageCache.sourceLabel, let fetchedAt else { return nil }

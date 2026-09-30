@@ -30,6 +30,7 @@ struct AntigravityCLIUsage: AntigravityUsageReading {
         process.executableURL = executable
         process.arguments = ["--print", "/usage", "--output-format", "json"]
         process.currentDirectoryURL = homeDirectory
+        process.environment = AgentCLI.environment(homeDirectory: homeDirectory)
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice

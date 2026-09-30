@@ -61,14 +61,14 @@ enum WidgetKind: Hashable, Identifiable {
     case metric(MetricKind)
     case keepAwake
     case calendar
-    case aiUsage(AICodingProvider)
+    case aiUsage(AIUsageIdentity)
 
     var id: String {
         switch self {
         case .metric(let metric):     return metric.rawValue
         case .keepAwake:              return "keepAwake"
         case .calendar:               return "calendar"
-        case .aiUsage(let provider):  return provider.widgetID
+        case .aiUsage(let identity):  return identity.widgetID
         }
     }
 
@@ -77,14 +77,19 @@ enum WidgetKind: Hashable, Identifiable {
         case "keepAwake":    self = .keepAwake
         case "calendar":     self = .calendar
         default:
-            if let provider = AICodingProvider.from(widgetID: id) {
-                self = .aiUsage(provider)
+            if let identity = AIUsageIdentity.from(widgetID: id) {
+                self = .aiUsage(identity)
             } else if let metric = MetricKind(rawValue: id) {
                 self = .metric(metric)
             } else {
                 return nil
             }
         }
+    }
+
+    /// The provider's default login: `.aiUsage(.claude)`.
+    static func aiUsage(_ provider: AICodingProvider) -> WidgetKind {
+        .aiUsage(AIUsageIdentity(provider))
     }
 
     /// Whether the tile cycles through the small/medium/large sizes. The calendar (which
@@ -108,7 +113,8 @@ enum WidgetKind: Hashable, Identifiable {
         case .metric(let metric):     return metric.title
         case .keepAwake:              return "Keep Awake"
         case .calendar:               return "Calendar & Clocks"
-        case .aiUsage(let provider):  return provider.title
+        case .aiUsage(let identity):
+            return identity.folderName.map { "\(identity.provider.title) · \($0)" } ?? identity.provider.title
         }
     }
 
@@ -117,7 +123,7 @@ enum WidgetKind: Hashable, Identifiable {
         case .metric(let metric):     return metric.title(hasBattery: hasBattery)
         case .keepAwake:              return "Keep Awake"
         case .calendar:               return "Calendar & Clocks"
-        case .aiUsage(let provider):  return provider.title
+        case .aiUsage:                return title
         }
     }
 }
@@ -323,8 +329,31 @@ final class WidgetLayoutStore: ObservableObject {
     }
 
     func setShown(_ kind: WidgetKind, _ isShown: Bool) {
-        guard let idx = items.firstIndex(where: { $0.kind == kind }) else { return }
-        items[idx].isShown = isShown
+        if let idx = items.firstIndex(where: { $0.kind == kind }) {
+            items[idx].isShown = isShown
+        } else {
+            items.append(WidgetItem(kind, .small, isShown: isShown))
+        }
+        persist()
+    }
+
+    /// Add a tile for each newly discovered login, right after its provider's
+    /// other tiles. A sibling login takes its default tile's size and starts
+    /// shown when that tile is shown, so a second account appears beside the first.
+    func ensureAIUsageIdentities(_ identities: [AIUsageIdentity]) {
+        var next = items
+        for identity in identities where !next.contains(where: { $0.kind == .aiUsage(identity) }) {
+            let defaultTile = next.first { $0.kind == .aiUsage(identity.provider) }
+            let item = WidgetItem(.aiUsage(identity), defaultTile?.size ?? .small,
+                                  isShown: !identity.accountKey.isEmpty && defaultTile?.isShown == true)
+            let lastOfProvider = next.lastIndex { existing in
+                guard case .aiUsage(let other) = existing.kind else { return false }
+                return other.provider == identity.provider
+            }
+            next.insert(item, at: lastOfProvider.map { $0 + 1 } ?? next.endIndex)
+        }
+        guard next != items else { return }
+        items = next
         persist()
     }
 
