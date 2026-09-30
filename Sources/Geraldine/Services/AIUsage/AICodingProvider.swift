@@ -88,7 +88,7 @@ enum AICodingProvider: String, CaseIterable, Codable, Identifiable, Sendable {
 /// `CLAUDE_CONFIG_DIR`, `~/.codex-<name>` with `CODEX_HOME`.
 struct AIUsageIdentity: Hashable, Codable, Identifiable, Sendable {
     var provider: AICodingProvider
-    /// Empty for the default login. A sibling uses its folder suffix (`work`, `fasaj`).
+    /// Empty for the default login. A sibling uses its folder suffix (`work`, `client`).
     var accountKey: String
 
     init(_ provider: AICodingProvider, accountKey: String = "") {

@@ -2,7 +2,7 @@
 #
 # Build Geraldine into a runnable .app bundle (no Xcode required).
 #
-#   ./build.sh                 # debug build + bundle + Developer ID sign
+#   ./build.sh                 # debug build + bundle + sign (ad-hoc unless configured)
 #   ./build.sh run             # also launch it
 #   ./build.sh release run     # optimized build, then launch
 #   ./build.sh install         # copy the built app into /Applications
@@ -169,10 +169,13 @@ cat > "$CONTENTS/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# Sign with your Developer ID (override with CODESIGN_ID env var if needed).
-# A stable identity means Full Disk Access & other permissions persist across rebuilds.
-CODESIGN_ID="${CODESIGN_ID:-Developer ID Application: Lloyd Vincent Luardo (4S9BMP9GU3)}"
-NOTARY_PROFILE="${NOTARY_PROFILE:-harken-notary}"
+# Ad-hoc sign by default. A Developer ID Application identity keeps Full Disk
+# Access and other privacy grants across rebuilds: set CODESIGN_ID (and
+# NOTARY_PROFILE for notarization) in the environment or in a git-ignored
+# build.local.sh beside this script.
+[ -f "$SRC_DIR/build.local.sh" ] && . "$SRC_DIR/build.local.sh"
+CODESIGN_ID="${CODESIGN_ID:--}"
+NOTARY_PROFILE="${NOTARY_PROFILE:-}"
 ENT="$SRC_DIR/Geraldine.entitlements"
 sign_and_verify() {
   local app="$1"
@@ -232,6 +235,11 @@ verify_bundle_provenance() {
 notarize_app_bundle() {
   local app="$1"
   local notary_dir zip_path
+
+  if [ -z "$NOTARY_PROFILE" ]; then
+    echo "✗ Set NOTARY_PROFILE to an xcrun notarytool keychain profile before notarizing" >&2
+    exit 1
+  fi
 
   if ! /usr/bin/command -v xcrun >/dev/null 2>&1; then
     echo "✗ xcrun is required for notarization" >&2

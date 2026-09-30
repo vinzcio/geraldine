@@ -68,7 +68,7 @@ final class AIUsageMonitor: ObservableObject {
         hasSeveralAccounts(identity.provider) ? accountName(for: identity) : identity.provider.title
     }
 
-    /// Settings and tooltip name: "Claude · Fasaj", or "Claude" for a single login.
+    /// Settings and tooltip name: "Claude · Client", or "Claude" for a single login.
     func displayName(for identity: AIUsageIdentity) -> String {
         guard hasSeveralAccounts(identity.provider) else { return identity.provider.title }
         return "\(identity.provider.title) · \(accountName(for: identity))"

@@ -1,65 +1,81 @@
 # Geraldine
 
-Geraldine is native macOS 14+ local-only freeware for Mac care and small system utilities. It has no accounts, backend, or cross-device sync. Clipboard history remains removed. Preferences and other local state live in `UserDefaults` and Application Support on this Mac.
+Geraldine is a native macOS 14+ utility for understanding and caring for your Mac. It is local-only freeware: there are no accounts, analytics, cloud services, or cross-device sync. Preferences and other local state live in `UserDefaults` and Application Support on this Mac.
+
+## What it includes
+
+- Live CPU, GPU, memory, storage, network, battery, and thermal information
+- Smart Care, storage scanning, cleanup, and uninstaller workflows
+- Keep Awake sessions, Stay Active, and menu-bar widgets
+- Remaining-usage tiles for Antigravity, Claude, Codex, Grok, and Cursor, including several Claude or Codex logins
+- Calendar and world clocks
+- Opt-in Dock window previews
+- Power tools for Finder, Mission Control, and common Mac maintenance tasks
+
+Operations that can remove files or change system state show their scope and require an explicit user action. Dock previews and coding-usage tiles are off until you turn them on.
+
+## Build and test
+
+Requires macOS 14 or newer and Xcode 15 or newer. Geraldine is a Swift Package with no third-party dependencies.
+
+```bash
+swift test                 # run the test suite
+./build.sh release         # build a local .app bundle
+./build.sh release install run
+```
+
+`build.sh` signs ad-hoc by default. To keep Full Disk Access and other privacy grants across rebuilds, sign with your own Developer ID: set `CODESIGN_ID` (and `NOTARY_PROFILE` for notarization) in the environment or in a git-ignored `build.local.sh` beside the script.
+
+## Privacy and permissions
+
+Some features request macOS permissions only when needed, including Accessibility, Screen Recording, Location for the connected Wi-Fi name, and access to user-selected folders. A coding-usage tile runs that assistant's installed CLI with the sign-in already on this Mac, and the CLI asks its provider for remaining usage; Geraldine sends no usage requests of its own and never reads the Keychain.
+
+## License
+
+Geraldine is available under the [MIT License](LICENSE).
 
 ## Architecture
 
 The app is a SwiftUI executable with feature surfaces under `Sources/Geraldine/Features`, AppKit integration for app and menu-bar behavior, and an `AppState` composition root that owns the monitoring and utility services. Shared visual behavior lives in the semantic `Theme`, `Components`, and `Motion` layers. The package also includes the small C `CThermal` target. `Package.swift` declares no third-party packages and links only Apple system frameworks.
 
-## AI usage credentials: no permission dialogs
+## Coding usage
 
-AI usage discovery, connection, popover refresh, and background polling must never
-access Keychain. `AIUsageCredentialStore` reads only existing credential files
-and Cursor local database entries. Missing or rejected usage access is reported
-as unavailable, never inferred to mean the user is signed out. There is no Security API or command-line Keychain fallback, including
-supposedly silent reads. Query-level prompt suppression proved insufficient in
-the installed app and was removed.
+Usage tiles read remaining quota only through each assistant's official CLI,
+using the sign-in that CLI or its app already keeps on this Mac. Geraldine
+sends no usage requests itself, never accesses Keychain (no Security API or
+command-line fallback, including supposedly silent reads), and never starts a
+sign-in or OAuth flow. Settings uses **Show Usage / Hide Usage**. A missing
+CLI, missing sign-in, or unrecognised output shows as unavailable, never as
+zero quota or signed out.
 
-Preserve this invariant across new providers and rebuilds. Do not change Keychain
-ACLs, request Always Allow, or copy credentials into new storage to work around
-it. Claude reads the existing `~/.claude.json` usage snapshot first, without
-accessing credentials or making a network request. The cached account must match
-the signed-in account. Settings and the tile tooltip show its original update
-time; refreshing Geraldine rereads the file, while Claude Code owns updating it.
-If no snapshot or file credential is available, run `/usage` in Claude Code and
-refresh Geraldine. Missing usage does not mean Claude is signed out.
-Other providers whose credentials exist only in Keychain may be unavailable.
-Regression tests use isolated synthetic credential files, including missing and
-malformed data. Installed verification must also check startup and usage refresh;
-a mocked query flag is not proof that dialogs are suppressed.
-
-### Existing sessions for every coding assistant
-
-Showing a usage tile immediately reads the existing source; there is no separate
-Geraldine connection or login. Settings uses **Show Usage / Hide Usage**.
-Missing data or a rejected usage request must not offer Sign In or initiate OAuth.
-Keep the source distinctions explicit:
-
-| Provider | Existing source |
+| Provider | Source |
 | --- | --- |
-| Claude | Account-matched Claude Code usage cache, then an existing file token |
-| Codex | Existing Codex auth file used directly for the provider usage endpoint |
-| Grok | Existing Grok auth file used directly for billing/usage |
-| Cursor | Existing auth file or read-only Cursor database token used for usage |
-| Antigravity | Installed `agy --print /usage --output-format json`; CLI owns authentication |
+| Claude | `claude --print /usage --output-format json`; the `.claude.json` usage cache is used only when that command just refreshed it |
+| Codex | `codex app-server --stdio`: `account/rateLimits/read` for quota, `account/read` for the email |
+| Grok | The `grok` TUI `/usage` screen |
+| Cursor | The `cursor-agent` TUI `/usage` pager, handed the Cursor app's existing session token |
+| Antigravity | `agy --print /usage --output-format json` |
 
-Not every provider exposes a readable usage cache. Do not invent cached quota
-from per-session token counts or copy secrets out of Keychain. Antigravity must
-use only its CLI, never the desktop app, language-server discovery, copied tokens,
-or direct cloud requests. The CLI's built-in usage command returns structured
-quota data with zero model turns. Validate that command response and show all four
-buckets: Gemini weekly/5-hour and Claude/GPT weekly/5-hour. The CLI handles its own
-existing authentication; Geraldine never queries Keychain. Missing CLI or invalid
-output is unavailable, not zero quota or signed out.
+A second Claude or Codex login lives in a sibling folder, `~/.claude-<name>` or
+`~/.codex-<name>`, and gets its own tile beside the default one. Its CLI runs
+with `CLAUDE_CONFIG_DIR` or `CODEX_HOME` pointed at that folder; the default
+login leaves both unset. Discovery lists folder names and reads Claude's
+`.claude.json` profile only. A Codex sibling counts when its `auth.json`
+exists; Geraldine never opens it. Menu-bar apps inherit a minimal PATH, so CLI
+launches prepend the install directories Geraldine searches (`~/.local/bin`,
+`~/.homebrew/bin`, `/opt/homebrew/bin`, `/usr/local/bin`).
+
+Regression tests use isolated synthetic homes and fake CLIs, and assert that
+no usage path opens an HTTP request.
 
 ### Time windows and account plans
 
 Claude shows its five-hour allowance alongside weekly all-model and Fable
 allowances when present. Codex Plus shows returned weekly/five-hour windows;
 other Codex plans keep their pooled display. Read the current response's plan
-and `limit_window_seconds` on every refresh; never assume a primary window is
-five hours or synthesize one from the plan name. The current Pro account returns
-one weekly window. Grok and Cursor's existing displays are unchanged.
+and `windowDurationMins` on every refresh; never assume a primary window is
+five hours or synthesize one from the plan name. A Pro account returns one
+weekly window. Grok and Cursor's existing displays are unchanged.
 
 The bounded [Claude Opus design](docs/product/claude-opus-quota-design.md) defines
 the compact rows, full labels, reset tooltip, and original cache timestamp.

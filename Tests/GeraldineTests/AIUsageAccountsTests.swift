@@ -8,7 +8,7 @@ final class AIUsageAccountsTests: XCTestCase {
         try write(#"{"oauthAccount":{"emailAddress":"team@example.com","organizationType":"claude_team","organizationName":"Example Co"}}"#,
                   to: ".claude.json", in: home)
         try write(#"{"oauthAccount":{"emailAddress":"max@example.com","organizationType":"claude_max"}}"#,
-                  to: ".claude-fasaj/.claude.json", in: home)
+                  to: ".claude-client/.claude.json", in: home)
         try write(#"{"settings":true}"#, to: ".claude-empty/.claude.json", in: home)
         // Unreadable auth files still count: discovery checks presence and never opens them.
         try write("{}", to: ".codex/auth.json", in: home, permissions: 0o000)
@@ -18,9 +18,9 @@ final class AIUsageAccountsTests: XCTestCase {
 
         let accounts = AIUsageAccountDiscovery.accounts(userHome: home)
 
-        XCTAssertEqual(accounts.map(\.id), ["antigravity", "claude", "claude.fasaj", "codex", "codex.work", "grok", "cursor"])
+        XCTAssertEqual(accounts.map(\.id), ["antigravity", "claude", "claude.client", "codex", "codex.work", "grok", "cursor"])
         XCTAssertEqual(name(of: "claude", in: accounts), "Example Co")
-        XCTAssertEqual(name(of: "claude.fasaj", in: accounts), "Fasaj")
+        XCTAssertEqual(name(of: "claude.client", in: accounts), "Client")
         XCTAssertEqual(name(of: "codex", in: accounts), "Personal")
         XCTAssertEqual(name(of: "codex.work", in: accounts), "Work")
     }
@@ -46,7 +46,7 @@ final class AIUsageAccountsTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: home) }
         try write(#"{"oauthAccount":{"emailAddress":"team@example.com","organizationType":"claude_team","organizationName":"Example Co"}}"#,
                   to: ".claude.json", in: home)
-        try write(#"{"oauthAccount":{"emailAddress":"max@example.com"}}"#, to: ".claude-fasaj/.claude.json", in: home)
+        try write(#"{"oauthAccount":{"emailAddress":"max@example.com"}}"#, to: ".claude-client/.claude.json", in: home)
         let suiteName = "AIUsageAccountNames.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
@@ -56,8 +56,8 @@ final class AIUsageAccountsTests: XCTestCase {
         }
 
         XCTAssertEqual(monitor.tileName(for: AIUsageIdentity(.claude)), "Example Co")
-        XCTAssertEqual(monitor.tileName(for: AIUsageIdentity(.claude, accountKey: "fasaj")), "Fasaj")
-        XCTAssertEqual(monitor.displayName(for: AIUsageIdentity(.claude, accountKey: "fasaj")), "Claude · Fasaj")
+        XCTAssertEqual(monitor.tileName(for: AIUsageIdentity(.claude, accountKey: "client")), "Client")
+        XCTAssertEqual(monitor.displayName(for: AIUsageIdentity(.claude, accountKey: "client")), "Claude · Client")
         XCTAssertEqual(monitor.tileName(for: AIUsageIdentity(.codex)), "Codex")
         XCTAssertEqual(monitor.displayName(for: AIUsageIdentity(.codex)), "Codex")
     }
