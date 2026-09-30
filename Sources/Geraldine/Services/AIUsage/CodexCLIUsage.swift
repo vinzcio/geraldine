@@ -1,15 +1,20 @@
 import Foundation
 
-/// Codex owns authentication. Usage comes only from the Codex CLI app-server
-/// `account/rateLimits/read` method. No file-token HTTP.
+/// Codex owns authentication. Usage comes only from the Codex CLI app-server:
+/// `account/rateLimits/read` for quotas and `account/read` for the signed-in
+/// email. No file-token HTTP.
 struct CodexCLIUsage: ProviderUsageReading {
     static let sourceLabel = "Codex CLI"
 
     func snapshot(homeDirectory: URL, now: Date) async -> AIUsageSnapshot {
-        await snapshotOffMain { read(homeDirectory: homeDirectory, now: now) }
+        await snapshot(for: AIUsageIdentity(.codex), homeDirectory: homeDirectory, now: now)
     }
 
-    private func read(homeDirectory: URL, now: Date) -> AIUsageSnapshot {
+    func snapshot(for identity: AIUsageIdentity, homeDirectory: URL, now: Date) async -> AIUsageSnapshot {
+        await snapshotOffMain { read(identity: identity, homeDirectory: homeDirectory, now: now) }
+    }
+
+    private func read(identity: AIUsageIdentity, homeDirectory: URL, now: Date) -> AIUsageSnapshot {
         guard let executable = AgentCLI.executable(named: "codex", homeDirectory: homeDirectory) else {
             return .failed(.codex, message: "Codex CLI was not found.")
         }
@@ -19,7 +24,13 @@ struct CodexCLIUsage: ProviderUsageReading {
         process.executableURL = executable
         process.arguments = ["app-server", "--stdio"]
         process.currentDirectoryURL = homeDirectory
-        process.environment = AgentCLI.environment(homeDirectory: homeDirectory)
+        // A sibling login is its own CODEX_HOME. The default login leaves it
+        // unset so Codex resolves ~/.codex itself.
+        var environment = AgentCLI.environment(homeDirectory: homeDirectory)
+        environment["CODEX_HOME"] = identity.accountKey.isEmpty
+            ? nil
+            : homeDirectory.appendingPathComponent(".codex-\(identity.accountKey)").path
+        process.environment = environment
         process.standardInput = input
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice
@@ -29,13 +40,14 @@ struct CodexCLIUsage: ProviderUsageReading {
         let requests = [
             #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"geraldine","version":"0.1.0"},"capabilities":{"experimentalApi":true}}}"#,
             #"{"jsonrpc":"2.0","method":"initialized","params":{}}"#,
-            #"{"jsonrpc":"2.0","id":2,"method":"account/rateLimits/read"}"#
+            #"{"jsonrpc":"2.0","id":2,"method":"account/rateLimits/read"}"#,
+            #"{"jsonrpc":"2.0","id":3,"method":"account/read","params":{}}"#
         ]
         for line in requests {
             input.fileHandleForWriting.write(Data((line + "\n").utf8))
         }
-        // Keep stdin open until the rate-limit reply arrives. Closing it first
-        // makes `codex app-server --stdio` exit after initialize.
+        // Keep stdin open until both replies arrive. Closing it first makes
+        // `codex app-server --stdio` exit after initialize.
         let data = Self.readResponse(from: output, untilProcess: process)
         input.fileHandleForWriting.closeFile()
         if process.isRunning { process.terminate() }
@@ -55,7 +67,7 @@ struct CodexCLIUsage: ProviderUsageReading {
             if !chunk.isEmpty {
                 collected.append(chunk)
                 let text = String(data: collected, encoding: .utf8) ?? ""
-                if text.contains(#""id":2"#) || text.contains(#""id": 2"#) {
+                if Self.hasReply(2, in: text) && Self.hasReply(3, in: text) {
                     break
                 }
             } else if !process.isRunning {
@@ -69,15 +81,22 @@ struct CodexCLIUsage: ProviderUsageReading {
         return collected
     }
 
+    private static func hasReply(_ id: Int, in text: String) -> Bool {
+        text.contains(#""id":\#(id)"#) || text.contains(#""id": \#(id)"#)
+    }
+
     static func parse(_ data: Data, now: Date) -> Result<AIUsageSnapshot, AIUsageParseError> {
         let text = String(data: data, encoding: .utf8) ?? ""
         var resultJSON: [String: Any]?
+        var accountJSON: [String: Any]?
         for line in text.split(whereSeparator: \.isNewline) {
             guard let object = AIUsageJSON.object(from: Data(line.utf8)),
-                  AIUsageJSON.number(object["id"]) == 2,
                   let result = AIUsageJSON.dictionary(object["result"]) else { continue }
-            resultJSON = result
-            break
+            switch AIUsageJSON.number(object["id"]) {
+            case 2?: resultJSON = result
+            case 3?: accountJSON = AIUsageJSON.dictionary(result["account"])
+            default: continue
+            }
         }
         guard let resultJSON,
               let rate = AIUsageJSON.dictionary(resultJSON["rateLimits"]) else {
@@ -94,14 +113,16 @@ struct CodexCLIUsage: ProviderUsageReading {
             return .failure(.init(message: "Codex CLI did not return any usage windows."))
         }
         let plan = AIUsageJSON.string(rate["planType"])
-        return .success(AIUsageSnapshot(
+        var snapshot = AIUsageSnapshot(
             provider: .codex,
             status: .ready,
             plan: plan,
             windows: windows,
             fetchedAt: now,
             sourceLabel: sourceLabel
-        ))
+        )
+        snapshot.accountEmail = accountJSON.flatMap { AIUsageJSON.string($0["email"]) }
+        return .success(snapshot)
     }
 
     private static func window(from raw: Any?, id: String) -> AIUsageWindow? {

@@ -23,8 +23,6 @@ enum AICodingProvider: String, CaseIterable, Codable, Identifiable, Sendable {
         }
     }
 
-    var widgetID: String { "ai.\(rawValue)" }
-
     var systemImage: String {
         switch self {
         case .antigravity: return "sparkle"
@@ -83,10 +81,43 @@ enum AICodingProvider: String, CaseIterable, Codable, Identifiable, Sendable {
         case .cursor:      return URL(string: "https://cursor.com")!
         }
     }
+}
 
-    static func from(widgetID: String) -> AICodingProvider? {
+/// One remaining-usage watcher. Every provider has its default login. Claude and
+/// Codex add one per sibling config folder: `~/.claude-<name>` runs with
+/// `CLAUDE_CONFIG_DIR`, `~/.codex-<name>` with `CODEX_HOME`.
+struct AIUsageIdentity: Hashable, Codable, Identifiable, Sendable {
+    var provider: AICodingProvider
+    /// Empty for the default login. A sibling uses its folder suffix (`work`, `fasaj`).
+    var accountKey: String
+
+    init(_ provider: AICodingProvider, accountKey: String = "") {
+        self.provider = provider
+        self.accountKey = accountKey
+    }
+
+    var id: String {
+        accountKey.isEmpty ? provider.rawValue : "\(provider.rawValue).\(accountKey)"
+    }
+
+    var widgetID: String { "ai.\(id)" }
+
+    /// The sibling folder suffix as a name: `.codex-work` → "Work". Nil for the default login.
+    var folderName: String? {
+        guard !accountKey.isEmpty else { return nil }
+        return accountKey.replacingOccurrences(of: "-", with: " ").localizedCapitalized
+    }
+
+    static func from(widgetID: String) -> AIUsageIdentity? {
         guard widgetID.hasPrefix("ai.") else { return nil }
-        return AICodingProvider(rawValue: String(widgetID.dropFirst(3)))
+        let rest = String(widgetID.dropFirst(3))
+        if let provider = AICodingProvider(rawValue: rest) {
+            return AIUsageIdentity(provider)
+        }
+        guard let separator = rest.firstIndex(of: ".") else { return nil }
+        let key = String(rest[rest.index(after: separator)...])
+        guard let provider = AICodingProvider(rawValue: String(rest[..<separator])), !key.isEmpty else { return nil }
+        return AIUsageIdentity(provider, accountKey: key)
     }
 }
 

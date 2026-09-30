@@ -203,7 +203,7 @@ struct WidgetGrid: View {
         case .metric(let metric):      MetricWidget(kind: metric, size: item.size)
         case .keepAwake:               KeepAwakeWidget(size: item.size)
         case .calendar:                CalendarWidget()
-        case .aiUsage(let provider):   AIUsageWidget(provider: provider, size: item.size)
+        case .aiUsage(let identity):   AIUsageWidget(identity: identity, size: item.size)
         }
     }
 

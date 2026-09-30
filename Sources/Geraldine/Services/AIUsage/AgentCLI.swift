@@ -63,9 +63,15 @@ enum AgentCLI {
 
 protocol ProviderUsageReading: Sendable {
     func snapshot(homeDirectory: URL, now: Date) async -> AIUsageSnapshot
+    /// Readers with several logins per home (Claude, Codex) pick one by account key.
+    func snapshot(for identity: AIUsageIdentity, homeDirectory: URL, now: Date) async -> AIUsageSnapshot
 }
 
 extension ProviderUsageReading {
+    func snapshot(for identity: AIUsageIdentity, homeDirectory: URL, now: Date) async -> AIUsageSnapshot {
+        await snapshot(homeDirectory: homeDirectory, now: now)
+    }
+
     func snapshotOffMain(_ work: @escaping () -> AIUsageSnapshot) async -> AIUsageSnapshot {
         await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .utility).async {

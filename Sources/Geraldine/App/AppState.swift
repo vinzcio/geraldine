@@ -108,6 +108,7 @@ final class AppState: ObservableObject {
     private var mainWindowRevealRequested = false
     private var windowVisibilityObservers: [NSObjectProtocol] = []
     private var windowVisibilityCancellable: AnyCancellable?
+    private var aiUsageAccountsCancellable: AnyCancellable?
     private var aiUsageLayoutCancellable: AnyCancellable?
 
     private init() {
@@ -183,32 +184,35 @@ final class AppState: ObservableObject {
         if isVisible { aiUsage.refreshIfStale() }
     }
 
-    func connectAIUsage(_ provider: AICodingProvider) {
-        layout.setShown(.aiUsage(provider), true)
-        aiUsage.connect(provider)
+    func connectAIUsage(_ identity: AIUsageIdentity) {
+        layout.setShown(.aiUsage(identity), true)
+        aiUsage.connect(identity)
     }
 
-    func disconnectAIUsage(_ provider: AICodingProvider) {
-        layout.setShown(.aiUsage(provider), false)
-        aiUsage.disconnect(provider)
+    func disconnectAIUsage(_ identity: AIUsageIdentity) {
+        layout.setShown(.aiUsage(identity), false)
+        aiUsage.disconnect(identity)
     }
 
     /// Showing a coding-usage tile is what starts remaining-usage fetches.
     /// Edit Widgets and Settings both go through the layout, so a visible ring
     /// can never sit on an em dash just because Connect was never pressed.
+    /// A newly discovered login gets its tile first, so accounts are observed
+    /// before the layout. `@Published` delivers during willSet, so both sinks
+    /// use the delivered value instead of re-reading the store.
     private func observeAIUsageLayout() {
-        aiUsageLayoutCancellable = layout.$items
-            .sink { [weak self] _ in
-                self?.syncAIUsageFromLayout()
+        aiUsageAccountsCancellable = aiUsage.$accounts
+            .sink { [weak self] accounts in
+                self?.layout.ensureAIUsageIdentities(accounts.map(\.identity))
             }
-    }
-
-    private func syncAIUsageFromLayout() {
-        let shown = Set(layout.items.compactMap { item -> AICodingProvider? in
-            guard item.isShown, case .aiUsage(let provider) = item.kind else { return nil }
-            return provider
-        })
-        aiUsage.syncShownProviders(shown)
+        aiUsageLayoutCancellable = layout.$items
+            .sink { [weak self] items in
+                let shown = Set(items.compactMap { item -> AIUsageIdentity? in
+                    guard item.isShown, case .aiUsage(let identity) = item.kind else { return nil }
+                    return identity
+                })
+                self?.aiUsage.syncShownIdentities(shown)
+            }
     }
 
     private func observeVisibility(of window: NSWindow) {

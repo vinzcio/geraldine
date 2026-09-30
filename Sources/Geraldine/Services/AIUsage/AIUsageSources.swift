@@ -198,12 +198,34 @@ enum AIUsageFetcher {
                       codexCLI: any ProviderUsageReading = CodexCLIUsage(),
                       grokCLI: any ProviderUsageReading = GrokCLIUsage(),
                       cursorCLI: any ProviderUsageReading = CursorCLIUsage()) async -> AIUsageSnapshot {
+        await fetch(
+            AIUsageIdentity(provider),
+            transport: transport,
+            now: now,
+            homeDirectory: homeDirectory,
+            antigravityCLI: antigravityCLI,
+            claudeCLI: claudeCLI,
+            codexCLI: codexCLI,
+            grokCLI: grokCLI,
+            cursorCLI: cursorCLI
+        )
+    }
+
+    static func fetch(_ identity: AIUsageIdentity,
+                      transport: any AIUsageTransporting,
+                      now: Date = Date(),
+                      homeDirectory: URL = AIUsageCredentialStore.home(),
+                      antigravityCLI: any AntigravityUsageReading = AntigravityCLIUsage(),
+                      claudeCLI: any ProviderUsageReading = ClaudeCLIUsage(),
+                      codexCLI: any ProviderUsageReading = CodexCLIUsage(),
+                      grokCLI: any ProviderUsageReading = GrokCLIUsage(),
+                      cursorCLI: any ProviderUsageReading = CursorCLIUsage()) async -> AIUsageSnapshot {
         // Usage is CLI-only. Transport remains in the signature so tests can
         // assert Geraldine never opens an HTTP usage request.
         _ = transport
-        switch provider {
-        case .claude:      return await claudeCLI.snapshot(homeDirectory: homeDirectory, now: now)
-        case .codex:       return await codexCLI.snapshot(homeDirectory: homeDirectory, now: now)
+        switch identity.provider {
+        case .claude:      return await claudeCLI.snapshot(for: identity, homeDirectory: homeDirectory, now: now)
+        case .codex:       return await codexCLI.snapshot(for: identity, homeDirectory: homeDirectory, now: now)
         case .grok:        return await grokCLI.snapshot(homeDirectory: homeDirectory, now: now)
         case .cursor:      return await cursorCLI.snapshot(homeDirectory: homeDirectory, now: now)
         case .antigravity: return await antigravityCLI.snapshot(homeDirectory: homeDirectory, now: now)

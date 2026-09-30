@@ -42,6 +42,7 @@ struct SettingsView: View {
 
 struct AppSettingsView: View {
     @EnvironmentObject private var state: AppState
+    @EnvironmentObject private var usage: AIUsageMonitor
 
     var body: some View {
         ModulePage(
@@ -82,8 +83,8 @@ struct AppSettingsView: View {
                     "Coding Usage",
                     subtitle: AIUsageDisclosure.current.text
                 )
-                ForEach(AICodingProvider.allCases) { provider in
-                    AIUsageConnectionRow(provider: provider)
+                ForEach(usage.accounts) { account in
+                    AIUsageConnectionRow(identity: account.identity)
                 }
             }
 
@@ -317,18 +318,19 @@ struct LaunchAtLoginControl: View {
 }
 
 private struct AIUsageConnectionRow: View {
-    let provider: AICodingProvider
+    let identity: AIUsageIdentity
     @EnvironmentObject private var state: AppState
     @EnvironmentObject private var usage: AIUsageMonitor
 
-    private var snapshot: AIUsageSnapshot { usage.snapshot(for: provider) }
+    private var provider: AICodingProvider { identity.provider }
+    private var snapshot: AIUsageSnapshot { usage.snapshot(for: identity) }
 
     var body: some View {
         HStack(alignment: .center, spacing: Theme.Spacing.sm) {
             CodingAssistantMark(provider: provider, size: 18)
                 .frame(width: 22)
             VStack(alignment: .leading, spacing: 2) {
-                Text(provider.title).font(.rounded(13, .semibold))
+                Text(usage.displayName(for: identity)).font(.rounded(13, .semibold))
                 Text(detail)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -351,6 +353,7 @@ private struct AIUsageConnectionRow: View {
     }
 
     private var detail: String {
+        let email = snapshot.accountEmail
         switch snapshot.status {
         case .disconnected:
             return "Show usage from the existing app or CLI session."
@@ -367,8 +370,9 @@ private struct AIUsageConnectionRow: View {
                 let windows = snapshot.displayWindows.map {
                     "\($0.title): \(Int($0.remainingPercent.rounded()))% left"
                 }.joined(separator: " · ")
-                return [windows, snapshot.cachedSourceDescription].compactMap { $0 }.joined(separator: " · ")
+                return [email, windows, snapshot.cachedSourceDescription].compactMap { $0 }.joined(separator: " · ")
             }
+            if let email { return [email, snapshot.headline?.title].compactMap { $0 }.joined(separator: " · ") }
             if let source = snapshot.cachedSourceDescription { return source }
             if let window = snapshot.headline {
                 return window.title
@@ -382,15 +386,15 @@ private struct AIUsageConnectionRow: View {
     @ViewBuilder private var connectionButton: some View {
         switch snapshot.status {
         case .disconnected:
-            Button("Show Usage") { state.connectAIUsage(provider) }
+            Button("Show Usage") { state.connectAIUsage(identity) }
                 .buttonStyle(.soft(Theme.accent))
         case .needsSignIn:
-            Button("Refresh") { usage.connect(provider) }
+            Button("Refresh") { usage.connect(identity) }
                 .buttonStyle(.soft(Theme.warn))
         case .loading:
             ProgressView().controlSize(.small)
         case .ready, .error:
-            Button("Hide Usage") { state.disconnectAIUsage(provider) }
+            Button("Hide Usage") { state.disconnectAIUsage(identity) }
                 .buttonStyle(.quiet(Theme.accent, compact: true))
         }
     }

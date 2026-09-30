@@ -105,6 +105,83 @@ final class AIUsageClaudeCLITests: XCTestCase {
         XCTAssertEqual(snapshot.windows.first(where: { $0.id == "five_hour" })?.remainingPercent, 91)
     }
 
+    func testSiblingFetchSetsConfigDirAndKeepsTheDefaultSlotUnset() async throws {
+        let home = try makeHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        try Data(#"{"oauthAccount":{"emailAddress":"team@example.com","organizationRateLimitTier":"default_raven"}}"#.utf8)
+            .write(to: home.appendingPathComponent(".claude.json"))
+        let fasaj = home.appendingPathComponent(".claude-fasaj")
+        try FileManager.default.createDirectory(at: fasaj, withIntermediateDirectories: true)
+        try Data(#"{"oauthAccount":{"emailAddress":"max@example.com","organizationRateLimitTier":"default_claude_max_20x"}}"#.utf8)
+            .write(to: fasaj.appendingPathComponent(".claude.json"))
+        let executable = home.appendingPathComponent(".local/bin/claude")
+        try FileManager.default.createDirectory(at: executable.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let marker = home.appendingPathComponent("claude-env")
+        let quotedMarker = "'" + marker.path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        let script = """
+        #!/bin/sh
+        [ "$#" = 4 ] && [ "$1" = "--print" ] && [ "$2" = "/usage" ] && [ "$3" = "--output-format" ] && [ "$4" = "json" ] || exit 9
+        if [ -n "${CLAUDE_CONFIG_DIR+x}" ]; then
+          printf '%s' "$CLAUDE_CONFIG_DIR" > \(quotedMarker)
+        else
+          printf 'UNSET' > \(quotedMarker)
+        fi
+        cat <<'USAGE'
+        \(Self.payload)
+        USAGE
+        """
+        try Data(script.utf8).write(to: executable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+        let defaultLogin = await AIUsageFetcher.fetch(
+            AIUsageIdentity(.claude),
+            transport: NoNetwork(),
+            now: Date(timeIntervalSince1970: 9),
+            homeDirectory: home
+        )
+        let defaultEnv = try String(contentsOf: marker, encoding: .utf8)
+        let fasajSnapshot = await AIUsageFetcher.fetch(
+            AIUsageIdentity(.claude, accountKey: "fasaj"),
+            transport: NoNetwork(),
+            now: Date(timeIntervalSince1970: 9),
+            homeDirectory: home
+        )
+        let fasajEnv = try String(contentsOf: marker, encoding: .utf8)
+        XCTAssertEqual(defaultLogin.status, .ready)
+        XCTAssertEqual(defaultEnv, "UNSET")
+        XCTAssertNil(defaultLogin.plan)
+        XCTAssertEqual(defaultLogin.accountEmail, "team@example.com")
+        XCTAssertEqual(fasajSnapshot.status, .ready)
+        XCTAssertEqual(
+            URL(fileURLWithPath: fasajEnv).resolvingSymlinksInPath().path,
+            fasaj.resolvingSymlinksInPath().path
+        )
+        XCTAssertEqual(fasajSnapshot.plan, "Max 20x")
+        XCTAssertEqual(fasajSnapshot.accountEmail, "max@example.com")
+        XCTAssertEqual(fasajSnapshot.windows.first(where: { $0.id == "five_hour" })?.usedPercent, 9)
+    }
+
+    @MainActor
+    func testShownClaudeTileAddsTheSiblingBesideIt() throws {
+        let suiteName = "AIUsageClaudeLayout.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let layout = WidgetLayoutStore(defaults: defaults)
+        layout.setShown(.aiUsage(.claude), true)
+        layout.setSize(.aiUsage(.claude), .medium)
+        layout.ensureAIUsageIdentities([
+            AIUsageIdentity(.claude),
+            AIUsageIdentity(.claude, accountKey: "fasaj")
+        ])
+        let index = try XCTUnwrap(layout.items.firstIndex { $0.kind == .aiUsage(.claude) })
+        let fasaj = layout.items[index + 1]
+        XCTAssertEqual(fasaj.kind, .aiUsage(AIUsageIdentity(.claude, accountKey: "fasaj")))
+        XCTAssertTrue(fasaj.isShown)
+        XCTAssertEqual(fasaj.size, .medium)
+        XCTAssertEqual(fasaj.kind.id, "ai.claude.fasaj")
+        XCTAssertEqual(fasaj.kind.title, "Claude · Fasaj")
+        XCTAssertEqual(WidgetLayoutStore(defaults: defaults).items.map(\.kind), layout.items.map(\.kind))
+    }
+
     func testCLIFailureDoesNotFallBackToFileTokenOrStaleCache() async throws {
         let home = try makeHome()
         defer { try? FileManager.default.removeItem(at: home) }

@@ -106,6 +106,76 @@ final class AIUsageCodexCLITests: XCTestCase {
         XCTAssertEqual(snapshot.windows.first?.remainingPercent, 19)
     }
 
+    func testSiblingFetchSetsCODEXHOMEAndReadsTheEmailFromTheCLI() async throws {
+        let root = ProcessInfo.processInfo.environment["GERALDINE_CREDENTIAL_TEST_ROOT"]
+            .map { URL(fileURLWithPath: $0) } ?? FileManager.default.temporaryDirectory
+        let home = root.appendingPathComponent("codex-homes-fetch-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let executable = home.appendingPathComponent(".local/bin/codex")
+        try FileManager.default.createDirectory(at: executable.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let script = """
+        #!/bin/sh
+        if [ -z "${CODEX_HOME+x}" ]; then used=81; email=personal@example.com
+        else case "$CODEX_HOME" in *.codex-work) used=42; email=work@example.com ;; *) exit 9 ;; esac
+        fi
+        read _init
+        echo '{"id":1,"result":{}}'
+        read _initialized
+        read _usage
+        read _account
+        cat <<USAGE
+        {"id":2,"result":{"rateLimits":{"primary":{"usedPercent":$used,"windowDurationMins":10080,"resetsAt":1789812650},"planType":"pro"}}}
+        {"id":3,"result":{"account":{"type":"chatgpt","email":"$email","planType":"pro"}}}
+        USAGE
+        """
+        try Data(script.utf8).write(to: executable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+        let personal = await AIUsageFetcher.fetch(
+            AIUsageIdentity(.codex),
+            transport: NoHTTP(),
+            now: Date(timeIntervalSince1970: 11),
+            homeDirectory: home
+        )
+        let work = await AIUsageFetcher.fetch(
+            AIUsageIdentity(.codex, accountKey: "work"),
+            transport: NoHTTP(),
+            now: Date(timeIntervalSince1970: 11),
+            homeDirectory: home
+        )
+        XCTAssertEqual(personal.windows.first?.usedPercent, 81)
+        XCTAssertEqual(personal.accountEmail, "personal@example.com")
+        XCTAssertEqual(work.windows.first?.usedPercent, 42)
+        XCTAssertEqual(work.accountEmail, "work@example.com")
+    }
+
+    @MainActor
+    func testShownCodexTileAddsTheSiblingBesideIt() throws {
+        let suiteName = "AIUsageCodexLayout.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let layout = WidgetLayoutStore(defaults: defaults)
+        layout.setShown(.aiUsage(.codex), true)
+        layout.ensureAIUsageIdentities([
+            AIUsageIdentity(.codex),
+            AIUsageIdentity(.codex, accountKey: "work")
+        ])
+        let index = try XCTUnwrap(layout.items.firstIndex { $0.kind == .aiUsage(.codex) })
+        XCTAssertEqual(layout.items[index + 1].kind, .aiUsage(AIUsageIdentity(.codex, accountKey: "work")))
+        XCTAssertTrue(layout.items[index + 1].isShown)
+        XCTAssertEqual(WidgetKind(id: "ai.codex.work"), .aiUsage(AIUsageIdentity(.codex, accountKey: "work")))
+    }
+
+    @MainActor
+    func testHiddenDefaultTileKeepsTheSiblingHidden() throws {
+        let suiteName = "AIUsageCodexLayoutHidden.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let layout = WidgetLayoutStore(defaults: defaults)
+        layout.ensureAIUsageIdentities([AIUsageIdentity(.codex, accountKey: "work")])
+        let work = layout.items.first { $0.kind == .aiUsage(AIUsageIdentity(.codex, accountKey: "work")) }
+        XCTAssertEqual(work?.isShown, false)
+    }
+
     private struct NoHTTP: AIUsageTransporting {
         func data(for request: URLRequest) async throws -> (Data, HTTPURLResponse) {
             XCTFail("Codex must only use its CLI")

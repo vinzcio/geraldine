@@ -5,13 +5,14 @@ import SwiftUI
 /// capsule, app icon, and level signaled on the numeral — not by recoloring the
 /// track. Small tiles stay chrome-free so a row of four reads as one family.
 struct AIUsageWidget: View {
-    let provider: AICodingProvider
+    let identity: AIUsageIdentity
     let size: WidgetSize
     @EnvironmentObject private var usage: AIUsageMonitor
     @EnvironmentObject private var state: AppState
     @Environment(\.widgetCustomizationActive) private var customizationActive
 
-    private var snapshot: AIUsageSnapshot { usage.snapshot(for: provider) }
+    private var provider: AICodingProvider { identity.provider }
+    private var snapshot: AIUsageSnapshot { usage.snapshot(for: identity) }
     private var bars: [AIUsageWindow] { snapshot.displayWindows }
     private var showsPairedWindows: Bool { snapshot.hasDisplayableUsage && bars.count >= 2 }
     private var usesTimeWindowRows: Bool {
@@ -87,7 +88,7 @@ struct AIUsageWidget: View {
     private func tileHeader(nameFont: Font, markSize: CGFloat) -> some View {
         HStack(spacing: 5) {
             CodingAssistantMark(provider: provider, size: markSize)
-            Text(provider.title)
+            Text(usage.tileName(for: identity))
                 .font(nameFont)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -161,7 +162,7 @@ struct AIUsageWidget: View {
     }
 
     private var quotaTooltip: String {
-        var lines = [provider.title]
+        var lines = [usage.displayName(for: identity)]
         for window in bars {
             var line = "\(timeWindowLabel(window, abbreviated: false)) · \(Int(window.remainingPercent.rounded()))% left"
             if let reset = window.resetsAt {
@@ -274,11 +275,11 @@ struct AIUsageWidget: View {
             case .disconnected:
                 button("Show Usage") { connect() }
             case .needsSignIn:
-                button("Retry") { usage.connect(provider) }
+                button("Retry") { usage.connect(identity) }
             case .loading:
                 ProgressView().controlSize(.mini)
             case .ready:
-                Button(action: { usage.connect(provider) }) {
+                Button(action: { usage.connect(identity) }) {
                     Image(systemName: "arrow.clockwise")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(.tertiary)
@@ -286,7 +287,7 @@ struct AIUsageWidget: View {
                 .buttonStyle(.quiet(Theme.accent, compact: true))
                 .help("Refresh remaining usage")
             case .error:
-                button("Refresh") { usage.connect(provider) }
+                button("Refresh") { usage.connect(identity) }
             }
             Spacer(minLength: 0)
         }
@@ -352,11 +353,11 @@ struct AIUsageWidget: View {
     }
 
     private func connect() {
-        state.connectAIUsage(provider)
+        state.connectAIUsage(identity)
     }
 
     private var accessibilityText: String {
-        let name = provider.title
+        let name = usage.displayName(for: identity)
         switch snapshot.status {
         case .disconnected:
             return "\(name) usage, hidden"
