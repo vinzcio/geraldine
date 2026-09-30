@@ -110,10 +110,10 @@ final class AIUsageClaudeCLITests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: home) }
         try Data(#"{"oauthAccount":{"emailAddress":"team@example.com","organizationRateLimitTier":"default_raven"}}"#.utf8)
             .write(to: home.appendingPathComponent(".claude.json"))
-        let fasaj = home.appendingPathComponent(".claude-fasaj")
-        try FileManager.default.createDirectory(at: fasaj, withIntermediateDirectories: true)
+        let client = home.appendingPathComponent(".claude-client")
+        try FileManager.default.createDirectory(at: client, withIntermediateDirectories: true)
         try Data(#"{"oauthAccount":{"emailAddress":"max@example.com","organizationRateLimitTier":"default_claude_max_20x"}}"#.utf8)
-            .write(to: fasaj.appendingPathComponent(".claude.json"))
+            .write(to: client.appendingPathComponent(".claude.json"))
         let executable = home.appendingPathComponent(".local/bin/claude")
         try FileManager.default.createDirectory(at: executable.deletingLastPathComponent(), withIntermediateDirectories: true)
         let marker = home.appendingPathComponent("claude-env")
@@ -139,25 +139,25 @@ final class AIUsageClaudeCLITests: XCTestCase {
             homeDirectory: home
         )
         let defaultEnv = try String(contentsOf: marker, encoding: .utf8)
-        let fasajSnapshot = await AIUsageFetcher.fetch(
-            AIUsageIdentity(.claude, accountKey: "fasaj"),
+        let clientSnapshot = await AIUsageFetcher.fetch(
+            AIUsageIdentity(.claude, accountKey: "client"),
             transport: NoNetwork(),
             now: Date(timeIntervalSince1970: 9),
             homeDirectory: home
         )
-        let fasajEnv = try String(contentsOf: marker, encoding: .utf8)
+        let clientEnv = try String(contentsOf: marker, encoding: .utf8)
         XCTAssertEqual(defaultLogin.status, .ready)
         XCTAssertEqual(defaultEnv, "UNSET")
         XCTAssertNil(defaultLogin.plan)
         XCTAssertEqual(defaultLogin.accountEmail, "team@example.com")
-        XCTAssertEqual(fasajSnapshot.status, .ready)
+        XCTAssertEqual(clientSnapshot.status, .ready)
         XCTAssertEqual(
-            URL(fileURLWithPath: fasajEnv).resolvingSymlinksInPath().path,
-            fasaj.resolvingSymlinksInPath().path
+            URL(fileURLWithPath: clientEnv).resolvingSymlinksInPath().path,
+            client.resolvingSymlinksInPath().path
         )
-        XCTAssertEqual(fasajSnapshot.plan, "Max 20x")
-        XCTAssertEqual(fasajSnapshot.accountEmail, "max@example.com")
-        XCTAssertEqual(fasajSnapshot.windows.first(where: { $0.id == "five_hour" })?.usedPercent, 9)
+        XCTAssertEqual(clientSnapshot.plan, "Max 20x")
+        XCTAssertEqual(clientSnapshot.accountEmail, "max@example.com")
+        XCTAssertEqual(clientSnapshot.windows.first(where: { $0.id == "five_hour" })?.usedPercent, 9)
     }
 
     @MainActor
@@ -170,15 +170,15 @@ final class AIUsageClaudeCLITests: XCTestCase {
         layout.setSize(.aiUsage(.claude), .medium)
         layout.ensureAIUsageIdentities([
             AIUsageIdentity(.claude),
-            AIUsageIdentity(.claude, accountKey: "fasaj")
+            AIUsageIdentity(.claude, accountKey: "client")
         ])
         let index = try XCTUnwrap(layout.items.firstIndex { $0.kind == .aiUsage(.claude) })
-        let fasaj = layout.items[index + 1]
-        XCTAssertEqual(fasaj.kind, .aiUsage(AIUsageIdentity(.claude, accountKey: "fasaj")))
-        XCTAssertTrue(fasaj.isShown)
-        XCTAssertEqual(fasaj.size, .medium)
-        XCTAssertEqual(fasaj.kind.id, "ai.claude.fasaj")
-        XCTAssertEqual(fasaj.kind.title, "Claude · Fasaj")
+        let client = layout.items[index + 1]
+        XCTAssertEqual(client.kind, .aiUsage(AIUsageIdentity(.claude, accountKey: "client")))
+        XCTAssertTrue(client.isShown)
+        XCTAssertEqual(client.size, .medium)
+        XCTAssertEqual(client.kind.id, "ai.claude.client")
+        XCTAssertEqual(client.kind.title, "Claude · Client")
         XCTAssertEqual(WidgetLayoutStore(defaults: defaults).items.map(\.kind), layout.items.map(\.kind))
     }
 
