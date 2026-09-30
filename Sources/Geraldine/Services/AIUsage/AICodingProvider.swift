@@ -129,6 +129,6 @@ struct AIUsageDisclosure: Equatable, Sendable {
     }
 
     var text: String {
-        "For Antigravity, Claude, Codex, Grok, and Cursor, reads existing usage or reuses the local sign-in from the official app or CLI to request remaining usage directly from its provider. No separate Geraldine sign-in or Keychain access. Show or hide usage tiles below."
+        "For Antigravity, Claude, Codex, Grok, and Cursor, runs each official CLI with the local sign-in already on this Mac; the CLI asks its provider for remaining usage. No separate Geraldine sign-in or Keychain access. Show or hide usage tiles below."
     }
 }

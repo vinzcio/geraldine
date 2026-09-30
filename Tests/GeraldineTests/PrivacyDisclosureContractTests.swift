@@ -31,7 +31,7 @@ final class PrivacyDisclosureContractTests: XCTestCase {
         )
         XCTAssertEqual(
             disclosure.text,
-            "Reads local sign-in state for Antigravity, Claude, Codex, Grok, and Cursor, then asks each provider for remaining usage. Tokens stay on this Mac and are never sent to Geraldine."
+            "For Antigravity, Claude, Codex, Grok, and Cursor, runs each official CLI with the local sign-in already on this Mac; the CLI asks its provider for remaining usage. No separate Geraldine sign-in or Keychain access. Show or hide usage tiles below."
         )
     }
 }
