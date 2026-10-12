@@ -36,6 +36,19 @@ enum AppShape: String, CaseIterable, Identifiable {
 
     var showsMenuBar: Bool { self != .windowOnly }
     var showsDock: Bool { self != .menuBarOnly }
+    var activationPolicy: NSApplication.ActivationPolicy { showsDock ? .regular : .accessory }
+
+    static func load(from defaults: UserDefaults = .standard) -> AppShape {
+        defaults.string(forKey: "appShape").flatMap(AppShape.init(rawValue:)) ?? .menuBarAndWindow
+    }
+
+    @MainActor
+    func applyActivationPolicy(to application: NSApplication) {
+        // Reconcile lifecycle events without repeatedly transforming a process
+        // that already has the requested Dock visibility.
+        guard application.activationPolicy() != activationPolicy else { return }
+        application.setActivationPolicy(activationPolicy)
+    }
 
     /// `open -a` and Dock clicks fire reopen. Menu-bar-only must not
     /// order the dashboard window on screen; that mounts the live
@@ -112,8 +125,7 @@ final class AppState: ObservableObject {
     private var aiUsageLayoutCancellable: AnyCancellable?
 
     private init() {
-        let raw = UserDefaults.standard.string(forKey: "appShape") ?? AppShape.menuBarAndWindow.rawValue
-        appShape = AppShape(rawValue: raw) ?? .menuBarAndWindow
+        appShape = AppShape.load()
         mainWindowVisible = appShape != .menuBarOnly
         mainWindowPresented = appShape != .menuBarOnly
         observeAIUsageLayout()
@@ -122,7 +134,7 @@ final class AppState: ObservableObject {
     // MARK: - Presentation
 
     func applyActivationPolicy() {
-        NSApp.setActivationPolicy(appShape.showsDock ? .regular : .accessory)
+        appShape.applyActivationPolicy(to: NSApp)
     }
 
     func bind(window: NSWindow) {

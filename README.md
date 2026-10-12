@@ -121,6 +121,8 @@ SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Dev
 
 `build.sh` is packaging-oriented; it is not the source verifier.
 
+Run `python3 -B Tests/PackagingTests/test_dock_presentation.py` to verify the bundle starts as an agent before applying the saved Dock mode. This guards menu-bar-only launch and reopen behavior at the packaging boundary.
+
 ## Evidence ladder
 
 These proof levels are separate and must not be substituted for one another:

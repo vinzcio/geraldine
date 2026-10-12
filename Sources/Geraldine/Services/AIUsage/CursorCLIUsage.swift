@@ -93,11 +93,14 @@ struct CursorCLIUsage: ProviderUsageReading {
             ("autoPercentUsed", "Cursor models", #"Auto[:\s]+([0-9]+(?:\.[0-9]+)?)%\s+used"#),
             ("apiPercentUsed", "Other models", #"API[:\s]+([0-9]+(?:\.[0-9]+)?)%\s+used"#)
         ]
+        // One billing-cycle reset in the pager header covers every meter: "Resets Oct 6".
+        let reset = AIUsageResetParser.parsePhrase(in: stripped, now: now)
         var windows: [AIUsageWindow] = []
         for item in named {
             guard let used = firstDouble(item.pattern, in: stripped),
                   (0...100).contains(used) else { continue }
-            windows.append(AIUsageWindow(id: item.id, title: item.title, usedPercent: used))
+            windows.append(AIUsageWindow(id: item.id, title: item.title, usedPercent: used,
+                                         resetsAt: reset?.date, resetIsDateOnly: reset?.dateOnly ?? false))
         }
         guard !windows.isEmpty else { return nil }
         var plan: String?

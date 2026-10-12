@@ -154,6 +154,8 @@ cat > "$CONTENTS/Info.plist" <<PLIST
     <key>GeraldineBuildDate</key><string>$BUILD_DATE</string>
     <key>GeraldineBuildConfiguration</key><string>$CONFIG</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
+    <!-- Start without a Dock icon; AppShape promotes only modes that show it. -->
+    <key>LSUIElement</key><true/>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSPrincipalClass</key><string>NSApplication</string>
     $ICON_KEY

@@ -3,6 +3,12 @@ import AppKit
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var menuBarController: MenuBarController?
 
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        // The bundle starts as an agent so menu-bar-only never flashes a Dock
+        // icon. Promote Dock modes before SwiftUI finishes restoring windows.
+        AppShape.load().applyActivationPolicy(to: NSApp)
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         let state = AppState.shared
         state.applyActivationPolicy()
@@ -59,6 +65,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
+        AppState.shared.applyActivationPolicy()
         AppState.shared.refreshPermissions()
         AppState.shared.network.refreshNameAccess()
         AppState.shared.keepAwake.refreshIdleActivityAccess()
@@ -71,13 +78,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// must not mount the dashboard window.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         let state = AppState.shared
+        state.applyActivationPolicy()
         if state.appShape.showsMainWindowOnReopen {
             state.showMainWindow()
         } else {
             state.hideInitialWindowIfNeeded()
         }
         state.refreshFullDiskAccess()
-        return true
+        // Menu-bar-only has handled this event. Do not let AppKit/SwiftUI
+        // perform a second, default reopen after hiding the restored window.
+        return state.appShape.showsMainWindowOnReopen
     }
 
     /// Closing the full window hides it; Quit is the explicit way to end Geraldine.

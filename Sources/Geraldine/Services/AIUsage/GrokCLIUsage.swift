@@ -106,12 +106,15 @@ struct GrokCLIUsage: ProviderUsageReading {
             used = 100
         }
         guard let used, used.isFinite, (0...100).contains(used) else { return nil }
+        // "Resets: September 24, 01:27" sits under the bar, in local time.
+        let reset = AIUsageResetParser.parsePhrase(in: stripped, now: now)
         return AIUsageSnapshot(
             provider: .grok,
             status: .ready,
             plan: plan,
             windows: [
-                AIUsageWindow(id: "pool", title: title, usedPercent: AIUsageMath.percent(from: used))
+                AIUsageWindow(id: "pool", title: title, usedPercent: AIUsageMath.percent(from: used),
+                              resetsAt: reset?.date, resetIsDateOnly: reset?.dateOnly ?? false)
             ],
             fetchedAt: now,
             sourceLabel: sourceLabel

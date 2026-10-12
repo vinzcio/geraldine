@@ -74,8 +74,11 @@ struct AntigravityCLIUsage: AntigravityUsageReading {
                       let id = AIUsageJSON.string(bucket["id"]), let title = titles[id],
                       let fraction = AIUsageJSON.number(bucket["remaining_fraction"]),
                       fraction.isFinite, (0...1).contains(fraction) else { continue }
+                // reset_time is ISO; any other reset field ("Resets in 106h4m42s") is a fallback.
+                let reset = AIUsageJSON.date(bucket["reset_time"]).map { AIUsageResetParser.Reset(date: $0, dateOnly: false) }
+                    ?? AIUsageResetParser.reset(in: bucket, now: now)
                 windows[id] = AIUsageWindow(id: id, title: title, usedPercent: (1 - fraction) * 100,
-                                            resetsAt: AIUsageJSON.date(bucket["reset_time"]))
+                                            resetsAt: reset?.date, resetIsDateOnly: reset?.dateOnly ?? false)
             }
         }
         let ordered = ["gemini-weekly", "gemini-5h", "3p-weekly", "3p-5h"].compactMap { windows[$0] }

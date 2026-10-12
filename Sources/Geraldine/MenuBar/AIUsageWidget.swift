@@ -8,11 +8,35 @@ struct AIUsageWidget: View {
     let identity: AIUsageIdentity
     let size: WidgetSize
     @EnvironmentObject private var usage: AIUsageMonitor
+    var body: some View {
+        TimelineView(.everyMinute) { context in
+            presentation(at: context.date)
+        }
+    }
+
+    /// The live tile and offscreen checks enter through the same presentation.
+    func presentation(at now: Date, calendar: Calendar = .autoupdatingCurrent) -> AIUsageTile {
+        AIUsageTile(identity: identity, size: size, snapshot: usage.snapshot(for: identity),
+                    tileName: usage.tileName(for: identity), displayName: usage.displayName(for: identity),
+                    now: now, calendar: calendar)
+    }
+}
+
+/// One presentation time owns visible reset copy, help, and accessibility. The
+/// parent supplies the existing minute cadence; this view never polls usage.
+struct AIUsageTile: View {
+    let identity: AIUsageIdentity
+    let size: WidgetSize
+    let snapshot: AIUsageSnapshot
+    let tileName: String
+    let displayName: String
+    let now: Date
+    var calendar: Calendar = .autoupdatingCurrent
+    @EnvironmentObject private var usage: AIUsageMonitor
     @EnvironmentObject private var state: AppState
     @Environment(\.widgetCustomizationActive) private var customizationActive
 
     private var provider: AICodingProvider { identity.provider }
-    private var snapshot: AIUsageSnapshot { usage.snapshot(for: identity) }
     private var bars: [AIUsageWindow] { snapshot.displayWindows }
     private var showsPairedWindows: Bool { snapshot.hasDisplayableUsage && bars.count >= 2 }
     private var usesTimeWindowRows: Bool {
@@ -20,6 +44,35 @@ struct AIUsageWidget: View {
             snapshot.plan?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "plus")
     }
     private var remaining: Double? { bars.first?.remainingPercent ?? snapshot.remainingPercent }
+    /// Large tiles have room beside each label. Narrower tiles reserve a
+    /// footer, so a horizontal fit fallback cannot discard every reset.
+    private var showsResetPerRow: Bool {
+        size == .large && bars.count > 1 && visibleSharedReset == nil
+    }
+
+    private func hasVisibleReset(_ window: AIUsageWindow) -> Bool {
+        AIUsageResetText.caption(window, now: now, calendar: calendar) != nil
+    }
+
+    private func sharedReset(in windows: [AIUsageWindow]) -> AIUsageWindow? {
+        guard let first = windows.first, let date = first.resetsAt,
+              windows.allSatisfy({ window in
+                  guard let other = window.resetsAt, hasVisibleReset(window) else { return false }
+                  return abs(other.timeIntervalSince(date)) < 60 && window.resetIsDateOnly == first.resetIsDateOnly
+              }) else { return nil }
+        return first
+    }
+
+    private var visibleSharedReset: AIUsageWindow? { sharedReset(in: bars) }
+
+    /// Prefer the tightest window with a meaningful reset. A missing or stale
+    /// headline must not conceal another window's known date.
+    private var footerReset: AIUsageWindow? {
+        visibleSharedReset ?? bars.filter(hasVisibleReset).min {
+            if $0.remainingPercent == $1.remainingPercent { return $0.title < $1.title }
+            return $0.remainingPercent < $1.remainingPercent
+        }
+    }
 
     var body: some View {
         Group {
@@ -35,11 +88,11 @@ struct AIUsageWidget: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityText)
         .accessibilityValue(snapshot.cachedSourceDescription ?? "")
-        .help(usesTimeWindowRows ? quotaTooltip : (snapshot.cachedSourceDescription ?? accessibilityText))
+        .help(helpText)
     }
 
     private var smallBody: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 4) {
             tileHeader(nameFont: .caption2.weight(.semibold), markSize: 16)
             Spacer(minLength: 0)
             if snapshot.hasDisplayableUsage {
@@ -88,7 +141,7 @@ struct AIUsageWidget: View {
     private func tileHeader(nameFont: Font, markSize: CGFloat) -> some View {
         HStack(spacing: 5) {
             CodingAssistantMark(provider: provider, size: markSize)
-            Text(usage.tileName(for: identity))
+            Text(tileName)
                 .font(nameFont)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -103,23 +156,66 @@ struct AIUsageWidget: View {
             antigravityQuotas
         } else if usesTimeWindowRows {
             if size == .large {
-                timeWindowRows(compact: false)
+                withResetFooter { timeWindowRows(compact: false) }
             } else {
+                // Keep the reset in both fits; compact rows preserve every quota.
                 ViewThatFits(in: .vertical) {
-                    timeWindowRows(compact: false)
-                    timeWindowRows(compact: true)
+                    withResetFooter { timeWindowRows(compact: false) }
+                    withResetFooter { timeWindowRows(compact: true) }
                 }
                 .animation(nil, value: bars.count)
             }
         } else if showsPairedWindows {
-            VStack(spacing: 8) {
-                ForEach(bars.prefix(2)) { window in
-                    equalWindow(window)
-                }
-            }
+            withResetFooter { pairedWindows }
         } else {
             remainingHeadline(percent: remaining, percentSize: percentSize, percentMarkSize: percentMarkSize)
             UsageRemainingBar(remaining: remaining, tint: provider.tint, height: 4)
+            if let window = footerReset {
+                resetFooter(window)
+            }
+        }
+    }
+
+    private var pairedWindows: some View {
+        VStack(spacing: 8) {
+            ForEach(bars.prefix(2)) { window in
+                equalWindow(window)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func withResetFooter<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        if !showsResetPerRow, let window = footerReset {
+            VStack(alignment: .leading, spacing: 5) {
+                content()
+                resetFooter(window)
+            }
+        } else {
+            content()
+        }
+    }
+
+    /// "Resets in 4d 10h". A small tile with several rows names the window:
+    /// "5h resets in 2h 14m".
+    private func resetFooter(_ window: AIUsageWindow) -> some View {
+        let subject = visibleSharedReset == nil && bars.count > 1 ? resetSubject(window) : nil
+        let style = subject.map { AIUsageResetText.CaptionStyle.summary(subject: $0) } ?? .standalone
+        return UsageResetLabel(window: window, now: now, calendar: calendar, font: .system(size: 10), style: style)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// A row label followed by its own reset, when the tile is wide enough.
+    private func labelWithReset(_ label: Text, window: AIUsageWindow, font: Font, showReset: Bool? = nil) -> some View {
+        ViewThatFits(in: .horizontal) {
+            if showReset ?? showsResetPerRow, hasVisibleReset(window) {
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    label.lineLimit(1).fixedSize()
+                    UsageResetLabel(window: window, now: now, calendar: calendar, font: font, style: .inline)
+                        .fixedSize()
+                }
+            }
+            label.lineLimit(1).minimumScaleFactor(0.85)
         }
     }
 
@@ -129,11 +225,13 @@ struct AIUsageWidget: View {
             ForEach(bars) { window in
                 VStack(spacing: compact ? 2 : 4) {
                     HStack(alignment: .firstTextBaseline, spacing: 4) {
-                        Text(timeWindowLabel(window, abbreviated: size == .small))
-                            .font(.system(size: compact ? 10 : 11))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.85)
+                        labelWithReset(
+                            Text(timeWindowLabel(window, abbreviated: size == .small))
+                                .font(.system(size: compact ? 10 : 11))
+                                .foregroundStyle(.secondary),
+                            window: window,
+                            font: .system(size: compact ? 10 : 11)
+                        )
                         Spacer(minLength: 0)
                         Text("\(Int(window.remainingPercent.rounded()))%")
                             .font(.system(size: compact ? 12 : 16, weight: .semibold).monospacedDigit())
@@ -161,13 +259,27 @@ struct AIUsageWidget: View {
         return window.title
     }
 
+    /// Short subject for a small tile's single reset line.
+    private func resetSubject(_ window: AIUsageWindow) -> String {
+        if provider == .claude {
+            if window.id == "five_hour" { return "5h" }
+            if window.id == "seven_day" { return "All" }
+        }
+        if window.durationSeconds == 18_000 { return "5h" }
+        if window.durationSeconds == 604_800 { return "Weekly" }
+        return shortLabel(window)
+    }
+
+    var helpText: String {
+        snapshot.hasDisplayableUsage && !bars.isEmpty
+            ? quotaTooltip : (snapshot.cachedSourceDescription ?? accessibilityText)
+    }
+
     private var quotaTooltip: String {
-        var lines = [usage.displayName(for: identity)]
+        var lines = [displayName]
         for window in bars {
             var line = "\(timeWindowLabel(window, abbreviated: false)) · \(Int(window.remainingPercent.rounded()))% left"
-            if let reset = window.resetsAt {
-                line += " · resets " + reset.formatted(date: .abbreviated, time: .shortened)
-            }
+            if let reset = AIUsageResetText.detail(window, now: now, calendar: calendar) { line += " · " + reset }
             lines.append(line)
         }
         if let source = snapshot.cachedSourceDescription { lines.append(source) }
@@ -175,27 +287,53 @@ struct AIUsageWidget: View {
     }
 
     private var antigravityQuotas: some View {
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: size == .small ? 3 : 5) {
             quotaGroup("Gemini", ids: ["gemini-weekly", "gemini-5h"])
             quotaGroup("Claude / GPT", ids: ["3p-weekly", "3p-5h"])
+            if size == .small, let shared = visibleSharedReset {
+                UsageResetLabel(window: shared, now: now, calendar: calendar, font: .system(size: 10))
+            }
         }
     }
 
     private func quotaGroup(_ title: String, ids: [String]) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text(title).font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
-            ForEach(bars.filter { ids.contains($0.id) }) { window in
+        let rows = bars.filter { ids.contains($0.id) }
+        let shared = sharedReset(in: rows)
+        return VStack(alignment: .leading, spacing: 1) {
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Text(title).font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                if size != .small, let shared {
+                    UsageResetLabel(window: shared, now: now, calendar: calendar, font: .system(size: 10))
+                }
+            }
+            ForEach(rows) { window in
                 HStack(spacing: 3) {
-                    Text(window.id.hasSuffix("weekly") ? "Weekly" : "5-hour")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
+                    labelWithReset(
+                        Text(window.id.hasSuffix("weekly") ? "Weekly" : "5-hour")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary),
+                        window: window,
+                        font: .system(size: 10),
+                        showReset: size != .small && shared == nil
+                    )
                     Spacer(minLength: 0)
                     UsageRemainingBar(remaining: window.remainingPercent, tint: provider.tint, height: 3)
                         .frame(width: size == .small ? 18 : 48)
                     Text("\(Int(window.remainingPercent.rounded()))%")
                         .font(.system(size: 10, weight: .semibold).monospacedDigit())
                 }
-                .help(window.title + " · " + resetCopy(window.resetsAt))
+                .help([window.title, AIUsageResetText.detail(window, now: now, calendar: calendar)]
+                    .compactMap { $0 }.joined(separator: " · "))
+            }
+            // At 146pt the selected group's own footer supplies attribution.
+            // Keep all four percentages and bars, without tiny type or clipping.
+            if size == .small, visibleSharedReset == nil,
+               let reset = footerReset, ids.contains(reset.id) {
+                let style: AIUsageResetText.CaptionStyle = shared == nil
+                    ? .summary(subject: reset.id.hasSuffix("weekly") ? "Weekly" : "5h") : .standalone
+                UsageResetLabel(window: reset, now: now, calendar: calendar, font: .system(size: 10), style: style)
             }
         }
     }
@@ -217,10 +355,13 @@ struct AIUsageWidget: View {
     private func equalWindow(_ window: AIUsageWindow) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(alignment: .firstTextBaseline, spacing: 4) {
-                Text(shortLabel(window))
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                labelWithReset(
+                    Text(shortLabel(window))
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.secondary),
+                    window: window,
+                    font: .caption2
+                )
                 Spacer(minLength: 0)
                 HStack(alignment: .firstTextBaseline, spacing: 1) {
                     Text("\(Int(window.remainingPercent.rounded()))")
@@ -256,7 +397,7 @@ struct AIUsageWidget: View {
                 .lineLimit(1)
         case .ready:
             if let window = snapshot.headline {
-                Text(resetCopy(window.resetsAt))
+                Text(AIUsageResetText.caption(window, now: now, calendar: calendar) ?? "Remaining usage")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -356,46 +497,28 @@ struct AIUsageWidget: View {
         state.connectAIUsage(identity)
     }
 
-    private var accessibilityText: String {
-        let name = usage.displayName(for: identity)
+    var accessibilityText: String {
+        let name = displayName
+        let status: String
         switch snapshot.status {
-        case .disconnected:
-            return "\(name) usage, hidden"
-        case .needsSignIn:
-            return "\(name) usage, unavailable"
-        case .loading:
-            return "\(name) usage, updating"
-        case .ready:
-            if usesTimeWindowRows {
-                return provider.title + " " + bars.map {
-                    "\(timeWindowLabel($0, abbreviated: false)), \(Int($0.remainingPercent.rounded())) percent"
-                }.joined(separator: ", ")
-            }
-            if showsPairedWindows {
-                let parts = (provider == .antigravity ? bars : Array(bars.prefix(2))).map { window in
-                    "\(shortLabel(window)) \(Int(window.remainingPercent.rounded())) percent"
-                }
-                return "\(name) " + parts.joined(separator: ", ")
-            }
-            if let remaining {
-                return "\(name) remaining \(Int(remaining.rounded())) percent"
-            }
-            return "\(name) usage"
-        case .error(let message):
-            return "\(name) usage error, \(message)"
+        case .disconnected: status = "hidden"
+        case .needsSignIn: status = "unavailable"
+        case .loading: status = "updating"
+        case .ready: status = ""
+        case .error(let message): status = "error, " + message
         }
+        var parts = ["\(name) usage"]
+        if !status.isEmpty { parts.append(status) }
+        if snapshot.hasDisplayableUsage {
+            for window in bars {
+                var text = "\(timeWindowLabel(window, abbreviated: false)), \(Int(window.remainingPercent.rounded())) percent left"
+                if let reset = AIUsageResetText.detail(window, now: now, calendar: calendar) { text += ", " + reset }
+                parts.append(text)
+            }
+        }
+        return parts.joined(separator: ", ")
     }
 
-    private func resetCopy(_ date: Date?) -> String {
-        guard let date else { return "Remaining usage" }
-        return "Resets \(Self.resetFormatter.localizedString(for: date, relativeTo: Date()))"
-    }
-
-    private static let resetFormatter: RelativeDateTimeFormatter = {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .abbreviated
-        return formatter
-    }()
 }
 
 struct CodingAssistantMark: View {
