@@ -8,6 +8,8 @@ struct AIUsageWindow: Equatable, Identifiable, Sendable {
     var usedPercent: Double
     var resetsAt: Date?
     var durationSeconds: TimeInterval? = nil
+    /// The CLI printed a reset day without a time (Cursor: "Resets Oct 6").
+    var resetIsDateOnly: Bool = false
 
     var remainingPercent: Double {
         AIUsageMath.clampPercent(100 - usedPercent)
@@ -61,7 +63,8 @@ struct AIUsageSnapshot: Equatable, Sendable {
             plan: previous?.plan,
             windows: previous?.windows ?? [],
             fetchedAt: previous?.fetchedAt,
-            sourceLabel: previous?.sourceLabel
+            sourceLabel: previous?.sourceLabel,
+            accountEmail: previous?.accountEmail
         )
     }
 
@@ -73,7 +76,8 @@ struct AIUsageSnapshot: Equatable, Sendable {
             plan: previous?.plan,
             windows: previous?.windows ?? [],
             fetchedAt: previous?.fetchedAt,
-            sourceLabel: previous?.sourceLabel
+            sourceLabel: previous?.sourceLabel,
+            accountEmail: previous?.accountEmail
         )
     }
 
@@ -135,6 +139,19 @@ struct AIUsageSnapshot: Equatable, Sendable {
     }
 
     var remainingPercent: Double? { headline?.remainingPercent }
+
+    /// One reset when every drawn window shares it (Cursor's monthly cycle,
+    /// Grok's pool), so a tile states it once instead of once per row.
+    var sharedReset: AIUsageWindow? {
+        let visible = displayWindows
+        guard let first = visible.first, let date = first.resetsAt,
+              visible.allSatisfy({ window in
+                  guard let other = window.resetsAt else { return false }
+                  return abs(other.timeIntervalSince(date)) < 60
+                      && window.resetIsDateOnly == first.resetIsDateOnly
+              }) else { return nil }
+        return first
+    }
 
     /// Ready tiles, and tiles that already have bars from a previous fetch,
     /// can keep showing numbers while a shared refresh runs.

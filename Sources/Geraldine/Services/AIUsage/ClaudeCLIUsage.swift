@@ -111,10 +111,11 @@ struct ClaudeCLIUsage: ProviderUsageReading {
     }
 
     static func parseResultText(_ text: String, now: Date) -> Result<AIUsageSnapshot, AIUsageParseError> {
+        // Each line ends with its own reset: "· resets Sep 22 at 3pm (Asia/Manila)".
         let patterns: [(id: String, title: String, pattern: String)] = [
-            ("five_hour", "5-hour", #"Current session:\s*([0-9]+(?:\.[0-9]+)?)%\s*used"#),
-            ("seven_day", "All models", #"Current week \(all models\):\s*([0-9]+(?:\.[0-9]+)?)%\s*used"#),
-            ("seven_day_fable", "Fable", #"Current week \(Fable\):\s*([0-9]+(?:\.[0-9]+)?)%\s*used"#)
+            ("five_hour", "5-hour", #"Current session:\s*([0-9]+(?:\.[0-9]+)?)%\s*used([^\n]*)"#),
+            ("seven_day", "All models", #"Current week \(all models\):\s*([0-9]+(?:\.[0-9]+)?)%\s*used([^\n]*)"#),
+            ("seven_day_fable", "Fable", #"Current week \(Fable\):\s*([0-9]+(?:\.[0-9]+)?)%\s*used([^\n]*)"#)
         ]
         var windows: [AIUsageWindow] = []
         for item in patterns {
@@ -122,7 +123,10 @@ struct ClaudeCLIUsage: ProviderUsageReading {
                   let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
                   let range = Range(match.range(at: 1), in: text),
                   let used = Double(text[range]), used.isFinite, (0...100).contains(used) else { continue }
-            windows.append(AIUsageWindow(id: item.id, title: item.title, usedPercent: used))
+            let reset = Range(match.range(at: 2), in: text)
+                .flatMap { AIUsageResetParser.parsePhrase(in: String(text[$0]), now: now) }
+            windows.append(AIUsageWindow(id: item.id, title: item.title, usedPercent: used,
+                                         resetsAt: reset?.date, resetIsDateOnly: reset?.dateOnly ?? false))
         }
         guard !windows.isEmpty else {
             return .failure(.init(message: "Claude Code CLI did not return any usage windows."))

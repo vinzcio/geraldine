@@ -94,6 +94,65 @@ final class AIUsageGrokCursorCLITests: XCTestCase {
         XCTAssertEqual(trust, [Data("y\r".utf8)])
     }
 
+    func testGrokColoredModalPreservesThePrintedReset() throws {
+        // Sanitized Grok 1.0.50 /usage rows, including its true-color sequences.
+        let modal = """
+        \u{1b}[1mWeekly limit (X Premium+)\u{1b}[22m                                                 \u{1b}[38;2;88;88;88;48;2;20;20;20m
+        \u{1b}[38;2;120;120;120;48;2;20;20;20m████\u{1b}[38;2;88;88;88;48;2;20;20;20m░░░░░░░░░░░░░░░░░░░░░░░░░░\u{1b}[38;2;225;225;225;48;2;20;20;20m  13%                                       \u{1b}[38;2;88;88;88;48;2;20;20;20m
+        \u{1b}[38;2;108;108;108;48;2;20;20;20mResets: October 15, 01:27\u{1b}[38;2;225;225;225;48;2;20;20;20m                                                 \u{1b}[38;2;88;88;88;48;2;20;20;20m
+        """
+        try assertGrokPrintedReset(modal)
+    }
+
+    func testGrokCursorPositionedRedrawSeparatesResetFromSessionUsage() throws {
+        // The same live modal can arrive as cursor moves with no newlines.
+        let modal = "\u{1b}[9;25H\u{1b}[1m\u{1b}[38;2;225;225;225;48;2;20;20;20mWeekly limit (X Premium+)"
+            + "\u{1b}[11;25H\u{1b}[22m\u{1b}[38;2;120;120;120;48;2;20;20;20m████\u{1b}[38;2;88;88;88;48;2;20;20;20m░░░░░░░░░░░░░░░░░░░░░░░░░░"
+            + "\u{1b}[11;57H\u{1b}[38;2;225;225;225;48;2;20;20;20m13%"
+            + "\u{1b}[12;25H\u{1b}[38;2;108;108;108;48;2;20;20;20mResets: October 15, 01:27"
+            + "\u{1b}[14;25H\u{1b}[1m\u{1b}[38;2;225;225;225;48;2;20;20;20mSession usage: no model calls yet in this session.\u{1b}[0m"
+        try assertGrokPrintedReset(modal)
+    }
+
+    func testGrokMissingOrInvalidResetDoesNotInventADate() throws {
+        for reset in ["", "\u{1b}[38;2;108;108;108mResets: unavailable\u{1b}[0m",
+                      "\u{1b}[38;2;108;108;108mResets: October 35, 01:27\u{1b}[0m"] {
+            let modal = "\u{1b}[1mWeekly limit (X Premium+)\u{1b}[22m\n13%\n" + reset
+            let snapshot = try GrokCLIUsage.parse(Data(modal.utf8), now: Date()).get()
+            XCTAssertEqual(snapshot.windows.first?.remainingPercent, 87)
+            XCTAssertNil(snapshot.windows.first?.resetsAt)
+        }
+    }
+
+    func testPTYStripsTerminalDecorationAndPreservesPositionedTextBoundaries() {
+        let terminal = "\u{1b}]0;Grok Build\u{07}\u{1b}[?2026h\u{1b}[1mUsage\u{1b}[22m"
+            + "\u{1b}[12;25H\u{1b}[38;2;108;108;108;48;2;20;20;20mResets: October 15, 01:27\u{1b}[0m"
+            + "\u{1b}[14;25fSession usage\u{1b}[?2026l\u{1b}=\u{1b}>"
+        XCTAssertEqual(AgentPTY.stripANSI(terminal), "Usage\nResets: October 15, 01:27\nSession usage")
+        let plain = "Weekly limit (X Premium+)\n13%\nResets: October 15, 01:27"
+        XCTAssertEqual(AgentPTY.stripANSI(plain), plain)
+    }
+
+    func testCursorColoredUsagePreservesItsResetAndMeters() throws {
+        let terminal = "\u{1b}[1mUsage • Ultra\u{1b}[22m  \u{1b}[2mResets Oct 16\u{1b}[0m\n"
+            + Self.cursorCompact
+        let snapshot = try CursorCLIUsage.parse(Data(terminal.utf8), now: Date(timeIntervalSince1970: 1_791_763_200)).get()
+        XCTAssertEqual(snapshot.windows.first(where: { $0.id == "totalPercentUsed" })?.usedPercent, 71)
+        XCTAssertTrue(snapshot.windows.allSatisfy { $0.resetsAt != nil && $0.resetIsDateOnly })
+    }
+
+    private func assertGrokPrintedReset(_ terminal: String, file: StaticString = #filePath, line: UInt = #line) throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .autoupdatingCurrent
+        let now = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 10, day: 12, hour: 12)))
+        let expected = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 10, day: 15, hour: 1, minute: 27)))
+        let snapshot = try GrokCLIUsage.parse(Data(terminal.utf8), now: now).get()
+        XCTAssertEqual(snapshot.plan, "X Premium+", file: file, line: line)
+        XCTAssertEqual(snapshot.windows.first?.remainingPercent, 87, file: file, line: line)
+        XCTAssertEqual(snapshot.windows.first?.resetsAt, expected, file: file, line: line)
+        XCTAssertEqual(snapshot.windows.first?.resetIsDateOnly, false, file: file, line: line)
+    }
+
     func testCursorParsesTUIMetersAndRejectsUnauthenticatedOrModelTurns() throws {
         let now = Date(timeIntervalSince1970: 4)
         let ready = try CursorCLIUsage.parse(Data(Self.cursorTerminal.utf8), now: now).get()

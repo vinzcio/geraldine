@@ -362,20 +362,34 @@ private struct AIUsageConnectionRow: View {
         case .loading:
             return "Reading remaining usage…"
         case .ready:
+            // Absolute reset times: this caption does not tick like the tiles do.
+            func reset(_ window: AIUsageWindow) -> String? {
+                AIUsageResetText.detail(window, style: .absolute)
+            }
+            func summary(_ window: AIUsageWindow, includesReset: Bool) -> String {
+                let left = "\(window.title): \(Int(window.remainingPercent.rounded()))% left"
+                guard includesReset, let reset = reset(window) else { return left }
+                return "\(left) (\(reset))"
+            }
+            let shared = snapshot.sharedReset
             if provider == .antigravity {
-                return snapshot.displayWindows.map { "\($0.title): \(Int($0.remainingPercent.rounded()))% left" }
+                return snapshot.displayWindows.map { summary($0, includesReset: true) }
                     .joined(separator: " · ")
             }
             if provider == .cursor || provider == .claude || (provider == .codex && snapshot.displayWindows.count > 1) {
                 let windows = snapshot.displayWindows.map {
-                    "\($0.title): \(Int($0.remainingPercent.rounded()))% left"
+                    summary($0, includesReset: shared == nil)
                 }.joined(separator: " · ")
-                return [email, windows, snapshot.cachedSourceDescription].compactMap { $0 }.joined(separator: " · ")
+                return [email, windows, shared.flatMap(reset), snapshot.cachedSourceDescription]
+                    .compactMap { $0 }.joined(separator: " · ")
             }
-            if let email { return [email, snapshot.headline?.title].compactMap { $0 }.joined(separator: " · ") }
+            let headlineReset = snapshot.headline.flatMap(reset)
+            if let email {
+                return [email, snapshot.headline?.title, headlineReset].compactMap { $0 }.joined(separator: " · ")
+            }
             if let source = snapshot.cachedSourceDescription { return source }
             if let window = snapshot.headline {
-                return window.title
+                return [window.title, headlineReset].compactMap { $0 }.joined(separator: " · ")
             }
             return "Connected"
         case .error(let message):

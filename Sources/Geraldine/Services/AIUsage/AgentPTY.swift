@@ -212,18 +212,21 @@ enum AgentPTY {
     }
 
     static func stripANSI(_ text: String) -> String {
-        let patterns = [
-            #"\u{1B}\[[0-9;?]*[ -/]*[@-~]"#,
-            #"\u{1B}\][^\u{07}]*\u{07}"#,
-            #"\u{1B}[=>]"#
+        let replacements = [
+            // Cursor-positioned redraws contain no newlines. Separate their
+            // text so a reset date cannot absorb the next row's session usage.
+            (#"\x{1B}\[[0-9;]*[Hf]"#, "\n"),
+            (#"\x{1B}\[[0-9;?]*[ -/]*[@-~]"#, ""),
+            (#"\x{1B}\][^\x{07}]*\x{07}"#, ""),
+            (#"\x{1B}[=>]"#, "")
         ]
         var stripped = text
-        for pattern in patterns {
+        for (pattern, replacement) in replacements {
             if let regex = try? NSRegularExpression(pattern: pattern) {
                 stripped = regex.stringByReplacingMatches(
                     in: stripped,
                     range: NSRange(stripped.startIndex..., in: stripped),
-                    withTemplate: ""
+                    withTemplate: replacement
                 )
             }
         }

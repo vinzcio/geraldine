@@ -30,28 +30,8 @@ enum AIUsageJSON {
     }
 
     static func date(_ value: Any?) -> Date? {
-        if let number = number(value) {
-            let seconds = number > 10_000_000_000 ? number / 1000 : number
-            return Date(timeIntervalSince1970: seconds)
-        }
-        guard let string = string(value) else { return nil }
-        if let date = iso8601Fractional.date(from: string) { return date }
-        if let date = iso8601.date(from: string) { return date }
-        let normalized = string.replacingOccurrences(of: "Z", with: "+00:00")
-        return iso8601Fractional.date(from: normalized) ?? iso8601.date(from: normalized)
+        AIUsageResetParser.timestamp(value)
     }
-
-    private static let iso8601: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter
-    }()
-
-    private static let iso8601Fractional: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter
-    }()
 }
 
 enum AIUsageParser {
@@ -134,10 +114,10 @@ enum AIUsageParser {
         }
         let rate = AIUsageJSON.dictionary(json["rate_limit"]) ?? json
         var windows: [AIUsageWindow] = []
-        if let primary = window(from: rate["primary_window"], id: "primary", title: "Session") {
+        if let primary = window(from: rate["primary_window"], id: "primary", title: "Session", now: now) {
             windows.append(primary)
         }
-        if let secondary = window(from: rate["secondary_window"], id: "secondary", title: "Weekly") {
+        if let secondary = window(from: rate["secondary_window"], id: "secondary", title: "Weekly", now: now) {
             windows.append(secondary)
         }
         if let extras = AIUsageJSON.array(rate["additional_rate_limits"]) {
@@ -148,13 +128,13 @@ enum AIUsageParser {
                     ?? "Model \(index + 1)"
                 if let nested = window(from: object["primary_window"],
                                        id: "extra-\(index)-primary",
-                                       title: name) {
+                                       title: name, now: now) {
                     windows.append(nested)
                 } else if let nested = window(from: object["secondary_window"],
                                               id: "extra-\(index)-secondary",
-                                              title: name) {
+                                              title: name, now: now) {
                     windows.append(nested)
-                } else if let nested = window(from: object, id: "extra-\(index)", title: name) {
+                } else if let nested = window(from: object, id: "extra-\(index)", title: name, now: now) {
                     windows.append(nested)
                 }
             }
@@ -397,18 +377,13 @@ enum AIUsageParser {
         ))
     }
 
-    private static func window(from raw: Any?, id: String, title: String) -> AIUsageWindow? {
+    private static func window(from raw: Any?, id: String, title: String, now: Date) -> AIUsageWindow? {
         guard let object = AIUsageJSON.dictionary(raw) else { return nil }
         guard let used = AIUsageJSON.number(object["used_percent"])
                 ?? AIUsageJSON.number(object["usedPercent"]) else { return nil }
         let reset = AIUsageJSON.date(object["reset_at"])
             ?? AIUsageJSON.date(object["resets_at"])
-            ?? {
-                if let seconds = AIUsageJSON.number(object["reset_after_seconds"]) {
-                    return Date().addingTimeInterval(seconds)
-                }
-                return nil
-            }()
+            ?? AIUsageResetParser.countdown(object["reset_after_seconds"], now: now)
         let duration = AIUsageJSON.number(object["limit_window_seconds"])
         let windowTitle: String
         if id == "primary" || id == "secondary" {
