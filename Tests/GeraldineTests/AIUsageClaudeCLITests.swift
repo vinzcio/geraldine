@@ -10,6 +10,20 @@ final class AIUsageClaudeCLITests: XCTestCase {
     Current week (Fable): 8% used · resets Sep 22 at 3pm (Asia/Manila)
     """
 
+    /// Claude Code 2.1.x `/usage` (2026-10-13): analytics only, no percent windows.
+    private static let analyticsOnlyResult = """
+    You are currently using your subscription to power your Claude Code usage
+
+    What's contributing to your limits usage?
+    Approximate, based on local sessions on this machine — does not include other devices or claude.ai. Behaviors are independent characteristics, not a breakdown.
+
+    Last 24h · 2 requests · 1 session
+      100% of your usage was at >150k context
+
+    Last 7d · 35846 requests · 22 sessions
+      96% of your usage came from subagent-heavy sessions
+    """
+
     private static var payload: String {
         """
         {"is_error":false,"num_turns":0,"local_command":"usage","type":"result","subtype":"success","result":\(Self.jsonString(liveResult))}
@@ -89,6 +103,36 @@ final class AIUsageClaudeCLITests: XCTestCase {
             return XCTFail("Cache without CLI must be unavailable")
         }
         XCTAssertTrue(message.contains("CLI") || message.contains("/usage"))
+    }
+
+    func testAnalyticsOnlyUsageStillReadsMetersFromUnchangedCache() async throws {
+        let home = try makeHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        try writeCache(to: home, timestamp: 1_000_000, fiveHour: 21, weekly: 49, fable: 16)
+        let payload = """
+        {"is_error":false,"num_turns":0,"local_command":"usage","type":"result","subtype":"success","result":\(Self.jsonString(Self.analyticsOnlyResult))}
+        """
+        try writeCLI(to: home, payload: payload)
+        let snapshot = await AIUsageFetcher.fetchClaude(
+            transport: NoNetwork(),
+            now: Date(timeIntervalSince1970: 9),
+            homeDirectory: home
+        )
+        XCTAssertEqual(snapshot.status, .ready)
+        XCTAssertEqual(snapshot.sourceLabel, ClaudeCLIUsage.sourceLabel)
+        XCTAssertEqual(snapshot.windows.first(where: { $0.id == "five_hour" })?.usedPercent, 21)
+        XCTAssertEqual(snapshot.windows.first(where: { $0.id == "seven_day" })?.usedPercent, 49)
+        XCTAssertEqual(snapshot.windows.first(where: { $0.title == "Fable" })?.usedPercent, 16)
+    }
+
+    func testAnalyticsOnlyUsageWithoutCacheIsUnavailable() throws {
+        let payload = """
+        {"is_error":false,"num_turns":0,"local_command":"usage","type":"result","subtype":"success","result":\(Self.jsonString(Self.analyticsOnlyResult))}
+        """
+        guard case .failure(let error) = ClaudeCLIUsage.parse(Data(payload.utf8), now: Date()) else {
+            return XCTFail("Analytics-only /usage without a cache must not invent quotas")
+        }
+        XCTAssertTrue(error.message.contains("usage windows"))
     }
 
     func testFetcherUsesExactCLIArgumentsAndNeverHTTP() async throws {
