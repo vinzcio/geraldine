@@ -94,10 +94,7 @@ struct ClaudeCLIUsage: ProviderUsageReading {
            let cached = ClaudeUsageCache.snapshot(homeDirectory: homeDirectory),
            let fetchedAt = cached.fetchedAt,
            fetchedAt > (previousFetchedAt ?? .distantPast) {
-            var live = cached
-            live.sourceLabel = sourceLabel
-            live.fetchedAt = now
-            return .success(live)
+            return adoptingCache(cached, now: now)
         }
 
         switch parseResultText(result, now: now) {
@@ -109,13 +106,33 @@ struct ClaudeCLIUsage: ProviderUsageReading {
             // request. Meters stay in cachedUsageUtilization even when that
             // cache timestamp does not advance.
             if let homeDirectory,
-               var cached = ClaudeUsageCache.snapshot(homeDirectory: homeDirectory) {
-                cached.sourceLabel = sourceLabel
-                cached.fetchedAt = now
-                return .success(cached)
+               let cached = ClaudeUsageCache.snapshot(homeDirectory: homeDirectory) {
+                return adoptingCache(cached, now: now)
             }
             return .failure(error)
         }
+    }
+
+    /// Keep cache meters only while their window is still open. A weekly
+    /// `resets_at` that has already passed is the previous window; showing
+    /// that 100% as current is wrong once the reset has landed.
+    private static func adoptingCache(_ cached: AIUsageSnapshot, now: Date)
+        -> Result<AIUsageSnapshot, AIUsageParseError> {
+        var live = cached
+        live.sourceLabel = sourceLabel
+        let current = live.windows.filter { window in
+            guard let reset = window.resetsAt else { return true }
+            return reset > now
+        }
+        let weeklyClosed = live.windows.contains { window in
+            window.id == "seven_day" && window.resetsAt.map { $0 <= now } == true
+        }
+        guard !weeklyClosed, !current.isEmpty else {
+            return .failure(.init(message: "Claude Code has not refreshed usage since the weekly reset."))
+        }
+        live.windows = current
+        live.fetchedAt = now
+        return .success(live)
     }
 
     private static func isErrorFlag(_ value: Any?) -> Bool {
