@@ -125,6 +125,45 @@ final class AIUsageClaudeCLITests: XCTestCase {
         XCTAssertEqual(snapshot.windows.first(where: { $0.title == "Fable" })?.usedPercent, 16)
     }
 
+    func testAnalyticsOnlyUsageKeepsOpenWeeklyWindowFromCache() async throws {
+        let home = try makeHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        try writeCache(to: home, timestamp: 1_000_000, fiveHour: 21, weekly: 49, fable: 16,
+                       weeklyResetsAt: "2099-01-01T00:00:00Z")
+        let payload = """
+        {"is_error":false,"num_turns":0,"local_command":"usage","type":"result","subtype":"success","result":\(Self.jsonString(Self.analyticsOnlyResult))}
+        """
+        try writeCLI(to: home, payload: payload)
+        let snapshot = await AIUsageFetcher.fetchClaude(
+            transport: NoNetwork(),
+            now: Date(timeIntervalSince1970: 9),
+            homeDirectory: home
+        )
+        XCTAssertEqual(snapshot.status, .ready)
+        XCTAssertEqual(snapshot.windows.first(where: { $0.id == "seven_day" })?.usedPercent, 49)
+    }
+
+    func testAnalyticsOnlyUsageRejectsClosedWeeklyWindow() async throws {
+        let home = try makeHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        try writeCache(to: home, timestamp: 1_000_000, fiveHour: 0, weekly: 100, fable: 8,
+                       weeklyResetsAt: "2026-10-13T07:00:00.226980+00:00")
+        let payload = """
+        {"is_error":false,"num_turns":0,"local_command":"usage","type":"result","subtype":"success","result":\(Self.jsonString(Self.analyticsOnlyResult))}
+        """
+        try writeCLI(to: home, payload: payload)
+        let snapshot = await AIUsageFetcher.fetchClaude(
+            transport: NoNetwork(),
+            now: Date(timeIntervalSince1970: 1_791_878_400),
+            homeDirectory: home
+        )
+        guard case .error(let message) = snapshot.status else {
+            return XCTFail("A closed weekly window must not keep showing 100% used")
+        }
+        XCTAssertTrue(message.contains("weekly reset"), message)
+        XCTAssertTrue(snapshot.windows.isEmpty)
+    }
+
     func testAnalyticsOnlyUsageWithoutCacheIsUnavailable() throws {
         let payload = """
         {"is_error":false,"num_turns":0,"local_command":"usage","type":"result","subtype":"success","result":\(Self.jsonString(Self.analyticsOnlyResult))}
@@ -251,14 +290,19 @@ final class AIUsageClaudeCLITests: XCTestCase {
         return home
     }
 
-    private func writeCache(to home: URL, timestamp: Double, fiveHour: Double, weekly: Double, fable: Double) throws {
+    private func writeCache(to home: URL, timestamp: Double, fiveHour: Double, weekly: Double, fable: Double,
+                            weeklyResetsAt: Any? = nil) throws {
+        var sevenDay: [String: Any] = ["utilization": weekly]
+        if let weeklyResetsAt {
+            sevenDay["resets_at"] = weeklyResetsAt
+        }
         let object: [String: Any] = [
             "oauthAccount": ["accountUuid": "current"],
             "cachedUsageUtilization": [
                 "accountUuid": "current", "fetchedAtMs": timestamp,
                 "utilization": [
                     "five_hour": ["utilization": fiveHour, "resets_at": 1_800],
-                    "seven_day": ["utilization": weekly],
+                    "seven_day": sevenDay,
                     "limits": [[
                         "percent": fable,
                         "scope": ["model": ["display_name": "Fable"]]
