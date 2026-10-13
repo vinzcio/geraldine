@@ -7,6 +7,7 @@ enum Module: String, CaseIterable, Identifiable {
     case dashboard
     case smartCare
     case activity
+    case codingUsage
     case storage
     case battery
     case keepAwake
@@ -29,6 +30,7 @@ enum Module: String, CaseIterable, Identifiable {
         case .dashboard:   return "Dashboard"
         case .smartCare:   return "Smart Care"
         case .activity:    return "Activity"
+        case .codingUsage: return "Coding Usage"
         case .storage:     return "Storage"
         case .battery:     return "Battery"
         case .keepAwake:   return "Keep Awake"
@@ -51,6 +53,7 @@ enum Module: String, CaseIterable, Identifiable {
         case .dashboard:   return "gauge.with.dots.needle.50percent"
         case .smartCare:   return "checkmark.seal.fill"
         case .activity:    return "waveform.path.ecg"
+        case .codingUsage: return "terminal"
         case .storage:     return "chart.pie.fill"
         case .battery:     return "battery.100"
         case .keepAwake:   return "eye.fill"
@@ -73,6 +76,7 @@ enum Module: String, CaseIterable, Identifiable {
         case .dashboard:   return Theme.accent
         case .smartCare:   return Theme.accent
         case .activity:    return Theme.accent2
+        case .codingUsage: return Theme.indigo
         case .storage:     return Theme.mint
         case .battery:     return Theme.green
         case .keepAwake:   return Theme.orange
@@ -99,6 +103,7 @@ enum Module: String, CaseIterable, Identifiable {
         case .dashboard:   return "Live system vitals at a glance"
         case .smartCare:   return "One-tap health check and guided next steps"
         case .activity:    return "CPU, memory & top processes"
+        case .codingUsage: return "Accounts, remaining allowances, and reset times"
         case .storage:     return "What's using your disk"
         case .battery:     return "Charge history, consumers & health"
         case .keepAwake:   return "Prevent idle sleep and display dimming"
@@ -125,7 +130,7 @@ enum Module: String, CaseIterable, Identifiable {
 
     var group: Group {
         switch self {
-        case .dashboard, .smartCare, .activity, .storage, .battery, .keepAwake, .calendar: return .overview
+        case .dashboard, .smartCare, .activity, .codingUsage, .storage, .battery, .keepAwake, .calendar: return .overview
         case .cleanup, .largeFiles, .uninstaller: return .clean
         case .powerTools, .privacy, .loginItems, .maintenance, .updater, .permissions, .settings: return .tune
         }

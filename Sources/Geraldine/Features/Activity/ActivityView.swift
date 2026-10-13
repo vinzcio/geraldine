@@ -9,11 +9,17 @@ final class ActivityViewModel: ObservableObject {
     private var sampleTask: Task<Void, Never>?
     private var lifecycleID = UUID()
 
-    var sorted: [ProcUsage] {
-        // Rank the whole sampled pool by the active metric before trimming, so Memory
-        // mode surfaces true memory hogs rather than only the CPU-ranked head.
-        let ranked = sortByMemory ? consumers.sorted { $0.mem > $1.mem } : consumers.sorted { $0.cpu > $1.cpu }
-        return Array(ranked.prefix(8))
+    @Published var query = ""
+    @Published var showsAll = false
+    @Published private(set) var hasSampled = false
+
+    var groups: [ProcessGroup] {
+        ProcessGroup.ranked(consumers, byMemory: sortByMemory, query: query)
+    }
+
+    var visibleGroups: [ProcessGroup] {
+        showsAll || !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? groups : Array(groups.prefix(8))
     }
 
     func start() {
@@ -42,6 +48,7 @@ final class ActivityViewModel: ObservableObject {
                   !Task.isCancelled,
                   self.lifecycleID == lifecycleID else { return }
             self.consumers = procs
+            self.hasSampled = true
             self.sampleTask = nil
         }
     }
@@ -55,46 +62,72 @@ final class ActivityViewModel: ObservableObject {
 
 struct ActivityView: View {
     @EnvironmentObject var monitor: SystemMonitor
+    @EnvironmentObject var state: AppState
     @Environment(\.geraldineSurfaceActive) private var surfaceActive
     @StateObject private var vm = ActivityViewModel()
+    @State private var inspectionTime: TimeInterval?
+    @State private var selectedGroup: ProcessGroup?
+
+    private var chartNow: Date { monitor.memHistory.last?.date ?? Date() }
 
     var body: some View {
-        ModulePage(module: .activity, headerStyle: .data, widthRole: .fluid) {
-            graphCard("CPU", systemImage: "cpu",
-                      value: Fmt.percent(monitor.cpuUsage),
-                      valueAnimationValue: monitor.cpuUsage * 100,
-                      history: monitor.cpuHistory,
-                      tint: MetricPresentationPolicy.usageReadoutColor(monitor.cpuUsage),
-                      chartTint: Theme.Chart.status(for: monitor.cpuUsage),
-                      footnote: String(format: "Load Average %.2f", monitor.loadAverage),
-                      footnoteAnimationValue: monitor.loadAverage)
+        ScrollViewReader { proxy in
+            ModulePage(module: .activity, headerStyle: .data, widthRole: .fluid) {
+                Text("Hover or drag a chart to compare the same time across CPU, GPU, and memory. Use arrow keys when a chart is focused.")
+                    .font(.caption).foregroundStyle(.secondary)
+                graphCard("CPU", systemImage: "cpu",
+                          value: Fmt.percent(monitor.cpuUsage),
+                          valueAnimationValue: monitor.cpuUsage * 100,
+                          history: monitor.cpuHistory,
+                          tint: MetricPresentationPolicy.usageReadoutColor(monitor.cpuUsage),
+                          chartTint: Theme.Chart.status(for: monitor.cpuUsage),
+                          footnote: String(format: "Load Average %.2f", monitor.loadAverage),
+                          footnoteAnimationValue: monitor.loadAverage)
+                    .id(ActivitySection.cpu)
 
-            gpuCard
+                gpuCard.id(ActivitySection.gpu)
 
-            graphCard("Memory", systemImage: "memorychip",
-                      value: Fmt.percent(monitor.memoryFraction),
-                      valueAnimationValue: monitor.memoryFraction * 100,
-                      history: monitor.memHistory,
-                      tint: MetricPresentationPolicy.usageReadoutColor(monitor.memoryFraction),
-                      chartTint: Theme.Chart.status(for: monitor.memoryFraction),
-                      footnote: "\(Fmt.size(monitor.memoryUsed)) of \(Fmt.size(monitor.memoryTotal)) used",
-                      footnoteAnimationValue: monitor.memoryUsed)
+                graphCard("Memory", systemImage: "memorychip",
+                          value: Fmt.percent(monitor.memoryFraction),
+                          valueAnimationValue: monitor.memoryFraction * 100,
+                          history: monitor.memHistory,
+                          tint: MetricPresentationPolicy.usageReadoutColor(monitor.memoryFraction),
+                          chartTint: Theme.Chart.status(for: monitor.memoryFraction),
+                          footnote: "\(Fmt.size(monitor.memoryUsed)) of \(Fmt.size(monitor.memoryTotal)) used",
+                          footnoteAnimationValue: monitor.memoryUsed)
+                    .id(ActivitySection.memory)
 
-            temperatureCard
+                temperatureCard
 
-            HStack(spacing: Theme.Spacing.md) {
-                miniCard("Uptime", SystemMonitor.uptimeString(monitor.uptime), "clock.arrow.circlepath",
-                         animationValue: Double(monitor.uptime))
-                miniCard("Load", String(format: "%.2f", monitor.loadAverage), "speedometer",
-                         animationValue: monitor.loadAverage)
+                HStack(spacing: Theme.Spacing.md) {
+                    miniCard("Uptime", SystemMonitor.uptimeString(monitor.uptime), "clock.arrow.circlepath",
+                             animationValue: Double(monitor.uptime))
+                    miniCard("Load", String(format: "%.2f", monitor.loadAverage), "speedometer",
+                             animationValue: monitor.loadAverage)
+                }
+
+                topConsumers.id(ActivitySection.processes)
             }
-
-            topConsumers
+            .onAppear {
+                if surfaceActive { vm.start() }
+                proxy.scrollTo(state.activitySection, anchor: .top)
+                if state.activitySection == .memory { vm.sortByMemory = true }
+            }
+            .onChange(of: state.activityNavigationID) { _, _ in
+                let section = state.activitySection
+                proxy.scrollTo(section, anchor: .top)
+                if section == .memory { vm.sortByMemory = true }
+                if section == .cpu { vm.sortByMemory = false }
+            }
+            .onDisappear { vm.stop(); inspectionTime = nil }
+            .onChange(of: surfaceActive) { _, isActive in
+                isActive ? vm.start() : vm.stop()
+                if !isActive { inspectionTime = nil }
+            }
         }
-        .onAppear { if surfaceActive { vm.start() } }
-        .onDisappear { vm.stop() }
-        .onChange(of: surfaceActive) { _, isActive in
-            isActive ? vm.start() : vm.stop()
+        .sheet(item: $selectedGroup) { selected in
+            ProcessDetailView(group: vm.groups.first { $0.id == selected.id } ?? selected,
+                              isCurrent: vm.groups.contains { $0.id == selected.id })
         }
     }
 
@@ -127,7 +160,7 @@ struct ActivityView: View {
                 } else {
                     TimelineSparkGraph(samples: device.samples,
                                        window: SystemMonitor.liveHistoryWindow,
-                                       now: Date(),
+                                       now: chartNow,
                                        tint: device.activity.map(MetricPresentationPolicy.usageChartColor) ?? .secondary,
                                        gradient: MetricChartStyle.gradient(for: .gpu),
                                        domain: MetricChartStyle.normalizedDomain,
@@ -136,7 +169,8 @@ struct ActivityView: View {
                                        gapThreshold: SystemMonitor.chartSampleGapThreshold,
                                        maximumPointCount: 300,
                                        inspectionValueFormatter: { Fmt.percent($0) },
-                                       inspectionAccessibilityLabel: "\(device.displayName) GPU activity history")
+                                       inspectionAccessibilityLabel: "\(device.displayName) GPU activity history",
+                                       inspectionTime: $inspectionTime)
                         .frame(height: 88)
                 }
                 Text(device.displayName)
@@ -159,7 +193,7 @@ struct ActivityView: View {
             }
             TimelineSparkGraph(samples: history,
                                window: SystemMonitor.liveHistoryWindow,
-                               now: Date(),
+                               now: chartNow,
                                tint: chartTint,
                                gradient: MetricPresentationPolicy.usageGradient,
                                domain: MetricChartStyle.normalizedDomain,
@@ -167,7 +201,8 @@ struct ActivityView: View {
                                gapThreshold: SystemMonitor.chartSampleGapThreshold,
                                maximumPointCount: 300,
                                inspectionValueFormatter: { Fmt.percent($0) },
-                               inspectionAccessibilityLabel: "\(title) usage history")
+                               inspectionAccessibilityLabel: "\(title) usage history",
+                               inspectionTime: $inspectionTime)
                 .frame(height: 88)
             AnimatedNumberText(footnote, value: footnoteAnimationValue)
                 .font(.caption)
@@ -258,38 +293,60 @@ struct ActivityView: View {
     }
 
     private var topConsumers: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let groups = vm.visibleGroups
+        return VStack(alignment: .leading, spacing: 12) {
             HStack {
-                SectionHeader("Top Consumers")
-                Picker("", selection: $vm.sortByMemory) {
+                SectionHeader("Apps & Processes")
+                Spacer()
+                Picker("Rank by", selection: $vm.sortByMemory) {
                     Text("CPU").tag(false)
                     Text("Memory").tag(true)
                 }
-                .pickerStyle(.segmented).labelsHidden().frame(width: 150)
+                .pickerStyle(.segmented).frame(width: 180)
             }
+            TextField("Search sampled apps, processes, or PID", text: $vm.query)
+                .textFieldStyle(.roundedBorder)
+                .accessibilityLabel("Search sampled processes")
+            Text("Top sampled processes, grouped by app. Totals include only sampled helpers; CPU can exceed 100% across cores.")
+                .font(.caption).foregroundStyle(.secondary)
             VStack(spacing: 0) {
-                ForEach(Array(vm.sorted.enumerated()), id: \.element.id) { idx, p in
-                    CareLedgerRow(
-                        tint: Module.activity.tint,
-                        title: p.name,
-                        detail: vm.sortByMemory ? "Memory share" : "CPU share"
-                    ) {
-                        ProcessIconPlate(pid: p.id, tint: Module.activity.tint)
-                    } accessory: {
-                        AnimatedNumberText(String(format: "%.1f%%", vm.sortByMemory ? p.mem : p.cpu),
-                                           value: vm.sortByMemory ? p.mem : p.cpu)
-                            .font(.callout.monospacedDigit()).foregroundStyle(.secondary)
-                            .frame(width: 56, alignment: .trailing)
+                ForEach(groups) { group in
+                    Button { selectedGroup = group } label: {
+                        CareLedgerRow(
+                            tint: Module.activity.tint,
+                            title: group.name,
+                            detail: "\(group.processes.count) sampled \(group.processes.count == 1 ? "process" : "processes")"
+                        ) {
+                            ProcessIconPlate(pid: group.representativePID ?? 0, tint: Module.activity.tint)
+                        } accessory: {
+                            HStack(spacing: 8) {
+                                Text(String(format: "%.1f%%", vm.sortByMemory ? group.memory : group.cpu))
+                                    .font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+                                Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
+                            }
+                        }
+                        .contentShape(Rectangle())
                     }
-                    if idx < vm.sorted.count - 1 { Divider() }
+                    .buttonStyle(.plain)
+                    .help("Inspect sampled processes for \(group.name)")
+                    if group.id != groups.last?.id { Divider() }
                 }
-                if vm.sorted.isEmpty {
-                    Text("Sampling…").font(.callout).foregroundStyle(.secondary).padding(.vertical, 8)
+                if groups.isEmpty {
+                    Text(!vm.hasSampled ? "Sampling…" : vm.query.isEmpty
+                         ? "No process samples available." : "No sampled processes match your search.")
+                        .font(.callout).foregroundStyle(.secondary).padding(.vertical, 12)
                 }
             }
             .card(tier: .base)
+            if vm.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && vm.groups.count > 8 {
+                Button(vm.showsAll ? "Show top eight" : "Show all \(vm.groups.count) sampled apps & processes") {
+                    vm.showsAll.toggle()
+                }
+                .buttonStyle(.quiet(Module.activity.tint))
+            }
         }
     }
+
 }
 
 /// A running process's app icon on the neutral plate used for third-party apps.

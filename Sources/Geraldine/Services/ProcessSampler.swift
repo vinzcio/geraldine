@@ -5,6 +5,16 @@ struct ProcUsage: Identifiable, Hashable {
     let name: String
     let cpu: Double   // %
     let mem: Double   // %
+    var executablePath: String? = nil
+
+    /// Helpers inside the same outer app bundle belong together. Never group
+    /// unrelated processes merely because their display names happen to match.
+    var applicationPath: String? {
+        guard let executablePath, executablePath.hasPrefix("/") else { return nil }
+        let components = (executablePath as NSString).pathComponents
+        guard let index = components.firstIndex(where: { $0.hasSuffix(".app") }) else { return nil }
+        return NSString.path(withComponents: Array(components.prefix(index + 1)))
+    }
 }
 
 enum ProcessSampler {
@@ -35,7 +45,8 @@ enum ProcessSampler {
                   let cpu = Double(parts[1]),
                   let mem = Double(parts[2]) else { continue }
             let name = (String(parts[3]) as NSString).lastPathComponent
-            out.append(ProcUsage(id: pid, name: name, cpu: cpu, mem: mem))
+            out.append(ProcUsage(id: pid, name: name, cpu: cpu, mem: mem,
+                                 executablePath: String(parts[3])))
             if out.count >= limit { break }
         }
         return out

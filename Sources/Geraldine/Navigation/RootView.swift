@@ -18,6 +18,9 @@ struct RootView: View {
         }
         .geraldineSurfaceActive(state.mainWindowVisible)
         .background(WindowAccessor { window in state.bind(window: window) })
+        .sheet(isPresented: $state.showsCommandSearch) {
+            CommandSearchView { $0.perform(in: state) }
+        }
         .sheet(isPresented: Binding(get: { !didOnboard }, set: { if !$0 { didOnboard = true } })) {
             WelcomeView { didOnboard = true }
                 .environmentObject(state.layout)
@@ -54,6 +57,7 @@ struct RootView: View {
 
 struct Sidebar: View {
     @Binding var selection: Module?
+    @EnvironmentObject var state: AppState
 
     /// Keep navigation state in Geraldine's own selection plate. The native
     /// selected row is deliberately nil so AppKit cannot paint its blue overlay.
@@ -75,6 +79,17 @@ struct Sidebar: View {
             BrandHeader()
                 .listRowSeparator(.hidden)
                 .listRowInsets(EdgeInsets(top: 10, leading: 8, bottom: 14, trailing: 8))
+
+            Button { state.showsCommandSearch = true } label: {
+                HStack {
+                    Label("Search", systemImage: "magnifyingglass")
+                    Spacer()
+                    Text("⌘K").foregroundStyle(.secondary)
+                }.font(.callout)
+            }
+            .buttonStyle(.plain)
+            .padding(.vertical, 6)
+            .listRowSeparator(.hidden)
 
             ForEach(Module.Group.allCases) { group in
                 Section {
@@ -267,6 +282,7 @@ struct DetailHost: View {
             case .dashboard:   DashboardView()
             case .smartCare:   SmartCareView()
             case .activity:    ActivityView()
+            case .codingUsage: CodingUsageView()
             case .storage:     StorageView()
             case .battery:     BatteryView()
             case .keepAwake:   KeepAwakeView()

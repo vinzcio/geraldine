@@ -22,6 +22,13 @@ struct GeraldineApp: App {
         .windowResizability(.contentMinSize)
         .commands {
             CommandGroup(replacing: .newItem) {}   // no "New Window"
+            CommandGroup(after: .newItem) {
+                Button("Search Pages and Actions…") {
+                    state.showMainWindow()
+                    state.showsCommandSearch = true
+                }
+                .keyboardShortcut("k", modifiers: .command)
+            }
         }
 
         Settings {
