@@ -100,7 +100,22 @@ struct ClaudeCLIUsage: ProviderUsageReading {
             return .success(live)
         }
 
-        return parseResultText(result, now: now)
+        switch parseResultText(result, now: now) {
+        case .success(let snapshot):
+            return .success(snapshot)
+        case .failure(let error):
+            // Claude Code 2.1.x `/usage` prints session analytics and no longer
+            // prints "Current session/week … % used". The CLI still owns the
+            // request. Meters stay in cachedUsageUtilization even when that
+            // cache timestamp does not advance.
+            if let homeDirectory,
+               var cached = ClaudeUsageCache.snapshot(homeDirectory: homeDirectory) {
+                cached.sourceLabel = sourceLabel
+                cached.fetchedAt = now
+                return .success(cached)
+            }
+            return .failure(error)
+        }
     }
 
     private static func isErrorFlag(_ value: Any?) -> Bool {
