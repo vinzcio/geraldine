@@ -226,33 +226,40 @@ struct DashboardView: View {
 
     private var statTiles: some View {
         LazyVGrid(columns: columns, spacing: Theme.Spacing.md) {
-            StatTile(icon: "cpu", title: "CPU",
-                     value: Fmt.percent(monitor.cpuUsage),
-                     valueAnimationValue: monitor.cpuUsage * 100,
-                     caption: "In Use",
-                     fraction: monitor.cpuUsage,
-                     tint: Theme.Chart.status(for: monitor.cpuUsage),
-                     valueTint: MetricPresentationPolicy.usageReadoutColor(monitor.cpuUsage))
+            Button { state.navigateToActivity(.cpu) } label: {
+                StatTile(icon: "cpu", title: "CPU",
+                         value: Fmt.percent(monitor.cpuUsage),
+                         valueAnimationValue: monitor.cpuUsage * 100,
+                         caption: "In Use",
+                         fraction: monitor.cpuUsage,
+                         tint: Theme.Chart.status(for: monitor.cpuUsage),
+                         valueTint: MetricPresentationPolicy.usageReadoutColor(monitor.cpuUsage))
+            }.buttonStyle(.plain).help("Inspect CPU activity")
 
-            StatTile(icon: "memorychip", title: "Memory",
-                     value: Fmt.percent(monitor.memoryFraction),
-                     valueAnimationValue: monitor.memoryFraction * 100,
-                     caption: Fmt.size(monitor.memoryUsed),
-                     captionAnimationValue: monitor.memoryUsed,
-                     fraction: monitor.memoryFraction,
-                     tint: Theme.Chart.status(for: monitor.memoryFraction),
-                     valueTint: MetricPresentationPolicy.usageReadoutColor(monitor.memoryFraction))
+            Button { state.navigateToActivity(.memory) } label: {
+                StatTile(icon: "memorychip", title: "Memory",
+                         value: Fmt.percent(monitor.memoryFraction),
+                         valueAnimationValue: monitor.memoryFraction * 100,
+                         caption: Fmt.size(monitor.memoryUsed),
+                         captionAnimationValue: monitor.memoryUsed,
+                         fraction: monitor.memoryFraction,
+                         tint: Theme.Chart.status(for: monitor.memoryFraction),
+                         valueTint: MetricPresentationPolicy.usageReadoutColor(monitor.memoryFraction))
+            }.buttonStyle(.plain).help("Inspect memory activity")
 
-            StatTile(icon: "internaldrive", title: "Storage",
-                     value: Fmt.percent(monitor.diskFraction),
-                     valueAnimationValue: monitor.diskFraction * 100,
-                     caption: "\(Fmt.size(max(0, monitor.diskTotal - monitor.diskUsed))) Free",
-                     captionAnimationValue: max(0, monitor.diskTotal - monitor.diskUsed),
-                     fraction: monitor.diskFraction,
-                     tint: Theme.Chart.status(for: monitor.diskFraction),
-                     valueTint: MetricPresentationPolicy.usageReadoutColor(monitor.diskFraction))
+            Button { state.selection = .storage } label: {
+                StatTile(icon: "internaldrive", title: "Storage",
+                         value: Fmt.percent(monitor.diskFraction),
+                         valueAnimationValue: monitor.diskFraction * 100,
+                         caption: "\(Fmt.size(max(0, monitor.diskTotal - monitor.diskUsed))) Free",
+                         captionAnimationValue: max(0, monitor.diskTotal - monitor.diskUsed),
+                         fraction: monitor.diskFraction,
+                         tint: Theme.Chart.status(for: monitor.diskFraction),
+                         valueTint: MetricPresentationPolicy.usageReadoutColor(monitor.diskFraction))
+            }.buttonStyle(.plain).help("Inspect storage")
 
-            batteryTile
+            Button { state.selection = .battery } label: { batteryTile }
+                .buttonStyle(.plain).help("Inspect power and battery")
         }
     }
 

@@ -26,7 +26,7 @@ private enum ChartAccessibility {
     static let timeFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateStyle = .none
-        formatter.timeStyle = .short
+        formatter.timeStyle = .medium
         return formatter
     }()
 }
@@ -66,6 +66,7 @@ struct TimelineSparkGraph: View {
     var maximumPointCount: Int? = nil
     var inspectionValueFormatter: ((Double) -> String)? = nil
     var inspectionAccessibilityLabel: String = "Metric history"
+    var inspectionTime: Binding<TimeInterval?>? = nil
 
     @ViewBuilder
     var body: some View {
@@ -89,6 +90,9 @@ struct TimelineSparkGraph: View {
                     }
                 }
                 .onChange(of: renderedSamples.count) { _, _ in clampAccessibilitySelection() }
+                .onChange(of: accessibilityIndex) { _, _ in
+                    inspectionTime?.wrappedValue = selectedAccessibilitySample?.timestamp
+                }
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(inspectionAccessibilityLabel)
                 .accessibilityValue(accessibilityValue(formatter: inspectionValueFormatter))
@@ -105,13 +109,15 @@ struct TimelineSparkGraph: View {
                 content(in: geo.size)
                 if let inspectionValueFormatter {
                     TimelineInspectionOverlay(
-                        samples: renderedSamples,
+                        samples: visibleSamples,
                         timeline: timeline,
                         domain: resolvedDomain,
                         tint: tint,
                         sampleColor: sampleColor,
                         valueFormatter: inspectionValueFormatter,
-                        accessibilitySample: selectedAccessibilitySample
+                        accessibilitySample: selectedAccessibilitySample,
+                        gapThreshold: gapThreshold,
+                        sharedTime: inspectionTime
                     )
                 }
             }
@@ -563,31 +569,42 @@ private struct TimelineInspectionOverlay: View {
     let sampleColor: ((Double) -> Color)?
     let valueFormatter: (Double) -> String
     let accessibilitySample: MetricSample?
+    let gapThreshold: TimeInterval
+    let sharedTime: Binding<TimeInterval?>?
 
-    @State private var location: CGPoint?
+    @State private var pointerTime: TimeInterval?
+
+    private var inspectedTime: TimeInterval? {
+        if let sharedTime { return sharedTime.wrappedValue }
+        return pointerTime ?? accessibilitySample?.timestamp
+    }
 
     var body: some View {
         GeometryReader { proxy in
             ZStack {
-                if let sample = inspectedSample(width: proxy.size.width) {
-                    let point = point(for: sample, in: proxy.size)
-                    let pointTint = sampleColor?(sample.value) ?? tint
+                if let time = inspectedTime, timeline.contains(time) {
+                    let sample = ChartInspection.sample(at: time, samples: samples,
+                                                        timeline: timeline, gapThreshold: gapThreshold)
+                    let x = proxy.size.width * timeline.fraction(for: time)
+                    let pointTint = sample.map { sampleColor?($0.value) ?? tint } ?? tint
                     Path { path in
-                        path.move(to: CGPoint(x: point.x, y: 0))
-                        path.addLine(to: CGPoint(x: point.x, y: proxy.size.height))
+                        path.move(to: CGPoint(x: x, y: 0))
+                        path.addLine(to: CGPoint(x: x, y: proxy.size.height))
                     }
                     .stroke(pointTint.opacity(0.42), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
 
-                    Circle()
-                        .fill(pointTint)
-                        .frame(width: 8, height: 8)
-                        .position(point)
-
+                    if let sample {
+                        Circle()
+                            .fill(pointTint)
+                            .frame(width: 8, height: 8)
+                            .position(point(for: sample, in: proxy.size))
+                    }
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(valueFormatter(sample.value))
+                        Text(sample.map { valueFormatter($0.value) } ?? "No sample")
                             .font(.caption.weight(.semibold).monospacedDigit())
                             .foregroundStyle(pointTint)
-                        Text(sample.date, style: .time)
+                        Text(Date(timeIntervalSinceReferenceDate: sample?.timestamp ?? time),
+                             format: .dateTime.hour().minute().second())
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
@@ -598,40 +615,42 @@ private struct TimelineInspectionOverlay: View {
                         in: RoundedRectangle(cornerRadius: Theme.Radius.badge, style: .continuous)
                     )
                     .overlay(RoundedRectangle(cornerRadius: Theme.Radius.badge, style: .continuous).strokeBorder(Theme.separator))
-                    .position(
-                        x: min(max(point.x, 54), proxy.size.width - 54),
-                        y: 24
-                    )
+                    .position(x: min(max(x, 54), max(54, proxy.size.width - 54)), y: 24)
                 }
             }
             .contentShape(Rectangle())
             .onContinuousHover { phase in
                 switch phase {
-                case .active(let point): location = point
-                case .ended: location = nil
+                case .active(let point): select(x: point.x, width: proxy.size.width)
+                case .ended: clearPointer()
                 }
             }
+            .gesture(DragGesture(minimumDistance: 0)
+                .onChanged { select(x: $0.location.x, width: proxy.size.width) }
+                .onEnded { _ in clearPointer() })
+            .onDisappear { clearPointer() }
         }
     }
 
-    private func inspectedSample(width: CGFloat) -> MetricSample? {
-        if let location { return nearestSample(to: location.x, width: width) }
-        return accessibilitySample
+    private func select(x: CGFloat, width: CGFloat) {
+        guard width > 0 else { return }
+        let time = ChartInspection.timestamp(fraction: Double(x / width), in: timeline)
+        pointerTime = time
+        sharedTime?.wrappedValue = time
     }
 
-    private func nearestSample(to x: CGFloat, width: CGFloat) -> MetricSample? {
-        guard width > 0 else { return nil }
-        let target = timeline.start + (Double(min(max(x / width, 0), 1)) * timeline.duration)
-        return samples.min { abs($0.timestamp - target) < abs($1.timestamp - target) }
+    private func clearPointer() {
+        if let pointerTime, sharedTime?.wrappedValue == pointerTime {
+            sharedTime?.wrappedValue = nil
+        }
+        pointerTime = nil
     }
 
     private func point(for sample: MetricSample, in size: CGSize) -> CGPoint {
         let span = max(domain.upperBound - domain.lowerBound, 0.0001)
         let y = min(max((sample.value - domain.lowerBound) / span, 0), 1)
-        return CGPoint(
-            x: size.width * CGFloat(timeline.fraction(for: sample.timestamp)),
-            y: size.height * (1 - CGFloat(y))
-        )
+        return CGPoint(x: size.width * CGFloat(timeline.fraction(for: sample.timestamp)),
+                       y: size.height * (1 - CGFloat(y)))
     }
 }
 

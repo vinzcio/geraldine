@@ -102,6 +102,15 @@ final class AppState: ObservableObject {
     /// metrics every tick.
     @Published private(set) var mainWindowPresented = true
     @Published private(set) var menuBarPopoverVisible = false
+    @Published var activitySection: ActivitySection = .cpu
+    @Published private(set) var activityNavigationID = UUID()
+    @Published var showsCommandSearch = false
+
+    func navigateToActivity(_ section: ActivitySection) {
+        activitySection = section
+        activityNavigationID = UUID()
+        selection = .activity
+    }
 
     @Published var appShape: AppShape {
         didSet {

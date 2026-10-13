@@ -14,6 +14,16 @@ Geraldine is a native macOS 14+ utility for understanding and caring for your Ma
 
 Operations that can remove files or change system state show their scope and require an explicit user action. Dock previews and coding-usage tiles are off until you turn them on.
 
+## Exploring activity and coding usage
+
+- Click a dashboard metric to open its detail page. CPU and memory open the corresponding Activity chart.
+- Hover or drag an Activity chart to inspect the same timestamp across CPU, GPU, and memory. Arrow keys inspect a focused chart. Missing recording intervals show “No sample.”
+- Search Activity by app, helper name, or PID, expand beyond the first eight groups, and open a group to inspect its sampled processes. App helpers are grouped by their containing app bundle; totals cover the existing top-process sample, not every running process.
+- Coding Usage compares accounts and all returned allowance windows, with reset dates and last successful update times. A failed refresh keeps older values explicitly labeled. Showing usage retains the existing opt-in and menu-bar tile behavior.
+- Press **⌘K**, or use Search in the sidebar, to find pages and actions. Type to filter, use arrow keys to select, Return to open, and Escape to close. Refresh Coding Usage only refreshes accounts already enabled.
+
+`ActivityExplorationTests` covers grouping, searching, chart gaps, and command matching. Set `FEATURE_SURFACE_DIR` to an owned output directory to run `FeatureSurfaceTests`: native mouse and keyboard events go directly to test windows outside all displays, without focus or system input. It also renders synthetic usage states and process details for visual review. These checks do not verify the installed app.
+
 ## Build and test
 
 Requires macOS 14 or newer and Xcode 15 or newer. Geraldine is a Swift Package with no third-party dependencies.
