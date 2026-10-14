@@ -3,7 +3,9 @@ import Foundation
 
 /// Drive an official agent TUI just long enough to run a local slash command.
 /// The child owns authentication; Geraldine only types the command and reads
-/// the screen. Process-group cleanup must not leak a leftover TUI.
+/// the screen. The TUI runs in its own session with the PTY as its controlling
+/// terminal: if Geraldine quits or crashes mid-capture, closing the master
+/// hangs that terminal up and the TUI exits instead of running on unowned.
 enum AgentPTY {
     struct Step: Sendable {
         var afterContaining: String?
@@ -11,39 +13,49 @@ enum AgentPTY {
         var write: Data
     }
 
+    /// A screen that may or may not appear, such as an approval dialog. Answered
+    /// once, and only while its text is on screen.
+    struct PromptReply: Sendable {
+        var containing: String
+        var write: Data
+    }
+
+    /// Screens are matched on text with the escape sequences removed, so styling
+    /// such as a reverse-video fake cursor inside a placeholder cannot hide it.
+    /// After each step or prompt reply, the next trigger must arrive in new
+    /// output: a keystroke never lands on a dialog that opened in between.
     static func capture(
         executable: URL,
         arguments: [String],
         homeDirectory: URL,
+        workingDirectory: URL? = nil,
         environment: [String: String] = [:],
         replyColorQuery: Bool = false,
         steps: [Step],
+        promptReplies: [PromptReply] = [],
         stopContaining: [String],
         abortContaining: [String] = [],
         timeout: TimeInterval
     ) -> String {
         let master = posix_openpt(O_RDWR | O_NOCTTY)
         guard master >= 0, grantpt(master) == 0, unlockpt(master) == 0,
-              let slaveName = String(cString: ptsname(master), encoding: .utf8) else {
+              let name = ptsname(master), let slaveName = String(cString: name, encoding: .utf8) else {
             if master >= 0 { close(master) }
             return ""
         }
-        let slave = open(slaveName, O_RDWR | O_NOCTTY)
-        guard slave >= 0 else {
+        // The window size only sticks once the slave is open; set before that,
+        // the child's first open resets it and the TUI lays out one column
+        // wide. O_NOCTTY keeps this descriptor from claiming the terminal, and
+        // it closes once the child has opened its own.
+        let sizer = open(slaveName, O_RDWR | O_NOCTTY)
+        guard sizer >= 0 else {
             close(master)
             return ""
         }
         var size = winsize(ws_row: 40, ws_col: 120, ws_xpixel: 0, ws_ypixel: 0)
+        _ = ioctl(sizer, TIOCSWINSZ, &size)
         _ = ioctl(master, TIOCSWINSZ, &size)
-        _ = ioctl(slave, TIOCSWINSZ, &size)
 
-        let process = Process()
-        process.executableURL = executable
-        process.arguments = arguments
-        process.currentDirectoryURL = homeDirectory
-        process.standardInput = FileHandle(fileDescriptor: slave, closeOnDealloc: false)
-        process.standardOutput = FileHandle(fileDescriptor: slave, closeOnDealloc: false)
-        process.standardError = FileHandle(fileDescriptor: slave, closeOnDealloc: false)
         var env = AgentCLI.environment(homeDirectory: homeDirectory)
         env.removeValue(forKey: "NO_COLOR")
         env.removeValue(forKey: "CI")
@@ -52,31 +64,44 @@ enum AgentPTY {
         env["TERM"] = env["TERM"].flatMap { $0.isEmpty ? nil : $0 } ?? "xterm-256color"
         env["COLORTERM"] = env["COLORTERM"] ?? "truecolor"
         environment.forEach { env[$0.key] = $0.value }
-        process.environment = env
-        do { try process.run() } catch {
-            close(slave)
+        let spawned = spawnSession(executable: executable, arguments: arguments, terminal: slaveName,
+                                   directory: workingDirectory ?? homeDirectory, environment: env)
+        close(sizer)
+        guard let pid = spawned else {
             close(master)
             return ""
         }
-        close(slave)
         setNonBlocking(master)
-        _ = setpgid(process.processIdentifier, process.processIdentifier)
-        kill(process.processIdentifier, SIGWINCH)
+        kill(pid, SIGWINCH)
 
         let started = Date()
         var collected = Data()
+        var raw = ""
+        var plain = ""
+        // Bytes before `fresh` were on screen before the last keystroke.
+        var fresh = 0
+        var freshPlain = ""
         var nextStep = 0
         var lastStepAt = started
+        var answered = Set<Int>()
         var queries = QueryResponder()
-        defer {
-            terminate(process)
-            close(master)
+        var reaped = false
+        defer { finish(pid: pid, master: master, reaped: reaped) }
+
+        func keystroke(_ data: Data) {
+            writeMaster(master, data)
+            lastStepAt = Date()
+            fresh = collected.count
+            freshPlain = ""
         }
 
         while Date().timeIntervalSince(started) < timeout {
             if let chunk = readAvailable(master), !chunk.isEmpty {
                 collected.append(chunk)
-            } else if !process.isRunning {
+                raw = decode(collected)
+                plain = stripANSI(raw)
+                freshPlain = fresh == 0 ? plain : stripANSI(decode(collected.suffix(from: fresh)))
+            } else if !isRunning(pid, reaped: &reaped) {
                 if let rest = readAvailable(master) {
                     collected.append(rest)
                 }
@@ -85,23 +110,28 @@ enum AgentPTY {
                 Thread.sleep(forTimeInterval: 0.05)
             }
 
-            let text = decode(collected)
-            if abortContaining.contains(where: { containsLoose(text, $0) }) {
+            if abortContaining.contains(where: { containsLoose(plain, $0) }) {
                 break
             }
-            for reply in queries.replies(for: text, colorQuery: replyColorQuery) {
+            for reply in queries.replies(for: raw, colorQuery: replyColorQuery) {
                 writeMaster(master, reply)
+            }
+            if let index = promptReplies.indices.first(where: {
+                !answered.contains($0) && containsLoose(freshPlain, promptReplies[$0].containing)
+            }) {
+                answered.insert(index)
+                keystroke(promptReplies[index].write)
+                continue
             }
             if nextStep < steps.count {
                 let step = steps[nextStep]
                 let elapsed = Date().timeIntervalSince(lastStepAt)
-                let matched = step.afterContaining.map { containsLoose(text, $0) } ?? true
+                let matched = step.afterContaining.map { containsLoose(freshPlain, $0) } ?? true
                 if matched, elapsed >= step.afterSeconds {
-                    writeMaster(master, step.write)
+                    keystroke(step.write)
                     nextStep += 1
-                    lastStepAt = Date()
                 }
-            } else if stopContaining.contains(where: { containsLoose(text, $0) }) {
+            } else if stopContaining.contains(where: { containsLoose(freshPlain, $0) }) {
                 let drainUntil = Date().addingTimeInterval(0.9)
                 while Date() < drainUntil {
                     if let extra = readAvailable(master), !extra.isEmpty {
@@ -157,6 +187,60 @@ enum AgentPTY {
         }
     }
 
+    /// posix_spawn with POSIX_SPAWN_SETSID. The child opens the slave itself,
+    /// which makes it the new session's controlling terminal, so the child gets
+    /// SIGHUP when the master closes, including when Geraldine exits. Every
+    /// other descriptor is closed in the child, so it never holds the master.
+    private static func spawnSession(executable: URL, arguments: [String], terminal: String,
+                                     directory: URL, environment: [String: String]) -> pid_t? {
+        var attributes: posix_spawnattr_t?
+        guard posix_spawnattr_init(&attributes) == 0 else { return nil }
+        defer { posix_spawnattr_destroy(&attributes) }
+        var actions: posix_spawn_file_actions_t?
+        guard posix_spawn_file_actions_init(&actions) == 0 else { return nil }
+        defer { posix_spawn_file_actions_destroy(&actions) }
+        guard posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETSID | POSIX_SPAWN_CLOEXEC_DEFAULT)) == 0,
+              posix_spawn_file_actions_addchdir_np(&actions, directory.path) == 0,
+              posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, terminal, O_RDWR, 0) == 0,
+              posix_spawn_file_actions_adddup2(&actions, STDIN_FILENO, STDOUT_FILENO) == 0,
+              posix_spawn_file_actions_adddup2(&actions, STDIN_FILENO, STDERR_FILENO) == 0 else { return nil }
+        let argv = ([executable.path] + arguments).map { strdup($0) } + [nil]
+        let envp = environment.map { strdup("\($0.key)=\($0.value)") } + [nil]
+        defer {
+            argv.forEach { free($0) }
+            envp.forEach { free($0) }
+        }
+        var pid: pid_t = 0
+        guard posix_spawn(&pid, executable.path, &actions, &attributes, argv, envp) == 0 else { return nil }
+        return pid
+    }
+
+    /// Reaps the child once it has exited; false from then on.
+    private static func isRunning(_ pid: pid_t, reaped: inout Bool) -> Bool {
+        guard !reaped else { return false }
+        var status: Int32 = 0
+        let result = waitpid(pid, &status, WNOHANG)
+        if result == pid || (result < 0 && errno == ECHILD) {
+            reaped = true
+            return false
+        }
+        return true
+    }
+
+    /// Kill the session, then close the master before reaping: a dying session
+    /// leader can block in exit while its terminal output drains, and nothing
+    /// reads the master once the capture is over.
+    private static func finish(pid: pid_t, master: Int32, reaped: Bool) {
+        if !reaped {
+            killpg(pid, SIGKILL)
+            kill(pid, SIGKILL)
+        }
+        close(master)
+        guard !reaped else { return }
+        var status: Int32 = 0
+        while waitpid(pid, &status, 0) < 0 && errno == EINTR {}
+    }
+
     private static func setNonBlocking(_ fd: Int32) {
         let flags = fcntl(fd, F_GETFL)
         guard flags >= 0 else { return }
@@ -197,16 +281,6 @@ enum AgentPTY {
         }
     }
 
-    private static func terminate(_ process: Process) {
-        let pid = process.processIdentifier
-        if pid > 0 {
-            killpg(pid, SIGKILL)
-            kill(pid, SIGKILL)
-        }
-        if process.isRunning { process.terminate() }
-        process.waitUntilExit()
-    }
-
     private static func decode(_ data: Data) -> String {
         String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
     }
@@ -216,7 +290,9 @@ enum AgentPTY {
             // Cursor-positioned redraws contain no newlines. Separate their
             // text so a reset date cannot absorb the next row's session usage.
             (#"\x{1B}\[[0-9;]*[Hf]"#, "\n"),
-            (#"\x{1B}\[[0-9;?]*[ -/]*[@-~]"#, ""),
+            // Any CSI: parameter bytes 0-?, which includes private `<=>`
+            // forms such as the kitty keyboard `ESC[>1u`.
+            (#"\x{1B}\[[0-?]*[ -/]*[@-~]"#, ""),
             (#"\x{1B}\][^\x{07}]*\x{07}"#, ""),
             (#"\x{1B}[=>]"#, "")
         ]

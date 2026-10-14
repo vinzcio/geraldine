@@ -190,9 +190,10 @@ enum AIUsageParser {
                 ))
             }
         }
-        var plan: String?
+        // The CLI's billing reply carries the tier beside `config`.
+        var plan = AIUsageJSON.string(json["subscription_tier"]) ?? AIUsageJSON.string(json["subscriptionTier"])
         if let userData = user, let userJSON = AIUsageJSON.object(from: userData) {
-            plan = AIUsageJSON.string(userJSON["subscriptionTier"])
+            plan = AIUsageJSON.string(userJSON["subscriptionTier"]) ?? plan
         }
         return .success(AIUsageSnapshot(
             provider: .grok,

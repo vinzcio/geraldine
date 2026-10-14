@@ -72,22 +72,19 @@ final class AIUsageResetTests: XCTestCase {
 
     // MARK: - Grok and Cursor
 
-    func testGrokModalResetIsReadInLocalTime() throws {
-        let modal = """
-        │  Weekly limit (X Premium+)                                                 │
-        │  ███████░░░░░░░░░░░░░░░░░░░░░░░  22%                                       │
-        │  Resets: September 24, 01:27                                               │
-        """
+    func testGrokResetIsTheBillingPeriodEnd() throws {
+        let reply = #"{"jsonrpc":"2.0","id":2,"result":{"config":{"creditUsagePercent":22,"currentPeriod":{"type":"USAGE_PERIOD_TYPE_WEEKLY","end":"2026-09-24T01:27:00+00:00"}},"subscription_tier":"X Premium+"}}"#
         let now = Self.date(2026, 9, 20)
-        let snapshot = try GrokCLIUsage.parse(Data(modal.utf8), now: now).get()
-        var local = Calendar(identifier: .gregorian)
-        local.timeZone = .autoupdatingCurrent
-        let expected = local.date(from: DateComponents(year: 2026, month: 9, day: 24, hour: 1, minute: 27))
-        XCTAssertEqual(snapshot.windows.first?.resetsAt, expected)
+        let snapshot = try GrokCLIUsage.parse(Data(reply.utf8), now: now).get()
+        XCTAssertEqual(snapshot.windows.first?.resetsAt, Self.date(2026, 9, 24, 1, 27))
         XCTAssertEqual(snapshot.windows.first?.resetIsDateOnly, false)
         XCTAssertEqual(snapshot.sharedReset?.id, "pool")
-        // Same line as the bar, as older builds draw it. Already past: stays
-        // in the past so the tile hides it rather than jumping a year.
+    }
+
+    func testPrintedResetAlreadyPassedStaysInThePast() {
+        let now = Self.date(2026, 9, 20)
+        // Already past: stays in the past so the tile hides it rather than
+        // jumping a year.
         let passed = AIUsageResetParser.parse("100%Resets: September 17, 01:27".components(separatedBy: "%")[1],
                                               now: now, timeZone: Self.utc)
         XCTAssertEqual(passed?.date, Self.date(2026, 9, 17, 1, 27))

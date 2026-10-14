@@ -270,7 +270,11 @@ final class AIUsageMonitorTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
         let transport = ScriptedAIUsageTransport(status: 200, body: Data("{}".utf8))
-        let monitor = AIUsageMonitor(defaults: defaults, transport: transport)
+        // A stub fetch: these tests are about connection state, and the default
+        // fetcher would launch the real CLIs against this Mac's home folder.
+        let monitor = AIUsageMonitor(defaults: defaults, transport: transport) { identity, _ in
+            .failed(identity.provider, message: "Test fetch")
+        }
         XCTAssertEqual(monitor.snapshot(for: .codex).status, .disconnected)
         monitor.connect(.codex)
         XCTAssertTrue(monitor.isConnected(.codex))
@@ -286,7 +290,11 @@ final class AIUsageMonitorTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
         let transport = ScriptedAIUsageTransport(status: 200, body: Data("{}".utf8))
-        let monitor = AIUsageMonitor(defaults: defaults, transport: transport)
+        // A stub fetch: these tests are about connection state, and the default
+        // fetcher would launch the real CLIs against this Mac's home folder.
+        let monitor = AIUsageMonitor(defaults: defaults, transport: transport) { identity, _ in
+            .failed(identity.provider, message: "Test fetch")
+        }
         monitor.syncShownProviders([.codex, .cursor])
         XCTAssertTrue(monitor.isConnected(.codex))
         XCTAssertTrue(monitor.isConnected(.cursor))

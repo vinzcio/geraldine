@@ -120,7 +120,7 @@ final class AIUsageClaudeCLITests: XCTestCase {
         let quotedMarker = "'" + marker.path.replacingOccurrences(of: "'", with: "'\\''") + "'"
         let script = """
         #!/bin/sh
-        [ "$#" = 4 ] && [ "$1" = "--print" ] && [ "$2" = "/usage" ] && [ "$3" = "--output-format" ] && [ "$4" = "json" ] || exit 9
+        [ "$#" = 5 ] && [ "$1" = "--print" ] && [ "$2" = "/usage" ] && [ "$3" = "--output-format" ] && [ "$4" = "json" ] && [ "$5" = "--no-session-persistence" ] || exit 9
         if [ -n "${CLAUDE_CONFIG_DIR+x}" ]; then
           printf '%s' "$CLAUDE_CONFIG_DIR" > \(quotedMarker)
         else
@@ -255,7 +255,7 @@ final class AIUsageClaudeCLITests: XCTestCase {
         }
         let script = """
         #!/bin/sh
-        [ "$#" = 4 ] && [ "$1" = "--print" ] && [ "$2" = "/usage" ] && [ "$3" = "--output-format" ] && [ "$4" = "json" ] || exit 9
+        [ "$#" = 5 ] && [ "$1" = "--print" ] && [ "$2" = "/usage" ] && [ "$3" = "--output-format" ] && [ "$4" = "json" ] && [ "$5" = "--no-session-persistence" ] || exit 9
         \(refresh)
         cat <<'USAGE'
         \(payload)

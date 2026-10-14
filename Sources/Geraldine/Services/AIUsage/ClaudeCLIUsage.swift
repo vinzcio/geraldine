@@ -37,6 +37,9 @@ struct ClaudeProfile: Equatable, Sendable {
 /// when that command just refreshed it.
 struct ClaudeCLIUsage: ProviderUsageReading {
     static let sourceLabel = "Claude Code CLI"
+    /// `--no-session-persistence`: each check would otherwise save a transcript
+    /// under `~/.claude/projects`, burying real sessions in the home folder.
+    static let arguments = ["--print", "/usage", "--output-format", "json", "--no-session-persistence"]
 
     func snapshot(homeDirectory: URL, now: Date) async -> AIUsageSnapshot {
         await snapshot(for: AIUsageIdentity(.claude), homeDirectory: homeDirectory, now: now)
@@ -61,7 +64,7 @@ struct ClaudeCLIUsage: ProviderUsageReading {
         environment["CLAUDE_CONFIG_DIR"] = configDirectory?.path
         let result = AgentCLI.run(
             executable: executable,
-            arguments: ["--print", "/usage", "--output-format", "json"],
+            arguments: Self.arguments,
             homeDirectory: homeDirectory,
             environment: environment
         )
