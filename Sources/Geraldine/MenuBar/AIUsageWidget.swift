@@ -283,7 +283,22 @@ struct AIUsageTile: View {
             lines.append(line)
         }
         if let source = snapshot.cachedSourceDescription { lines.append(source) }
+        // The tile keeps a failed check's last values; say why and how old they are.
+        if case .error(let message) = snapshot.status {
+            lines.append("Last check failed: " + message)
+            if let fetchedAt = snapshot.fetchedAt { lines.append("Showing values from \(fetchTime(fetchedAt)).") }
+        }
         return lines.joined(separator: "\n")
+    }
+
+    /// "6:47 PM" today, "Oct 13, 6:47 PM" on an earlier day.
+    private func fetchTime(_ date: Date) -> String {
+        guard calendar.isDate(date, inSameDayAs: now) else {
+            return AIUsageResetText.absolute(date, now: now, calendar: calendar)
+        }
+        return date.formatted(Date.FormatStyle(date: .omitted, time: .shortened,
+                                               locale: calendar.locale ?? .autoupdatingCurrent,
+                                               calendar: calendar, timeZone: calendar.timeZone))
     }
 
     private var antigravityQuotas: some View {

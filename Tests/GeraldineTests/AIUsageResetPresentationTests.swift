@@ -110,8 +110,17 @@ final class AIUsageResetPresentationTests: XCTestCase {
                     XCTAssertEqual(text.contains("resets in 1m"), offset == 60, text)
                 }
                 XCTAssertTrue(tile.accessibilityText.contains(snapshot.status == .loading ? "updating" : "Offline"))
+                // A failed check's tooltip says so, and when the kept values were read.
+                let failed = snapshot.status != .loading
+                XCTAssertEqual(tile.helpText.contains("Last check failed: Offline"), failed, tile.helpText)
+                XCTAssertEqual(tile.helpText.contains("Showing values from 12:00"), failed, tile.helpText)
             }
         }
+        let nextDay = AIUsageTile(identity: .init(.claude, accountKey: "client"), size: .small,
+                                  snapshot: .failed(.claude, message: "Offline", preserving: ready),
+                                  tileName: "Client", displayName: "Claude · Client",
+                                  now: now.addingTimeInterval(86_400), calendar: calendar)
+        XCTAssertTrue(nextDay.helpText.contains("Showing values from Oct 12"), nextDay.helpText)
     }
 
     func testRenderedTileAndMetadataExpireTogetherAtMinuteAndDayBoundaries() throws {

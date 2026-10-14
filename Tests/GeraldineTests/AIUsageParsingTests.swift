@@ -408,6 +408,56 @@ final class AIUsageMonitorTests: XCTestCase {
         await waitUntil { !monitor.isRefreshing }
     }
 
+    func testFailedCheckKeepsLastValuesUntilEachWindowResets() async throws {
+        let suiteName = "AIUsageMonitorKeepsLastValues.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let start = Date(timeIntervalSince1970: 20_000)
+        let clock = TestClock(start: start)
+        let log = FetchLog()
+        let ready = AIUsageSnapshot(provider: .antigravity, status: .ready, plan: nil, windows: [
+            AIUsageWindow(id: "gemini-weekly", title: "Gemini · Weekly", usedPercent: 20,
+                          resetsAt: start.addingTimeInterval(86_400)),
+            AIUsageWindow(id: "gemini-5h", title: "Gemini · 5-hour", usedPercent: 60,
+                          resetsAt: start.addingTimeInterval(3_600))
+        ], fetchedAt: start, sourceLabel: "Antigravity CLI")
+        let outage = "Antigravity's server is unavailable (HTTP 503)."
+        let monitor = AIUsageMonitor(defaults: defaults, transport: ScriptedAIUsageTransport(status: 200, body: Data()), now: clock.now) { identity, date in
+            log.record(identity.provider, at: date)
+            return log.providers.count == 1 ? ready : .failed(identity.provider, message: outage)
+        }
+
+        monitor.connect(.antigravity)
+        await waitUntil { monitor.snapshot(for: .antigravity).status == .ready && !monitor.isRefreshing }
+
+        // A failure inside both windows keeps both values, marked with the error.
+        clock.advance(AIUsageMonitor.refreshInterval)
+        monitor.refreshIfStale()
+        await waitUntil { log.providers.count == 2 && !monitor.isRefreshing }
+        var shown = monitor.snapshot(for: .antigravity)
+        XCTAssertEqual(shown.status, .error(outage))
+        XCTAssertEqual(shown.windows, ready.windows)
+        XCTAssertEqual(shown.fetchedAt, start, "Kept values keep the time they were read")
+        XCTAssertTrue(shown.hasDisplayableUsage)
+
+        // Past the 5-hour reset, only the weekly value still describes its window.
+        clock.advance(3_600)
+        monitor.refreshIfStale()
+        await waitUntil { log.providers.count == 3 && !monitor.isRefreshing }
+        shown = monitor.snapshot(for: .antigravity)
+        XCTAssertEqual(shown.status, .error(outage))
+        XCTAssertEqual(shown.windows.map(\.id), ["gemini-weekly"])
+
+        // Past every reset, no old value is left to show.
+        clock.advance(86_400)
+        monitor.refreshIfStale()
+        await waitUntil { log.providers.count == 4 && !monitor.isRefreshing }
+        shown = monitor.snapshot(for: .antigravity)
+        XCTAssertEqual(shown.status, .error(outage))
+        XCTAssertFalse(shown.hasDisplayableUsage)
+    }
+
     func testShowingANewTileJoinsTheSharedPathWithoutRefreshingOthers() async throws {
         let suiteName = "AIUsageMonitorNewTile.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))

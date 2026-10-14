@@ -229,6 +229,18 @@ final class AIUsageMonitor: ObservableObject {
         }
     }
 
+    /// A failed check keeps the last successful values, marked with the
+    /// error and their original fetch time, so one bad answer from a provider
+    /// does not blank its tile. A window drops out once its reset has passed:
+    /// its old number no longer describes the new window.
+    private func keepingLastValues(_ fresh: AIUsageSnapshot, over current: AIUsageSnapshot?) -> AIUsageSnapshot {
+        guard case .error(let message) = fresh.status, fresh.windows.isEmpty, let current else { return fresh }
+        let date = now()
+        var kept = AIUsageSnapshot.failed(fresh.provider, message: message, preserving: current)
+        kept.windows.removeAll { window in window.resetsAt.map { $0 <= date } ?? false }
+        return kept.windows.isEmpty ? fresh : kept
+    }
+
     private func enqueue(_ identities: [AIUsageIdentity]) {
         let wanted = Set(identities).subtracting(inFlight)
         guard !wanted.isEmpty else { return }
@@ -255,7 +267,7 @@ final class AIUsageMonitor: ObservableObject {
                 }
                 for await (identity, snapshot) in group {
                     await MainActor.run {
-                        self.snapshots[identity] = snapshot
+                        self.snapshots[identity] = self.keepingLastValues(snapshot, over: self.snapshots[identity])
                         self.inFlight.remove(identity)
                     }
                 }
