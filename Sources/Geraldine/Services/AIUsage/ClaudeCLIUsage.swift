@@ -37,6 +37,9 @@ struct ClaudeProfile: Equatable, Sendable {
 /// when that command just refreshed it.
 struct ClaudeCLIUsage: ProviderUsageReading {
     static let sourceLabel = "Claude Code CLI"
+    /// `--no-session-persistence`: each check would otherwise save a transcript
+    /// under `~/.claude/projects`, burying real sessions in the home folder.
+    static let arguments = ["--print", "/usage", "--output-format", "json", "--no-session-persistence"]
 
     func snapshot(homeDirectory: URL, now: Date) async -> AIUsageSnapshot {
         await snapshot(for: AIUsageIdentity(.claude), homeDirectory: homeDirectory, now: now)
@@ -61,7 +64,7 @@ struct ClaudeCLIUsage: ProviderUsageReading {
         environment["CLAUDE_CONFIG_DIR"] = configDirectory?.path
         let result = AgentCLI.run(
             executable: executable,
-            arguments: ["--print", "/usage", "--output-format", "json"],
+            arguments: Self.arguments,
             homeDirectory: homeDirectory,
             environment: environment
         )
@@ -94,45 +97,13 @@ struct ClaudeCLIUsage: ProviderUsageReading {
            let cached = ClaudeUsageCache.snapshot(homeDirectory: homeDirectory),
            let fetchedAt = cached.fetchedAt,
            fetchedAt > (previousFetchedAt ?? .distantPast) {
-            return adoptingCache(cached, now: now)
+            var live = cached
+            live.sourceLabel = sourceLabel
+            live.fetchedAt = now
+            return .success(live)
         }
 
-        switch parseResultText(result, now: now) {
-        case .success(let snapshot):
-            return .success(snapshot)
-        case .failure(let error):
-            // Claude Code 2.1.x `/usage` prints session analytics and no longer
-            // prints "Current session/week … % used". The CLI still owns the
-            // request. Meters stay in cachedUsageUtilization even when that
-            // cache timestamp does not advance.
-            if let homeDirectory,
-               let cached = ClaudeUsageCache.snapshot(homeDirectory: homeDirectory) {
-                return adoptingCache(cached, now: now)
-            }
-            return .failure(error)
-        }
-    }
-
-    /// Keep cache meters only while their window is still open. A weekly
-    /// `resets_at` that has already passed is the previous window; showing
-    /// that 100% as current is wrong once the reset has landed.
-    private static func adoptingCache(_ cached: AIUsageSnapshot, now: Date)
-        -> Result<AIUsageSnapshot, AIUsageParseError> {
-        var live = cached
-        live.sourceLabel = sourceLabel
-        let current = live.windows.filter { window in
-            guard let reset = window.resetsAt else { return true }
-            return reset > now
-        }
-        let weeklyClosed = live.windows.contains { window in
-            window.id == "seven_day" && window.resetsAt.map { $0 <= now } == true
-        }
-        guard !weeklyClosed, !current.isEmpty else {
-            return .failure(.init(message: "Claude Code has not refreshed usage since the weekly reset."))
-        }
-        live.windows = current
-        live.fetchedAt = now
-        return .success(live)
+        return parseResultText(result, now: now)
     }
 
     private static func isErrorFlag(_ value: Any?) -> Bool {

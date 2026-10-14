@@ -56,15 +56,25 @@ sends no usage requests itself, never accesses Keychain (no Security API or
 command-line fallback, including supposedly silent reads), and never starts a
 sign-in or OAuth flow. Settings uses **Show Usage / Hide Usage**. A missing
 CLI, missing sign-in, or unrecognised output shows as unavailable, never as
-zero quota or signed out.
+zero quota or signed out. A failed check keeps the last successful values,
+labeled with the error and the time they were read, until each window resets.
 
 | Provider | Source |
 | --- | --- |
-| Claude | `claude --print /usage --output-format json`; the `.claude.json` usage cache is used only when that command just refreshed it |
+| Claude | `claude --print /usage --output-format json --no-session-persistence`; the `.claude.json` usage cache is used only when that command just refreshed it |
 | Codex | `codex app-server --stdio`: `account/rateLimits/read` for quota, `account/read` for the email |
-| Grok | The `grok` TUI `/usage` screen |
-| Cursor | The `cursor-agent` TUI `/usage` pager, handed the Cursor app's existing session token |
-| Antigravity | `agy --print /usage --output-format json` |
+| Grok | `grok agent --no-leader stdio`: ACP `initialize`, then the `x.ai/billing` extension the TUI `/usage` screen uses |
+| Cursor | The `cursor-agent --disable-auto-update` TUI `/usage` pager, handed the Cursor app's existing session token |
+| Antigravity | `agy --print /usage --output-format json`, stopped after 150 seconds; a bucket agy marks `disabled` (a 5-hour limit while its group's weekly limit is spent) gets no row |
+
+Checks leave nothing behind: no saved Claude transcripts, no Grok session (the
+agent starts no MCP servers or session hooks and exits when its stdin closes),
+and no half-finished Cursor self-update. The Cursor TUI runs in Geraldine's own
+empty folder, `~/Library/Application Support/Geraldine/Usage Workspace`, so its
+`--trust` and any MCP decision apply there, never to the home folder. An MCP
+approval screen is only ever answered "Continue without approval". The TUI gets
+its own session with the PTY as its controlling terminal, so it exits if
+Geraldine quits mid-check.
 
 A second Claude or Codex login lives in a sibling folder, `~/.claude-<name>` or
 `~/.codex-<name>`, and gets its own tile beside the default one. Its CLI runs

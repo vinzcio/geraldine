@@ -64,6 +64,24 @@ final class AIUsageCodexCLITests: XCTestCase {
         XCTAssertEqual(snapshot.sourceLabel, CodexCLIUsage.sourceLabel)
     }
 
+    func testSilentCLIIsStoppedAtItsDeadline() async throws {
+        let home = try homeWithFakeCodex("codex-silent", script: "#!/bin/sh\nexec sleep 30\n")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let started = Date()
+        let snapshot = await CodexCLIUsage(timeout: 1).snapshot(homeDirectory: home, now: Date())
+        guard case .error = snapshot.status else { return XCTFail("A silent CLI must fail the check") }
+        XCTAssertLessThan(Date().timeIntervalSince(started), 8, "The read waited past its deadline")
+    }
+
+    func testCLIThatExitsWithoutReplyingFailsAtOnce() async throws {
+        let home = try homeWithFakeCodex("codex-exits", script: "#!/bin/sh\nexit 0\n")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let started = Date()
+        let snapshot = await CodexCLIUsage().snapshot(homeDirectory: home, now: Date())
+        guard case .error = snapshot.status else { return XCTFail("A CLI that never replies must fail the check") }
+        XCTAssertLessThan(Date().timeIntervalSince(started), 5, "End of output must end the read")
+    }
+
     func testEnvironmentPutsHomeLocalBinAheadOfGuiPath() throws {
         let home = FileManager.default.temporaryDirectory.appendingPathComponent("codex-path-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: home) }
@@ -174,6 +192,17 @@ final class AIUsageCodexCLITests: XCTestCase {
         layout.ensureAIUsageIdentities([AIUsageIdentity(.codex, accountKey: "work")])
         let work = layout.items.first { $0.kind == .aiUsage(AIUsageIdentity(.codex, accountKey: "work")) }
         XCTAssertEqual(work?.isShown, false)
+    }
+
+    private func homeWithFakeCodex(_ name: String, script: String) throws -> URL {
+        let root = ProcessInfo.processInfo.environment["GERALDINE_CREDENTIAL_TEST_ROOT"]
+            .map { URL(fileURLWithPath: $0) } ?? FileManager.default.temporaryDirectory
+        let home = root.appendingPathComponent("\(name)-\(UUID().uuidString)")
+        let executable = home.appendingPathComponent(".local/bin/codex")
+        try FileManager.default.createDirectory(at: executable.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(script.utf8).write(to: executable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+        return home
     }
 
     private struct NoHTTP: AIUsageTransporting {

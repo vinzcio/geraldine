@@ -28,6 +28,10 @@ final class AIUsageMonitor: ObservableObject {
 
     static let connectedKey = "geraldine.aiUsage.connected"
     nonisolated static let refreshInterval: TimeInterval = 5 * 60
+    /// How often the timer asks whether usage is stale. `lastRefresh` lands
+    /// when a batch finishes, so a timer on `refreshInterval` itself found the
+    /// data a few seconds short of stale and skipped every other refresh.
+    nonisolated static let stalenessCheckInterval: TimeInterval = 60
 
     init(defaults: UserDefaults = .standard,
          transport: any AIUsageTransporting = URLSessionAIUsageTransport(),
@@ -99,10 +103,10 @@ final class AIUsageMonitor: ObservableObject {
     func start() {
         guard timer == nil else { return }
         refreshIfStale()
-        let timer = Timer(timeInterval: Self.refreshInterval, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: Self.stalenessCheckInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refreshIfStale() }
         }
-        timer.tolerance = 15
+        timer.tolerance = 10
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
     }
@@ -117,7 +121,7 @@ final class AIUsageMonitor: ObservableObject {
         isRefreshing = false
     }
 
-    /// Popover open, become-active, and the 5-minute timer all use this one
+    /// Popover open, become-active, and the staleness timer all use this one
     /// shared clock. An in-flight batch is reused instead of starting another.
     func refreshIfStale() {
         guard refreshTask == nil else { return }
@@ -229,6 +233,18 @@ final class AIUsageMonitor: ObservableObject {
         }
     }
 
+    /// A failed check keeps the last successful values, marked with the
+    /// error and their original fetch time, so one bad answer from a provider
+    /// does not blank its tile. A window drops out once its reset has passed:
+    /// its old number no longer describes the new window.
+    private func keepingLastValues(_ fresh: AIUsageSnapshot, over current: AIUsageSnapshot?) -> AIUsageSnapshot {
+        guard case .error(let message) = fresh.status, fresh.windows.isEmpty, let current else { return fresh }
+        let date = now()
+        var kept = AIUsageSnapshot.failed(fresh.provider, message: message, preserving: current)
+        kept.windows.removeAll { window in window.resetsAt.map { $0 <= date } ?? false }
+        return kept.windows.isEmpty ? fresh : kept
+    }
+
     private func enqueue(_ identities: [AIUsageIdentity]) {
         let wanted = Set(identities).subtracting(inFlight)
         guard !wanted.isEmpty else { return }
@@ -255,7 +271,7 @@ final class AIUsageMonitor: ObservableObject {
                 }
                 for await (identity, snapshot) in group {
                     await MainActor.run {
-                        self.snapshots[identity] = snapshot
+                        self.snapshots[identity] = self.keepingLastValues(snapshot, over: self.snapshots[identity])
                         self.inFlight.remove(identity)
                     }
                 }

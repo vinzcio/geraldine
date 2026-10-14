@@ -283,7 +283,22 @@ struct AIUsageTile: View {
             lines.append(line)
         }
         if let source = snapshot.cachedSourceDescription { lines.append(source) }
+        // The tile keeps a failed check's last values; say why and how old they are.
+        if case .error(let message) = snapshot.status {
+            lines.append("Last check failed: " + message)
+            if let fetchedAt = snapshot.fetchedAt { lines.append("Showing values from \(fetchTime(fetchedAt)).") }
+        }
         return lines.joined(separator: "\n")
+    }
+
+    /// "6:47 PM" today, "Oct 13, 6:47 PM" on an earlier day.
+    private func fetchTime(_ date: Date) -> String {
+        guard calendar.isDate(date, inSameDayAs: now) else {
+            return AIUsageResetText.absolute(date, now: now, calendar: calendar)
+        }
+        return date.formatted(Date.FormatStyle(date: .omitted, time: .shortened,
+                                               locale: calendar.locale ?? .autoupdatingCurrent,
+                                               calendar: calendar, timeZone: calendar.timeZone))
     }
 
     private var antigravityQuotas: some View {
@@ -524,11 +539,15 @@ struct AIUsageTile: View {
 struct CodingAssistantMark: View {
     let provider: AICodingProvider
     var size: CGFloat
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 4, style: .continuous)
                 .fill(Theme.surfaceRaised)
+                // Grok's mark is white, like its app icon. Its chip keeps the
+                // dark surface in light mode too; on the white one it vanished.
+                .environment(\.colorScheme, provider == .grok ? .dark : colorScheme)
             if provider == .grok {
                 GrokGShape()
                     .fill(Color(red: 252 / 255, green: 252 / 255, blue: 252 / 255))
