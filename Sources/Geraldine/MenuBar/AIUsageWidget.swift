@@ -539,11 +539,15 @@ struct AIUsageTile: View {
 struct CodingAssistantMark: View {
     let provider: AICodingProvider
     var size: CGFloat
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 4, style: .continuous)
                 .fill(Theme.surfaceRaised)
+                // Grok's mark is white, like its app icon. Its chip keeps the
+                // dark surface in light mode too; on the white one it vanished.
+                .environment(\.colorScheme, provider == .grok ? .dark : colorScheme)
             if provider == .grok {
                 GrokGShape()
                     .fill(Color(red: 252 / 255, green: 252 / 255, blue: 252 / 255))
