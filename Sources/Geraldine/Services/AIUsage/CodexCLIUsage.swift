@@ -5,6 +5,8 @@ import Foundation
 /// email. No file-token HTTP.
 struct CodexCLIUsage: ProviderUsageReading {
     static let sourceLabel = "Codex CLI"
+    /// How long to wait for both replies.
+    var timeout: TimeInterval = 20
 
     func snapshot(homeDirectory: URL, now: Date) async -> AIUsageSnapshot {
         await snapshot(for: AIUsageIdentity(.codex), homeDirectory: homeDirectory, now: now)
@@ -34,6 +36,9 @@ struct CodexCLIUsage: ProviderUsageReading {
         process.standardInput = input
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice
+        let writer = input.fileHandleForWriting.fileDescriptor
+        // A CLI that exits early must not take Geraldine down with SIGPIPE.
+        _ = fcntl(writer, F_SETNOSIGPIPE, 1)
         do { try process.run() } catch {
             return .failed(.codex, message: "Could not run Codex CLI usage.")
         }
@@ -43,42 +48,23 @@ struct CodexCLIUsage: ProviderUsageReading {
             #"{"jsonrpc":"2.0","id":2,"method":"account/rateLimits/read"}"#,
             #"{"jsonrpc":"2.0","id":3,"method":"account/read","params":{}}"#
         ]
-        for line in requests {
-            input.fileHandleForWriting.write(Data((line + "\n").utf8))
-        }
+        let sent = requests.allSatisfy { AgentCLI.writeAll(Data(($0 + "\n").utf8), to: writer) }
         // Keep stdin open until both replies arrive. Closing it first makes
-        // `codex app-server --stdio` exit after initialize.
-        let data = Self.readResponse(from: output, untilProcess: process)
-        input.fileHandleForWriting.closeFile()
-        if process.isRunning { process.terminate() }
-        process.waitUntilExit()
+        // `codex app-server --stdio` exit after initialize. The read is
+        // bounded: `availableData` blocked until output or EOF, so a CLI that
+        // went quiet held the refresh past its deadline.
+        let data = sent
+            ? AgentCLI.read(from: output.fileHandleForReading.fileDescriptor,
+                            until: Date().addingTimeInterval(timeout)) { collected in
+                let text = String(decoding: collected, as: UTF8.self)
+                return Self.hasReply(2, in: text) && Self.hasReply(3, in: text)
+            }
+            : Data()
+        AgentCLI.finish(process, input: input)
         switch Self.parse(data, now: now) {
         case .success(let snapshot): return snapshot
         case .failure(let error): return .failed(.codex, message: error.message)
         }
-    }
-
-    private static func readResponse(from output: Pipe, untilProcess process: Process) -> Data {
-        var collected = Data()
-        let handle = output.fileHandleForReading
-        let deadline = Date().addingTimeInterval(20)
-        while Date() < deadline {
-            let chunk = handle.availableData
-            if !chunk.isEmpty {
-                collected.append(chunk)
-                let text = String(data: collected, encoding: .utf8) ?? ""
-                if Self.hasReply(2, in: text) && Self.hasReply(3, in: text) {
-                    break
-                }
-            } else if !process.isRunning {
-                let rest = handle.readDataToEndOfFile()
-                collected.append(rest)
-                break
-            } else {
-                Thread.sleep(forTimeInterval: 0.05)
-            }
-        }
-        return collected
     }
 
     private static func hasReply(_ id: Int, in text: String) -> Bool {

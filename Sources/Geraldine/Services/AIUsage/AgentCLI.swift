@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 enum AgentCLI {
@@ -94,37 +95,56 @@ enum AgentCLI {
 
         let reader = output.fileHandleForReading.fileDescriptor
         let deadline = Date().addingTimeInterval(timeout)
-        var pending = Data()
+        var received = Data()
         var reply: Data?
         for request in requests {
             guard writeAll(Data((request.line + "\n").utf8), to: writer) else { return nil }
-            reply = nil
-            while reply == nil {
-                let remaining = deadline.timeIntervalSinceNow
-                guard remaining > 0 else { return nil }
-                var descriptor = pollfd(fd: reader, events: Int16(POLLIN), revents: 0)
-                let ready = poll(&descriptor, 1, Int32(min(remaining, 1) * 1000))
-                if ready < 0 && errno == EINTR { continue }
-                guard ready >= 0 else { return nil }
-                guard ready > 0 else { continue }
-                var buffer = [UInt8](repeating: 0, count: 65_536)
-                let count = read(reader, &buffer, buffer.count)
-                guard count > 0 else { return nil }
-                pending.append(contentsOf: buffer[0..<count])
-                while let newline = pending.firstIndex(of: UInt8(ascii: "\n")) {
-                    let line = pending[pending.startIndex..<newline]
-                    pending = Data(pending[pending.index(after: newline)...])
-                    if let object = AIUsageJSON.object(from: Data(line)),
-                       AIUsageJSON.number(object["id"]) == Double(request.id) {
-                        reply = Data(line)
-                    }
-                }
+            let earlier = received
+            received = earlier + read(from: reader, until: deadline) { fresh in
+                replyLine(id: request.id, in: earlier + fresh) != nil
             }
+            guard let line = replyLine(id: request.id, in: received) else { return nil }
+            reply = line
         }
         return reply
     }
 
-    private static func writeAll(_ data: Data, to descriptor: Int32) -> Bool {
+    /// Reads until `done` accepts what has arrived, the stream ends, or the
+    /// deadline passes. poll() bounds every wait, so a CLI that goes silent
+    /// cannot hang the caller.
+    static func read(from descriptor: Int32, until deadline: Date, done: (Data) -> Bool) -> Data {
+        var collected = Data()
+        var buffer = [UInt8](repeating: 0, count: 65_536)
+        while !done(collected) {
+            let remaining = deadline.timeIntervalSinceNow
+            guard remaining > 0 else { break }
+            var state = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
+            let ready = poll(&state, 1, Int32(min(remaining, 1) * 1000))
+            if ready < 0 && errno == EINTR { continue }
+            guard ready >= 0 else { break }
+            guard ready > 0 else { continue }
+            let count = Darwin.read(descriptor, &buffer, buffer.count)
+            guard count > 0 else { break }
+            collected.append(contentsOf: buffer[0..<count])
+        }
+        return collected
+    }
+
+    /// The first complete line that is a JSON-RPC reply to `id`.
+    private static func replyLine(id: Int, in data: Data) -> Data? {
+        var rest = data[...]
+        while let newline = rest.firstIndex(of: UInt8(ascii: "\n")) {
+            let line = Data(rest[rest.startIndex..<newline])
+            rest = rest[rest.index(after: newline)...]
+            if let object = AIUsageJSON.object(from: line),
+               AIUsageJSON.number(object["id"]) == Double(id) {
+                return line
+            }
+        }
+        return nil
+    }
+
+    static func writeAll(_ data: Data, to descriptor: Int32) -> Bool {
         data.withUnsafeBytes { raw -> Bool in
             guard var base = raw.baseAddress else { return true }
             var left = raw.count
@@ -140,7 +160,7 @@ enum AgentCLI {
     }
 
     /// Close stdin, give the CLI a moment to exit on EOF, then make sure it is gone.
-    private static func finish(_ process: Process, input: Pipe) {
+    static func finish(_ process: Process, input: Pipe) {
         try? input.fileHandleForWriting.close()
         let grace = Date().addingTimeInterval(2)
         while process.isRunning && Date() < grace {
