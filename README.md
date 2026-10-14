@@ -28,6 +28,16 @@ Operations that can remove files or change system state show their scope and req
 
 Requires macOS 14 or newer and Xcode 15 or newer. Geraldine is a Swift Package with no third-party dependencies.
 
+The main checkout is `skyward:/root/Coding Projects/Geraldine`; Fasaj's clone
+is the secondary checkout at the same path for load-balanced work. The old
+OneDrive folder is a pointer. Geraldine itself and its preferences remain on
+the Mac mini.
+
+Run native builds and tests on the Mac mini from a mirror of that checkout at
+`~/Library/Caches/geraldine-build-mirror`. Both VPSes reach it through
+`ssh mac-mini`. Preserve the verifier's Git provenance and pinned SDK
+requirements when preparing the mirror.
+
 ```bash
 swift test                 # run the test suite
 ./build.sh release         # build a local .app bundle
@@ -138,19 +148,21 @@ sink, without sending test input into the user's apps.
 
 ## Source verification
 
-The canonical source gate stages only `Package.swift`, `Sources`, and `Tests` outside OneDrive, runs the full suite, and performs a separate clean release compilation:
+The canonical source gate runs on the Mac mini. It stages only `Package.swift`,
+`Sources`, and `Tests` outside the checkout, runs the full suite, and performs
+a separate clean release compilation:
 
 ```bash
 ./verify.sh --owner <thread/session-id> --minimum-free-kib <explicitly-approved-positive-value>
 ```
 
-The minimum-free-space value is operator-owned and mandatory; Geraldine supplies no default. For a focused test, use an owned scratch path outside OneDrive with the same pinned toolchain:
+The minimum-free-space value is operator-owned and mandatory; Geraldine supplies no default. For a focused test, use an owned scratch path outside the checkout with the same pinned toolchain:
 
 ```bash
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
 SDKROOT=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk \
 /usr/bin/xcrun --sdk macosx swift test \
-  --scratch-path <owned-path-outside-OneDrive> \
+  --scratch-path <owned-scratch-path> \
   --filter <test-name>
 ```
 

@@ -1,8 +1,20 @@
 # Geraldine development handoff
 
-**Updated:** 2026-10-24
+**Updated:** 2026-10-25
 
 Geraldine is a local-only macOS utility. It has no account system, backend, or cross-device sync, and clipboard history must not be reintroduced. Preferences and app state remain on this Mac in `UserDefaults` and Application Support. Preserve unrelated user work and the existing opt-in Dock window-preview behavior.
+
+## Source checkout after migration
+
+The main checkout is `skyward:/root/Coding Projects/Geraldine`, with a secondary
+Fasaj clone at the same path. The OneDrive folder is a pointer. Native builds
+and tests run on the Mac mini from `~/Library/Caches/geraldine-build-mirror`;
+connect from a VPS through `ssh mac-mini`. App state and the installed app
+remain on the Mac.
+
+The three completed-session output directories named in `.gitignore` retain
+all 168 original evidence files. They are generated verification records,
+kept byte-for-byte for their historical proof; they are not app source.
 
 ## Terminal control surface
 
