@@ -347,6 +347,43 @@ final class AIUsageMonitorTests: XCTestCase {
         XCTAssertEqual(log.providers.count, 2)
     }
 
+    func testScheduledChecksRefreshWithinAMinuteOfGoingStale() async throws {
+        let suiteName = "AIUsageMonitorCadence.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        // A check takes time, so `lastRefresh` lands after the tick that
+        // started it. A timer on `refreshInterval` itself then found the data
+        // seconds short of stale and refreshed only every ten minutes.
+        let checkDuration: TimeInterval = 15
+        let start = Date(timeIntervalSince1970: 30_000)
+        let clock = TestClock(start: start)
+        let log = FetchLog()
+        let monitor = AIUsageMonitor(defaults: defaults, transport: ScriptedAIUsageTransport(status: 200, body: Data()), now: clock.now) { identity, date in
+            log.record(identity.provider, at: date)
+            clock.advance(checkDuration)
+            return usageFixture(identity.provider, at: date, remaining: 50)
+        }
+        monitor.connect(.claude)
+        await waitUntil { log.providers.count == 1 && !monitor.isRefreshing }
+
+        // Twenty ticks of the staleness timer.
+        var refreshes = [start]
+        for tick in 1...20 {
+            let tickTime = start.addingTimeInterval(Double(tick) * AIUsageMonitor.stalenessCheckInterval)
+            clock.advance(tickTime.timeIntervalSince(clock.now()))
+            let fetched = log.providers.count
+            monitor.refreshIfStale()
+            await waitUntil { !monitor.isRefreshing }
+            if log.providers.count > fetched { refreshes.append(tickTime) }
+        }
+        XCTAssertGreaterThanOrEqual(refreshes.count, 3)
+        for (earlier, later) in zip(refreshes, refreshes.dropFirst()) {
+            XCTAssertLessThanOrEqual(later.timeIntervalSince(earlier), AIUsageMonitor.refreshInterval + checkDuration + 60,
+                                     "Usage must refresh within a minute of going stale")
+        }
+    }
+
     func testInFlightSharedRefreshCoalescesPerProviderAndPopoverOpens() async throws {
         let suiteName = "AIUsageMonitorCoalesce.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))

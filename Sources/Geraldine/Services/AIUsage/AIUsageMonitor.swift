@@ -28,6 +28,10 @@ final class AIUsageMonitor: ObservableObject {
 
     static let connectedKey = "geraldine.aiUsage.connected"
     nonisolated static let refreshInterval: TimeInterval = 5 * 60
+    /// How often the timer asks whether usage is stale. `lastRefresh` lands
+    /// when a batch finishes, so a timer on `refreshInterval` itself found the
+    /// data a few seconds short of stale and skipped every other refresh.
+    nonisolated static let stalenessCheckInterval: TimeInterval = 60
 
     init(defaults: UserDefaults = .standard,
          transport: any AIUsageTransporting = URLSessionAIUsageTransport(),
@@ -99,10 +103,10 @@ final class AIUsageMonitor: ObservableObject {
     func start() {
         guard timer == nil else { return }
         refreshIfStale()
-        let timer = Timer(timeInterval: Self.refreshInterval, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: Self.stalenessCheckInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refreshIfStale() }
         }
-        timer.tolerance = 15
+        timer.tolerance = 10
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
     }
@@ -117,7 +121,7 @@ final class AIUsageMonitor: ObservableObject {
         isRefreshing = false
     }
 
-    /// Popover open, become-active, and the 5-minute timer all use this one
+    /// Popover open, become-active, and the staleness timer all use this one
     /// shared clock. An in-flight batch is reused instead of starting another.
     func refreshIfStale() {
         guard refreshTask == nil else { return }
