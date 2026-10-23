@@ -182,7 +182,8 @@ unless the app is running and the socket is ready, because its job is to prove
 the control path.
 
 While the app is starting, the socket may not exist yet. A command returns
-`3` rather than waiting; retry with `--launch`, or poll `doctor`.
+`3` rather than waiting; retry the command, or poll `doctor`. `--launch` only
+helps when the app is not running at all.
 
 ## Command reference
 
@@ -192,7 +193,7 @@ Global options, accepted before or after the command name:
 | --- | --- |
 | `--json` | Print one JSON envelope instead of human text. |
 | `--socket PATH` | Use another Unix socket. Also `GERALDINE_CONTROL_SOCKET`. |
-| `--timeout SECONDS` | Client connect and read deadline. Default `120`. |
+| `--timeout SECONDS` | Client send and read deadline. Default `120`. The connect attempt itself does not wait. |
 | `--launch` | Open Geraldine if it is not running, then retry once. |
 | `--no-color` | Accepted for compatibility; output is already plain text. |
 | `--help`, `-h` | Overview, or help for the command that follows. |
@@ -276,10 +277,10 @@ geraldine awake toggle [--json]
 - `awake on` uses `keepAwake.defaultDuration` unless a duration is given.
 - `awake off` takes no duration and releases the assertions.
 - `awake toggle` deactivates an active session, otherwise activates with the
-  requested duration.
+  requested or default duration.
 - If the app refuses to activate, the command returns `ok: false`, exit `1`,
-  and the controller's error. The default failure path is macOS rejecting an
-  assertion, not bad input.
+  and the controller's error. A failure here means the controller could not
+  start the session, for example because macOS refused an assertion.
 
 Duration grammar: `90m`, `2h`, `1h30m`, `45s`, `1.5h`, `2 days`, bare minutes
 (`90`), or `indefinitely` / `forever` / `infinite`. Fractions are allowed.
@@ -710,8 +711,7 @@ TTY.
   "ok": true,
   "text": ["Geraldine 0.1.0 (running, pid 51481) — Menu bar and window", "Keep Awake: On · 1h 29m Left"],
   "result": {},
-  "warnings": [],
-  "error": null
+  "warnings": []
 }
 ```
 
@@ -722,10 +722,14 @@ TTY.
 | `id` | Request identifier, echoed by the app. Locally generated for local failures. |
 | `command` | The command that produced the response. |
 | `ok` | `false` for any failure, including usage errors. |
-| `text` | Human lines. Absent when the command has nothing to say. |
-| `result` | Command-specific object or array; `null` only when absent. |
+| `text` | Human lines. Omitted when the command has nothing to say. |
+| `result` | Command-specific object or array. Omitted when the command returns no result. |
 | `warnings` | Always an array, including when empty. |
-| `error` | `{ "code", "message", "hint" }` when `ok` is false. |
+| `error` | `{ "code", "message", "hint" }` when `ok` is false; omitted otherwise. |
+
+Optional top-level fields are omitted rather than emitted as `null`; inside a
+command's `result`, a field that has no value is present and `null`. That keeps
+the envelope compact without making agents guess whether a result exists.
 
 Error codes and exit status:
 
@@ -802,8 +806,8 @@ GERALDINE_CLI_BINARY=<build>/GeraldineCLI \
 ```
 
 The server itself adds no idle work: it waits on a dispatch read source, not a
-timer, and request handling runs off the accept path. The only cost while idle
-is one open file descriptor.
+timer, and request handling runs off the accept path. The only idle cost is the
+open descriptor and its dispatch source.
 
 ### App idle CPU
 
@@ -824,8 +828,8 @@ reproducible from source:
 | --- | --- | --- | --- |
 | Status animation compositing | every display-link vblank, up to 144 fps | capped at 30 fps; the final frame always renders | `StatusAnimationFramePolicyTests` |
 | Unchanged status redraws | one `NSImage` per monitor publish | skipped when the render signature is unchanged | `StatusRenderSignature` in `MenuBarController` |
-| Shimmer | could fire on every unchanged sample | at most once per 10 s, and never while a real value change is animating | `MenuBarController` cooldown |
-| Thermal cadence while visible | 1 Hz | 0.2 Hz (5 s) | `MonitorDemandTests`, `ThermalSamplePolicyTests` |
+| Shimmer | could fire on every unchanged sample | at most once per 10 s; a real value change supersedes an in-flight shimmer | `MenuBarController` cooldown |
+| Thermal cadence while visible | 1 Hz | 0.2 Hz (5 s) | `MonitorDemandTests` |
 | Thermal cadence while hidden | 1 Hz | none | demand wiring from menu bar, popover, and window |
 | GPU discovery while hidden | 1 Hz | none | demand wiring |
 | Monitor wakeups while displays sleep | 1 Hz timer | timer stopped; one refresh on wake | `SystemMonitor` screen-sleep observers |
@@ -835,8 +839,8 @@ Component timings from the same machine, debug build:
 
 - A post-change `Thermal.read()` over 12 samples took 46.9–81.4 ms with 50
   sensors and `available = yes`. The per-read cost is dominated by sensor I/O;
-  the win is that it now runs off the main thread and 25 times less often while
-  visible, and never while hidden.
+  the win is that it now runs off the main thread and five times less often
+  while visible, and never while hidden.
 - The CLI median above is the start-to-exit number, not a socket round trip.
 
 To reproduce the CPU investigation, compare `ps -o %cpu= -p <pid>` over several
