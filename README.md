@@ -36,6 +36,19 @@ swift test                 # run the test suite
 
 `build.sh` signs ad-hoc by default. To keep Full Disk Access and other privacy grants across rebuilds, sign with your own Developer ID: set `CODESIGN_ID` (and `NOTARY_PROFILE` for notarization) in the environment or in a git-ignored `build.local.sh` beside the script.
 
+## Terminal and agents
+
+The built app ships a `geraldine` helper at `Contents/Helpers/geraldine`. Put it on `PATH` once:
+
+```bash
+/Applications/Geraldine.app/Contents/Helpers/geraldine install-cli
+geraldine status
+```
+
+It controls Keep Awake and Stay Active, reads settings and live metrics, drives the read-only scans, and supports `--json` on every command for agents. Destructive actions stay in the UI. While Geraldine is closed, `settings list` and `settings get` still read saved preferences.
+
+[`docs/agent-cli.md`](docs/agent-cli.md) documents the surface inventory, every command and result shape, the settings catalog, the JSON contract, exit codes, security, and the performance evidence.
+
 ## Privacy and permissions
 
 Some features request macOS permissions only when needed, including Accessibility, Screen Recording, Location for the connected Wi-Fi name, and access to user-selected folders. A coding-usage tile runs that assistant's installed CLI with the sign-in already on this Mac, and the CLI asks its provider for remaining usage; Geraldine sends no usage requests of its own and never reads the Keychain.

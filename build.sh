@@ -17,7 +17,7 @@ APP_NAME="Geraldine"
 BUNDLE_ID="com.vincent.geraldine"
 VERSION="0.1.0"
 SRC_DIR="$(cd "$(dirname "$0")" && pwd)"
-ROOT="$HOME/Library/Caches/GeraldineBuild"
+ROOT="${GERALDINE_BUILD_ROOT:-$HOME/Library/Caches/GeraldineBuild}"
 STAGE="$ROOT/src"
 BUILD="$ROOT/build"
 
@@ -71,16 +71,23 @@ rsync -a "$SRC_DIR/Package.swift" "$STAGE/"
 [ -d "$SRC_DIR/Resources" ] && rsync -a --delete "$SRC_DIR/Resources" "$STAGE/" || true
 
 echo "▸ Compiling ($CONFIG)…"
-swift build -c "$CONFIG" --scratch-path "$BUILD" --package-path "$STAGE"
+swift build -c "$CONFIG" --scratch-path "$BUILD" --package-path "$STAGE" --product "$APP_NAME"
+swift build -c "$CONFIG" --scratch-path "$BUILD" --package-path "$STAGE" --product "GeraldineCLI"
 
 BIN="$BUILD/$CONFIG/$APP_NAME"
+CLI_BIN="$BUILD/$CONFIG/GeraldineCLI"
 APP="$ROOT/$APP_NAME.app"
 CONTENTS="$APP/Contents"
 
 echo "▸ Assembling $APP_NAME.app…"
 rm -rf "$APP"
-mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
+mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources" "$CONTENTS/Helpers"
 cp "$BIN" "$CONTENTS/MacOS/$APP_NAME"
+# The agent-facing CLI ships inside the bundle so `geraldine install-cli`
+# always has a matching protocol build to copy. It is signed separately, before
+# the app, so the app seal covers the finished helper.
+cp "$CLI_BIN" "$CONTENTS/Helpers/geraldine"
+chmod 755 "$CONTENTS/Helpers/geraldine"
 
 sanitize_app_executable_rpaths() {
   local executable="$1"
@@ -328,6 +335,10 @@ launch_app_bundle() {
 
   return 1
 }
+
+echo "▸ Signing helper as: $CODESIGN_ID"
+codesign --force --options runtime --identifier "$BUNDLE_ID.helper" \
+  --sign "$CODESIGN_ID" "$CONTENTS/Helpers/geraldine"
 
 sign_and_verify "$APP"
 verify_bundle_provenance "$APP"

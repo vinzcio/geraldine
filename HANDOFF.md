@@ -1,8 +1,19 @@
 # Geraldine development handoff
 
-**Updated:** 2026-09-15
+**Updated:** 2026-10-23
 
 Geraldine is a local-only macOS utility. It has no account system, backend, or cross-device sync, and clipboard history must not be reintroduced. Preferences and app state remain on this Mac in `UserDefaults` and Application Support. Preserve unrelated user work and the existing opt-in Dock window-preview behavior.
+
+## Terminal control surface
+
+- `docs/agent-cli.md` is the contract: surface inventory, commands, result shapes, settings catalog, JSON envelope, security, and performance evidence.
+- `GeraldineControl` is Foundation-only; `GeraldineCLI` is packaged as `Geraldine.app/Contents/Helpers/geraldine` and copied to `~/.local/bin` by `geraldine install-cli`.
+- The app answers on `~/Library/Application Support/Geraldine/control.sock` (directory `0700`, socket `0600`, `getpeereid` UID check). `ControlHost.shared` starts it at the end of `applicationDidFinishLaunching` and stops it first in `applicationWillTerminate`. Keep it off the main thread's polling paths: the server waits on a dispatch read source.
+- Commands must change live state through the existing controllers and persist through their normal `didSet` hooks. Do not write a preference behind a live object, and do not add a second state owner.
+- Destructive actions (cleanup, uninstall, eject, launchd changes, maintenance, updater, Free RAM) stay GUI-only. Scans are read-only and cap their JSON item arrays.
+- Keep the compatibility surface: the four `keepAwake.*` keys, the `geraldine:` URLs, the `Geraldine Keep Awake` assertion name, the main binary path, and the helper path.
+- Performance invariants: status animation ≤30 fps with a guaranteed final frame, render-signature dedupe, shimmer cooldown, thermal at 0.2 Hz only while displayed, GPU only while displayed, no monitor timer while displays sleep. `MonitorDemandTests`, `StatusAnimationFramePolicyTests`, and `MenuBarStatusAnimationPolicyTests` guard these.
+- Open proof work: no live after-change idle-CPU measurement exists because the installed app was not relaunched; re-measure only with an authorized relaunch. A packaging run plus an installed-path check is required to prove the helper's signature and location. The real-CLI latency test needs `GERALDINE_CLI_BINARY`.
 
 ## Current state
 
