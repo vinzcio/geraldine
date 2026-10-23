@@ -150,7 +150,7 @@ final class StorageViewModel: ObservableObject {
         if wasLoading { status = .cancelled }
     }
 
-    nonisolated private static func readCapacity() -> StorageCapacity? {
+    nonisolated static func readCapacity() -> StorageCapacity? {
         let root = URL(fileURLWithPath: "/")
         let values = try? root.resourceValues(forKeys: [
             .volumeTotalCapacityKey,
@@ -171,6 +171,14 @@ final class StorageViewModel: ObservableObject {
     private struct Result {
         var categories: [StorageCategory] = []
         var cancelled = false
+    }
+
+    /// One-shot measurement for the terminal surface. The live view keeps its
+    /// staged progress; an agent just needs the finished categories.
+    nonisolated static func measureForControl() async -> (capacity: StorageCapacity, categories: [StorageCategory])? {
+        guard let capacity = readCapacity() else { return nil }
+        let result = await compute(capacity: capacity) { _ in }
+        return (capacity, result.categories)
     }
 
     nonisolated private static func compute(

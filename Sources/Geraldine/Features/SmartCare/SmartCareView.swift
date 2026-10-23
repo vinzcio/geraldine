@@ -141,6 +141,29 @@ final class SmartCareViewModel: ObservableObject {
         extras: SmartCareScanExtras
     ) {
         guard scanID == id else { return }
+        let evaluation = Self.evaluate(
+            diskFraction: diskFraction,
+            memFraction: memFraction,
+            diskTotal: diskTotal,
+            diskFree: diskFree,
+            extras: extras
+        )
+        findings = evaluation.findings
+        score = evaluation.score
+        scanDate = Date()
+        phase = .results
+        scanTask = nil
+    }
+
+    /// Pure evaluation shared by the live scan and `geraldine smart-care scan`.
+    /// It never queues or performs an action.
+    nonisolated static func evaluate(
+        diskFraction: Double,
+        memFraction: Double,
+        diskTotal: Double,
+        diskFree: Double,
+        extras: SmartCareScanExtras
+    ) -> (score: Int, findings: [Finding]) {
         var results: [Finding] = []
 
         if diskTotal <= 0 {
@@ -251,11 +274,8 @@ final class SmartCareViewModel: ObservableObject {
         }
 
         let penalty = results.reduce(0) { $0 + $1.severity.penalty }
-        findings = results.sorted { $0.severity.penalty > $1.severity.penalty }
-        score = max(5, 100 - penalty)
-        scanDate = Date()
-        phase = .results
-        scanTask = nil
+        let ordered = results.sorted { $0.severity.penalty > $1.severity.penalty }
+        return (score: max(5, 100 - penalty), findings: ordered)
     }
 
     nonisolated static func gather() async -> SmartCareScanExtras {

@@ -407,6 +407,30 @@ final class WidgetLayoutStore: ObservableObject {
         persist()
     }
 
+    /// Replace the whole layout from a control request. Unknown or duplicate
+    /// kinds are dropped, and every widget this build knows about is restored
+    /// (hidden when absent) so a partial payload can never leave the popover or
+    /// the menu-bar metric without a usable tile.
+    func replaceItems(_ replacements: [WidgetItem]) {
+        var seen = Set<WidgetKind>()
+        var next = replacements.filter { seen.insert($0.kind).inserted }
+        guard !next.isEmpty else { return }
+        for kind in MetricKind.allCases where !seen.contains(.metric(kind)) {
+            next.append(Self.defaultItem(for: .metric(kind)))
+        }
+        if !seen.contains(.keepAwake) {
+            next.append(Self.defaultItem(for: .keepAwake))
+        }
+        if !seen.contains(.calendar) {
+            next.append(Self.defaultItem(for: .calendar))
+        }
+        for provider in AICodingProvider.allCases where !seen.contains(.aiUsage(provider)) {
+            next.append(Self.defaultItem(for: .aiUsage(provider)))
+        }
+        items = next
+        persist()
+    }
+
     private func persist() {
         committedItems = items
         Self.save(items, key: Self.key, defaults: defaults)
