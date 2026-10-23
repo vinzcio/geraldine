@@ -56,6 +56,11 @@ enum ControlSocketAddress {
             errno = code
             return -1
         }
+        // A server that closes between connect and send must not kill the CLI
+        // with SIGPIPE; send should report an error we can turn into exit 3.
+        var noSignal: Int32 = 1
+        setsockopt(descriptor, SOL_SOCKET, SO_NOSIGPIPE, &noSignal,
+                   socklen_t(MemoryLayout<Int32>.size))
         return descriptor
     }
 
@@ -115,6 +120,10 @@ public final class ControlServer {
 
     public func start() throws {
         guard !isRunning else { return }
+        // A peer that disconnects between accept and the response must not
+        // terminate the process. SO_NOSIGPIPE covers our sockets; ignoring the
+        // signal also covers a closed stdout/stderr inherited from a parent.
+        signal(SIGPIPE, SIG_IGN)
         let path = socketURL.path
         let directory = socketURL.deletingLastPathComponent()
         guard path.utf8.count < MemoryLayout.size(ofValue: sockaddr_un().sun_path) else {
@@ -193,6 +202,12 @@ public final class ControlServer {
                 return
             }
 
+            // macOS inherits O_NONBLOCK from the listening descriptor. Clear it
+            // so the first read waits for the request instead of returning
+            // EAGAIN and being mistaken for an empty request.
+            let flags = fcntl(client, F_GETFL, 0)
+            if flags >= 0 { _ = fcntl(client, F_SETFL, flags & ~O_NONBLOCK) }
+
             var one: Int32 = 1
             setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
             var timeout = timeval(tv_sec: 15, tv_usec: 0)
@@ -221,7 +236,11 @@ public final class ControlServer {
             let count = buffer.withUnsafeMutableBytes { raw in
                 Darwin.read(client, raw.baseAddress, raw.count)
             }
-            if count <= 0 { break }
+            if count < 0 {
+                if errno == EINTR { continue }
+                break
+            }
+            if count == 0 { break }
             data.append(contentsOf: buffer[0..<count])
             if data.contains(0x0A) { break }
         }

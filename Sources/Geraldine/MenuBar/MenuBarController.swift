@@ -101,6 +101,8 @@ final class MenuBarController: NSObject, NSWindowDelegate {
     private var lastShimmerStart: CFTimeInterval = -.infinity
     private var lastStatusAnimationAt: CFTimeInterval = -.infinity
     private var statusRenderPending = false
+    private var statusFramePolicy = StatusAnimationFramePolicy()
+    private var lastRenderedStatusSignature: StatusRenderSignature?
 
     private enum StatusAnimationMode {
         case digits
@@ -188,6 +190,21 @@ final class MenuBarController: NSObject, NSWindowDelegate {
             .publisher(for: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification)
             .sink { [weak self] _ in
                 Task { @MainActor in self?.renderStatusItem() }
+            }
+            .store(in: &cancellables)
+
+        // Nothing in the menu bar is visible while the displays sleep. Stop
+        // compositing immediately instead of leaving a paused display link that
+        // could be resumed by a late sample.
+        NSWorkspace.shared.notificationCenter
+            .publisher(for: NSWorkspace.screensDidSleepNotification)
+            .sink { [weak self] _ in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.statusDisplayLink?.isPaused = true
+                    self.clearStatusAnimation()
+                    self.statusFramePolicy.reset()
+                }
             }
             .store(in: &cancellables)
     }
@@ -383,6 +400,12 @@ final class MenuBarController: NSObject, NSWindowDelegate {
     private func renderStatusItem() {
         guard let button = statusItem?.button else { return }
         let nextPlan = plan()
+        let signature = statusSignature(for: nextPlan)
+        // Monitor publishes several times per second (CPU, memory, network, GPU,
+        // thermal). When only a hidden metric moved, the image already on screen
+        // is pixel-identical; redrawing it would just wake WindowServer.
+        if statusAnimMode == nil, signature == lastRenderedStatusSignature { return }
+        lastRenderedStatusSignature = signature
         // Drawn lazily: the digit-roll and shimmer branches render their own
         // frames, so an eager draw here would be thrown away on those paths.
         var cachedNextImage: NSImage?
@@ -488,6 +511,29 @@ final class MenuBarController: NSObject, NSWindowDelegate {
         clearStatusAnimation()
         applyStatusImage(nextImage(), to: button)
         self.currentStatusPlan = nextPlan
+    }
+
+    private func statusSignature(for plan: StatusPlan) -> StatusRenderSignature {
+        StatusRenderSignature(
+            kind: plan.kind.rawValue,
+            sourceID: plan.sourceID,
+            label: plan.label,
+            widthSample: plan.widthSample,
+            glyph: plan.glyph,
+            colorToken: Self.colorToken(plan.color),
+            samples: plan.samples?.map {
+                StatusRenderSignature.Sample(timestamp: $0.timestamp, value: $0.value)
+            } ?? [],
+            domain: plan.domain,
+            showsLatestEndpoint: plan.showsLatestEndpoint
+        )
+    }
+
+    private static func colorToken(_ color: NSColor) -> String {
+        guard let srgb = color.usingColorSpace(.sRGB) else { return color.description }
+        return String(format: "%.4f,%.4f,%.4f,%.4f",
+                      srgb.redComponent, srgb.greenComponent,
+                      srgb.blueComponent, srgb.alphaComponent)
     }
 
     private func plan() -> StatusPlan {
@@ -753,6 +799,7 @@ final class MenuBarController: NSObject, NSWindowDelegate {
         statusAnimTo = newPlan
         statusAnimCompletion = completion
         statusAnimStart = CACurrentMediaTime()
+        statusFramePolicy.reset()
         if statusItem?.length != ceil(geometry.size.width + statusItemHorizontalPadding) {
             statusItem?.length = max(24, ceil(geometry.size.width + statusItemHorizontalPadding))
         }
@@ -776,6 +823,7 @@ final class MenuBarController: NSObject, NSWindowDelegate {
         statusAnimNewNumber = ""
         statusAnimCompletion = nil
         statusAnimStart = CACurrentMediaTime()
+        statusFramePolicy.reset()
 
         // Adopt the target width immediately; only pixels dissolve. The status item
         // never interpolates its width or perturbs neighboring menu-bar items.
@@ -801,6 +849,7 @@ final class MenuBarController: NSObject, NSWindowDelegate {
         statusAnimNewNumber = splitLabel(newPlan.label).number
         statusAnimCompletion = nil
         statusAnimStart = CACurrentMediaTime()
+        statusFramePolicy.reset()
         lastShimmerStart = statusAnimStart
 
         let targetWidth = max(24, ceil(geometry.size.width + statusItemHorizontalPadding))
@@ -860,7 +909,11 @@ final class MenuBarController: NSObject, NSWindowDelegate {
             renderedImage = composeStatusShimmer(base: base, plan: newPlan,
                                                   geometry: geometry, progress: progress)
         }
-        applyStatusImage(renderedImage, to: button)
+        let now = CACurrentMediaTime()
+        if progress < 1,
+           statusFramePolicy.shouldRender(at: now, isFinal: false) {
+            applyStatusImage(renderedImage, to: button)
+        }
         if progress >= 1 {
             link.isPaused = true
             let completion = statusAnimCompletion

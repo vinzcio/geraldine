@@ -116,6 +116,7 @@ final class AppState: ObservableObject {
         didSet {
             UserDefaults.standard.set(appShape.rawValue, forKey: "appShape")
             applyActivationPolicy()
+            updateMonitorDemand()
             if !appShape.showsMainWindowOnReopen {
                 mainWindowRevealRequested = false
                 hideInitialWindowIfNeeded()
@@ -132,12 +133,38 @@ final class AppState: ObservableObject {
     private var windowVisibilityCancellable: AnyCancellable?
     private var aiUsageAccountsCancellable: AnyCancellable?
     private var aiUsageLayoutCancellable: AnyCancellable?
+    private var monitorDemandCancellables: Set<AnyCancellable> = []
 
     private init() {
         appShape = AppShape.load()
         mainWindowVisible = appShape != .menuBarOnly
         mainWindowPresented = appShape != .menuBarOnly
         observeAIUsageLayout()
+        observeMonitorDemand()
+        updateMonitorDemand()
+    }
+
+    /// Thermal and GPU sampling follow what is actually on screen. The menu-bar
+    /// metric is cheap to check; the popover and the window show both widgets.
+    private func observeMonitorDemand() {
+        layout.$items
+            .sink { [weak self] _ in self?.updateMonitorDemand() }
+            .store(in: &monitorDemandCancellables)
+        monitor.$hasBattery
+            .sink { [weak self] _ in self?.updateMonitorDemand() }
+            .store(in: &monitorDemandCancellables)
+    }
+
+    private func updateMonitorDemand() {
+        let menuBarKind = layout.menuBarKind(hasBattery: monitor.hasBattery)
+        let showsPopover = menuBarPopoverVisible
+        let showsWindow = mainWindowPresented
+        monitor.setDemand(MonitorDemand(
+            showsThermal: showsPopover || showsWindow
+                || (appShape.showsMenuBar && menuBarKind == .temperature),
+            showsGPU: showsPopover || showsWindow
+                || (appShape.showsMenuBar && menuBarKind == .gpu)
+        ))
     }
 
     // MARK: - Presentation
@@ -202,6 +229,7 @@ final class AppState: ObservableObject {
 
     func setMenuBarPopoverVisible(_ isVisible: Bool) {
         menuBarPopoverVisible = isVisible
+        updateMonitorDemand()
         if isVisible { aiUsage.refreshIfStale() }
     }
 
@@ -267,6 +295,7 @@ final class AppState: ObservableObject {
     }
 
     private func refreshMainWindowVisibility() {
+        defer { updateMonitorDemand() }
         guard let mainWindow else {
             mainWindowVisible = false
             mainWindowPresented = false

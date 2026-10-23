@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Darwin
 import IOKit
@@ -83,6 +84,12 @@ final class SystemMonitor: ObservableObject {
     private let sessionID = UUID()
 
     private var timer: Timer?
+    private var timerInterval: TimeInterval = 1
+    private var isRunning = false
+    private var demand = MonitorDemand.inactive
+    private var displaysAsleep = false
+    private var screenSleepObservers: [NSObjectProtocol] = []
+    private var lastThermalSampleAt: TimeInterval?
     private var lastDiskSampleAt: TimeInterval = -.infinity
     private static let diskSampleInterval: TimeInterval = 15
     private var prevCPU: host_cpu_load_info?
@@ -110,15 +117,79 @@ final class SystemMonitor: ObservableObject {
     }
 
     func start(interval: TimeInterval = 1) {
+        timerInterval = max(0.2, interval)
+        isRunning = true
+        observeScreenSleep()
+        installTimerIfNeeded()
+    }
+
+    func stop() {
+        isRunning = false
         timer?.invalidate()
-        let t = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+        timer = nil
+        removeScreenSleepObservers()
+    }
+
+    /// Called whenever the visible surface changes. Enabling a metric that was
+    /// paused (for example opening the popover while the bar shows CPU) samples
+    /// it on the next turn instead of waiting for a full cadence tick.
+    func setDemand(_ newDemand: MonitorDemand) {
+        var updated = newDemand
+        updated.displaysAsleep = displaysAsleep
+        let wasSamplingThermal = demand.samplesThermal
+        let wasSamplingGPU = demand.samplesGPU
+        demand = updated
+        if (updated.samplesThermal && !wasSamplingThermal) || (updated.samplesGPU && !wasSamplingGPU) {
+            refresh()
+        }
+    }
+
+    private func installTimerIfNeeded() {
+        guard isRunning, !displaysAsleep else { return }
+        timer?.invalidate()
+        let t = Timer.scheduledTimer(withTimeInterval: timerInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refresh() }
         }
         t.tolerance = 0.4
         timer = t
     }
 
-    func stop() { timer?.invalidate(); timer = nil }
+    /// The status item and every chart are invisible while the displays sleep.
+    /// Stopping the timer removes the once-per-second wakeup instead of paying
+    /// for samples nobody can see; wake performs one fresh refresh.
+    private func observeScreenSleep() {
+        guard screenSleepObservers.isEmpty else { return }
+        let center = NSWorkspace.shared.notificationCenter
+        screenSleepObservers = [
+            center.addObserver(forName: NSWorkspace.screensDidSleepNotification,
+                               object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.setDisplaysAsleep(true) }
+            },
+            center.addObserver(forName: NSWorkspace.screensDidWakeNotification,
+                               object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.setDisplaysAsleep(false) }
+            }
+        ]
+    }
+
+    private func removeScreenSleepObservers() {
+        let center = NSWorkspace.shared.notificationCenter
+        for observer in screenSleepObservers { center.removeObserver(observer) }
+        screenSleepObservers.removeAll()
+    }
+
+    private func setDisplaysAsleep(_ asleep: Bool) {
+        guard displaysAsleep != asleep else { return }
+        displaysAsleep = asleep
+        demand.displaysAsleep = asleep
+        if asleep {
+            timer?.invalidate()
+            timer = nil
+        } else {
+            installTimerIfNeeded()
+            refresh()
+        }
+    }
 
     func flushHistory() {
         guard historyDirty else { return }
@@ -164,8 +235,9 @@ final class SystemMonitor: ObservableObject {
     }
 
     func refresh() {
+        guard !displaysAsleep else { return }
         let timestamp = now().timeIntervalSinceReferenceDate
-        if !gpuInFlight {
+        if demand.samplesGPU, !gpuInFlight {
             gpuInFlight = true
             Task.detached(priority: .utility) { [weak self] in
                 let usage = GPUSampler.sample()
@@ -230,8 +302,14 @@ final class SystemMonitor: ObservableObject {
         // number animations (menu bar, popover, and main window). Sample it off the
         // main actor and apply the result back on the main actor. The in-flight guard
         // skips a tick rather than queueing if a read ever outlasts the cadence.
-        if !thermalInFlight {
+        if demand.samplesThermal, !thermalInFlight,
+           ThermalSamplePolicy.shouldSample(
+               now: timestamp,
+               lastSampleAt: lastThermalSampleAt,
+               isDisplayed: true
+           ) {
             thermalInFlight = true
+            lastThermalSampleAt = timestamp
             Task.detached(priority: .utility) { [weak self] in
                 let reading = Thermal.read()
                 await self?.applyThermal(reading)
