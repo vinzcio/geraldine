@@ -1,7 +1,6 @@
 import Foundation
 import GeraldineControl
 
-@MainActor
 enum ControlSettingsError: Error, LocalizedError {
     case readOnly(String)
     case unknownKey(String)

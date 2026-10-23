@@ -110,7 +110,6 @@ final class ControlHost {
     private func status(_ request: ControlRequest) -> ControlResponse {
         let state = AppState.shared
         let keepAwake = state.keepAwake
-        let monitor = state.monitor
         let assertions = PowerAssertionSnapshot.current()
         let build = BuildInfo.current
 
