@@ -101,7 +101,8 @@ final class MonitorHistoryStoreTests: XCTestCase {
             defaults: defaults,
             historyStore: store,
             now: { Date(timeIntervalSinceReferenceDate: now) },
-            performInitialRefresh: false
+            performInitialRefresh: false,
+            readDisplaysAsleep: { false }
         )
 
         XCTAssertEqual(monitor.networkHistory.map(\.timestamp), [now - 3, now - 2])
@@ -132,7 +133,8 @@ final class MonitorHistoryStoreTests: XCTestCase {
         let monitor = SystemMonitor(
             historyStore: store,
             now: { Date(timeIntervalSinceReferenceDate: now) },
-            performInitialRefresh: false
+            performInitialRefresh: false,
+            readDisplaysAsleep: { false }
         )
 
         XCTAssertEqual(monitor.cpuHistory, [metric])
@@ -153,7 +155,8 @@ final class MonitorHistoryStoreTests: XCTestCase {
                     .appendingPathComponent("unused-\(UUID().uuidString).json")
             ),
             now: { Date(timeIntervalSinceReferenceDate: now) },
-            performInitialRefresh: false
+            performInitialRefresh: false,
+            readDisplaysAsleep: { false }
         )
         monitor.hasBattery = true
         monitor.batteryLevel = 0.08
@@ -250,7 +253,8 @@ final class MonitorHistoryStoreTests: XCTestCase {
             defaults: defaults,
             historyStore: store,
             now: { Date(timeIntervalSinceReferenceDate: currentTime) },
-            performInitialRefresh: false
+            performInitialRefresh: false,
+            readDisplaysAsleep: { false }
         )
         XCTAssertEqual(store.saveCount, 1)
 
@@ -279,7 +283,8 @@ final class MonitorHistoryStoreTests: XCTestCase {
             defaults: defaults,
             historyStore: store,
             now: { Date(timeIntervalSinceReferenceDate: timestamp) },
-            performInitialRefresh: false
+            performInitialRefresh: false,
+            readDisplaysAsleep: { false }
         )
 
         XCTAssertNotNil(defaults.data(forKey: "geraldine.networkHistory.v1"))

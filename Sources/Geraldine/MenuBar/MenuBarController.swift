@@ -103,7 +103,6 @@ final class MenuBarController: NSObject, NSWindowDelegate {
     private var lastStatusAnimationAt: CFTimeInterval = -.infinity
     private var statusRenderPending = false
     private var statusRenderCache = StatusRenderCache()
-    private var statusDisplaysAsleep = false
 
     private enum StatusAnimationMode {
         case digits
@@ -197,26 +196,14 @@ final class MenuBarController: NSObject, NSWindowDelegate {
             }
             .store(in: &cancellables)
 
-        // Nothing in the menu bar is visible while the displays sleep. Stop
-        // compositing immediately instead of leaving a paused display link that
-        // could be resumed by a late sample.
-        NSWorkspace.shared.notificationCenter
-            .publisher(for: NSWorkspace.screensDidSleepNotification)
+        // Share the monitor's reconciled startup and sleep/wake state. A second
+        // notification-only flag would miss sleep before this controller exists.
+        state.monitor.$displaysAsleep
+            .dropFirst()
             .sink { [weak self] _ in
+                // Published delivers in willSet; render after the state commits.
                 Task { @MainActor in
                     guard let self else { return }
-                    self.statusDisplaysAsleep = true
-                    self.invalidateStatusRendering()
-                }
-            }
-            .store(in: &cancellables)
-
-        NSWorkspace.shared.notificationCenter
-            .publisher(for: NSWorkspace.screensDidWakeNotification)
-            .sink { [weak self] _ in
-                Task { @MainActor in
-                    guard let self else { return }
-                    self.statusDisplaysAsleep = false
                     self.invalidateStatusRendering()
                     self.renderStatusItem()
                 }
@@ -423,7 +410,7 @@ final class MenuBarController: NSObject, NSWindowDelegate {
     }
 
     private func renderStatusItem() {
-        guard !statusDisplaysAsleep, let button = statusItem?.button else { return }
+        guard !state.monitor.displaysAsleep, let button = statusItem?.button else { return }
         let nextPlan = plan()
         let signature = statusSignature(for: nextPlan)
         // Monitor publishes several times per second (CPU, memory, network, GPU,

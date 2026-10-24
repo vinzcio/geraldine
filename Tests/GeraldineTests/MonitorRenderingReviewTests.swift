@@ -13,7 +13,8 @@ final class MonitorRenderingReviewTests: XCTestCase {
         let suite = "MonitorRenderingReviewTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
-        let monitor = SystemMonitor(defaults: defaults, historyStore: NoHistory(), performInitialRefresh: false)
+        let monitor = SystemMonitor(defaults: defaults, historyStore: NoHistory(),
+                                    performInitialRefresh: false, readDisplaysAsleep: { false })
         let layout = WidgetLayoutStore(defaults: defaults)
         layout.replaceItems([WidgetItem(.cpu, .small), WidgetItem(.gpu, .small), WidgetItem(.temperature, .small)])
         var reconciliations = 0
@@ -48,7 +49,8 @@ final class MonitorRenderingReviewTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         let monitor = SystemMonitor(defaults: defaults, historyStore: NoHistory(),
-                                    now: { Date(timeIntervalSinceReferenceDate: 100) }, performInitialRefresh: false)
+                                    now: { Date(timeIntervalSinceReferenceDate: 100) },
+                                    performInitialRefresh: false, readDisplaysAsleep: { false })
         let interval = monitor.samplingInterval
         XCTAssertEqual(interval, 1)
         for index in 0..<10 {
@@ -67,7 +69,8 @@ final class MonitorRenderingReviewTests: XCTestCase {
         let suite = "MonitorRenderingReviewTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
-        let monitor = SystemMonitor(defaults: defaults, historyStore: NoHistory(), performInitialRefresh: false)
+        let monitor = SystemMonitor(defaults: defaults, historyStore: NoHistory(),
+                                    performInitialRefresh: false, readDisplaysAsleep: { false })
         let layout = WidgetLayoutStore(defaults: defaults)
         layout.replaceItems([WidgetItem(.temperature, .small), WidgetItem(.gpu, .small)])
         monitor.setDemand(MonitorDemand(showsThermal: true))
@@ -98,7 +101,8 @@ final class MonitorRenderingReviewTests: XCTestCase {
         let suite = "MonitorRenderingReviewTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
-        let monitor = SystemMonitor(defaults: defaults, historyStore: NoHistory(), performInitialRefresh: false)
+        let monitor = SystemMonitor(defaults: defaults, historyStore: NoHistory(),
+                                    performInitialRefresh: false, readDisplaysAsleep: { false })
         let layout = WidgetLayoutStore(defaults: defaults)
         layout.replaceItems([WidgetItem(.temperature, .small), WidgetItem(.gpu, .small)])
         monitor.setDemand(MonitorDemand(showsThermal: true))
@@ -128,11 +132,11 @@ final class MonitorRenderingReviewTests: XCTestCase {
         let suite = "MonitorRenderingReviewTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
-        let monitor = SystemMonitor(defaults: defaults, historyStore: NoHistory(), performInitialRefresh: false)
+        let monitor = SystemMonitor(defaults: defaults, historyStore: NoHistory(),
+                                    performInitialRefresh: false, readDisplaysAsleep: { true })
         defer { monitor.stop() }
         // Keep the timer paused so this checks the selected cadence without
         // reading hardware or waiting for a real timer to fire.
-        monitor.setDisplaysAsleep(true)
         monitor.start(interval: 0.05)
         XCTAssertEqual(monitor.samplingInterval, 0.05)
         XCTAssertNil(monitor.lastRefreshAt)
@@ -142,7 +146,8 @@ final class MonitorRenderingReviewTests: XCTestCase {
         let suite = "MonitorRenderingReviewTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
-        let monitor = SystemMonitor(defaults: defaults, historyStore: NoHistory(), performInitialRefresh: false)
+        let monitor = SystemMonitor(defaults: defaults, historyStore: NoHistory(),
+                                    performInitialRefresh: false, readDisplaysAsleep: { false })
         let host = ControlHost(defaults: defaults, monitor: { monitor })
         let first = await host.handle(ControlRequest(command: "stats", arguments: ["gpu"]))
         XCTAssertEqual(first.result?["gpu"]?["samplingState"], .string("neverSampled"))
