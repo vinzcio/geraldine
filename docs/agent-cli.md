@@ -798,12 +798,13 @@ bounds that caller's request. A partial reply cannot reset the budget.
   `~/Library/Application Support/Geraldine/control.sock`, overridable with
   `GERALDINE_CONTROL_SOCKET`.
 - A newly created containing directory uses mode `0700`. Vincent approved a
-  future-startup repair only for Geraldine's owned default directory: existing
+  targeted startup repair only for Geraldine's owned default directory: existing
   mode `0755` is tightened to `0700` through a checked directory descriptor.
   Other existing modes and all custom parents must already be private and owned
   by the current user. Symlink parents are rejected. The socket is `0600`, and
-  permission-setting/read-back errors fail startup. No live permission repair
-  was performed during source verification.
+  permission-setting/read-back errors fail startup. The Oct 23 source checks
+  used fixtures; the Oct 24 deployment verified the live default directory at
+  `0700` and socket at `0600` (see the deployment record below).
 - Both client and server call `getpeereid(2)` and reject a different effective
   UID. There is no token to leak, and no TCP port. The client checks protocol,
   schema, request ID, command, and success/error consistency on replies.
@@ -840,9 +841,10 @@ bounds that caller's request. A partial reply cannot reset the budget.
 or the app's feature graph. A `status --json` run opens one Unix socket, writes
 one line, reads one line, prints it, and exits.
 
-Measured on this Mac after the reviewed CLI/socket repairs, using a debug helper
-built with SDK 27.0 against an isolated Python Unix-socket fixture: 50 real
-start-to-exit subprocess runs, excluding three warmups:
+Historical fixture measurement, 2026-10-23: a debug helper built with SDK 27.0
+against an isolated Python Unix-socket fixture on this Mac, after the reviewed
+CLI/socket repairs. There were 50 real start-to-exit subprocess runs, excluding
+three warmups:
 
 | Metric | Result |
 | --- | --- |
@@ -863,7 +865,8 @@ The real-subprocess regression test uses `posix_spawn` + `waitpid` because
 `Process.waitUntilExit` polls a run loop inside XCTest and adds about 60 ms,
 which would hide the real cost. The in-process test asserts p95 under 50 ms; the
 real-binary test asserts median under 50 ms and is skipped unless
-`GERALDINE_CLI_BINARY` points at a built helper:
+`GERALDINE_CLI_BINARY` points at a built helper. These are helper/transport
+fixture bounds, not a bound on full status against the actual app:
 
 ```bash
 GERALDINE_CLI_BINARY=<build>/GeraldineCLI \
@@ -871,25 +874,42 @@ GERALDINE_CLI_BINARY=<build>/GeraldineCLI \
   --filter AgentControlTests
 ```
 
+On 2026-10-24, the installed release helper against the actual running
+`a78fd04` app measured **99.7905 ms median / 117.0821 ms p95** for
+`status --json` over 50 process start-to-exit launches, excluding three warmups.
+Separate component medians were 6.137 ms for helper `version`, 10.054 ms for the
+catalog, 5.765 ms for `stats cpu`, 0.132 ms for direct-socket stats, and
+89.979 ms for direct-socket status.
+
+The live profile placed 1,732 of 1,737 handler samples in the blocking
+`SMAppService.status` XPC query. The parent's API investigation found no
+supported KVO or external status notification to fully invalidate a cache;
+local setters and app activation cannot cover external changes. Its Apple DTS
+reference is [thread 784801](https://developer.apple.com/forums/thread/784801).
+The deployment preserves fresh authoritative launch-at-login status and reports
+this OS-bound latency. No latency code or freshness-policy change was made.
+
 The server itself adds no idle work: it waits on a dispatch read source, not a
 timer, and request handling runs off the accept path. It retains the listener
 and directory descriptors plus the dispatch source while idle.
 
 ### App idle CPU
 
-The live installed build showed recurring bursts in the low-to-mid teens as a
-percentage of one core while the menu-bar animation was running. Six
+Historical investigation, 2026-10-23: the installed `993433a` build showed
+recurring bursts in the low-to-mid teens as a percentage of one core while the
+menu-bar animation was running. Six
 two-second samples of the installed app returned 0.0, 6.7, 13.8, 4.0, 11.7, and
 6.4% of one core. The work was concentrated in the 144 Hz
 `MenuBarController.stepStatusAnimation` path, which built and assigned a new
 `NSImage` on every display-link vblank, plus per-second thermal and GPU sampling
 even when nothing displayed those values.
 
-The installed app could not be relaunched during this change (a paid shift
-depends on its Keep Awake and Stay Active session), so no after idle-CPU
-percentage is claimed here. The current source preserves the original animation
-rate and one-second visible thermal cadence. Source tests can verify state and
-demand decisions; they cannot prove an idle-CPU percentage or visual parity:
+That source-only verification round did not relaunch the installed app because
+a paid shift depended on its Keep Awake and Stay Active session. The Oct 24
+deployment measurements are recorded below. Source preserves the original
+uncapped animation rate and one-second visible thermal cadence. Source tests
+can verify state and demand decisions; they cannot prove an idle-CPU percentage
+or visual parity:
 
 | Change | Before | After | Evidence |
 | --- | --- | --- | --- |
@@ -899,17 +919,34 @@ demand decisions; they cannot prove an idle-CPU percentage or visual parity:
 | Thermal cadence while visible | 1 Hz | original 1 Hz cadence retained, sensor reads off the main actor | `MonitorDemandTests` |
 | Thermal cadence while hidden | 1 Hz | none | demand wiring from menu bar, popover, and window |
 | GPU discovery while hidden | 1 Hz | none | demand wiring |
-| Monitor wakeups while displays sleep | 1 Hz timer | timer stopped; one refresh on wake | `SystemMonitor` screen-sleep observers |
+| Monitor wakeups while displays sleep | 1 Hz timer | timer stopped on observed sleep; one refresh on wake; startup gap found Oct 24 | `SystemMonitor` screen-sleep observers; follow-up below |
 | Thermal resource setup | SMC key metadata read repeatedly | successful SMC metadata cached with capacity derived from the actual key list; original per-read HID enumeration/recovery retained | `CThermal.c` |
 
-Component timings from the same machine, debug build:
+On 2026-10-24, fresh display-asleep measurements (15 two-second samples per
+revision) gave old `993433a` mean **0.8067%**, median **0.6%**, and installed
+`a78fd04` mean **1.0267%**, median **0.9%** of one core. An earlier old-build run
+gave mean 9.7733%, median 10.5%, but did not record display state; it is not a
+matched before/after comparison. These measurements establish no CPU win.
+
+The `a78fd04` app launched while `CGDisplayIsAsleep` was already true, but its
+monitor retained `displaysAsleep=false` and continued thermal sampling. The
+notification-only initialization missed sleep that preceded launch. At this
+record, a source follow-up queried the online displays at initialization and
+start/restart, and shared the monitor's sleep state with menu-bar rendering.
+Final parent checks and installed follow-up verification were pending; the
+source diff alone is not test or live-fix proof. The parent will record final
+follow-up deployment evidence in its PR. No full awake-screen CPU comparison
+or visual-parity acceptance is established here.
+
+Historical component timings from the same machine, debug build:
 
 - A post-change `Thermal.read()` over 12 samples took 46.9–81.4 ms with 50
   sensors and `available = yes`. The per-read cost is dominated by sensor I/O;
   these historical component samples are not a benchmark of the final reviewed
   thermal implementation. The current source moves reads off the main actor and
   skips hidden demand, while preserving the original visible cadence.
-- The CLI median above is the start-to-exit number, not a socket round trip.
+- The historical fixture CLI median is a process start-to-exit number, not a
+  socket round trip.
 
 To reproduce the CPU investigation, compare `ps -o %cpu= -p <pid>` over several
 short intervals with only the menu bar visible, then with the popover open, then
@@ -917,8 +954,9 @@ with the displays asleep. Use `sample <pid> 5` to confirm where the time goes.
 Do not use these commands to justify killing or relaunching a working session;
 they are read-only measurements.
 
-## Verification record — 2026-10-23
+## Historical verification record — 2026-10-23
 
+This source/fixture and temporary-package record predates the Oct 24 deployment.
 The parent verified the shared repairs with the available SDK 27.0:
 
 - 93 combined focused tests passed with no failures or skips, including the
@@ -949,12 +987,48 @@ The parent verified the shared repairs with the available SDK 27.0:
   Shell syntax and the existing Dock-presentation packaging check passed after
   the correction.
 
-The canonical `verify.sh` gate stopped before building because its pinned SDK
-26.5 is unavailable. SDK 27.0 source/fixture and temporary ad-hoc-package proof
-does not replace that gate or installed/live acceptance. No app entry point,
-real input, installation, notarization, live preference/permission change, or
-visible UI was exercised. The installed running build remains `993433a`; its
-after-change CPU and visual behavior require a separately authorized relaunch.
+At the end of that round, the canonical `verify.sh` gate had stopped before
+building because its pinned SDK 26.5 was unavailable. SDK 27.0 source/fixture
+and temporary ad-hoc-package proof did not replace that gate or installed/live
+acceptance. No app entry point, real input, installation, notarization, live
+preference/permission change, or visible UI was exercised in that round. The
+installed running build at that time was `993433a`.
+
+## Deployment record — 2026-10-24
+
+This records the PR #31 rollout; the subsequent sleep-state repair had not yet
+received final parent verification at record time.
+
+- [PR #31](https://github.com/vinzcio/geraldine/pull/31) merged at
+  `2026-10-24T13:16:10Z` as
+  `a78fd0475de044c3b3b632006a7b1cf747b931ed`.
+- The canonical `build.sh` release install used clean merged source, SDK 27.0,
+  and the existing Developer ID certificate, Lloyd Vincent Luardo (team
+  `4S9BMP9GU3`). Release metadata was clean, built
+  `2026-10-24T13:18:09Z`. Strict deep app and helper signature checks passed.
+- Built and installed CDHashes matched: app
+  `6f8693cc3cd8eb53daddff34d947414e6f4d261b`, helper
+  `ba4e5199d4dbe9786a96db7c1999c05e0bf1d5d3`. PID `20389` was verified at
+  `/Applications/Geraldine.app/Contents/MacOS/Geraldine`, with matching CLI/app
+  identity. Background `open -g` left the foreground ASN unchanged.
+- Keep Awake was ON indefinitely; Stay Active was ON and pulsing, with the
+  preserved one-minute idle delay and `allowDisplaySleep=false`. Independent
+  `pmset` inspection confirmed both real IOPM assertions. All 9 doctor checks
+  passed, including Accessibility, Full Disk Access, PATH, socket, and identity.
+- The approved startup repair was verified: the default directory was `0700`,
+  socket `0600`, both owned by UID `501`. The functional
+  `~/.local/bin/geraldine` symlink resolved to the installed bundled helper.
+- Both the old `993433a` bundle and new candidate assessed as
+  `Unnotarized Developer ID` under `spctl`. No trust, quarantine, or
+  signing-policy change was made; this is not notarization proof.
+
+Parent evidence was recorded under
+`/private/tmp/geraldine-ship-27f5bb0a-20261024`: installation/identity,
+live status/doctor, launch policy, latency components/profile, and CPU records.
+The parent checkpoint was `/private/tmp/geraldine-agent-cli-27f5bb0a.md`.
+The live performance measurements and startup gap are detailed above. SDK 26.5
+remained unavailable, so this SDK 27.0 install does not satisfy the pinned
+`verify.sh` gate. Full awake-screen CPU and visual parity were not verified.
 
 ## Compatibility
 

@@ -82,18 +82,21 @@ final class SystemMonitor: ObservableObject {
     private let defaults: UserDefaults
     private let historyStore: any MonitorHistoryStoring
     private let now: () -> Date
+    private let readDisplaysAsleep: () -> Bool?
+    private let screenSleepNotificationCenter: NotificationCenter
     private let sessionID = UUID()
 
     private var timer: Timer?
     private var timerInterval: TimeInterval = SystemMonitor.defaultSampleInterval
     private(set) var isRunning = false
     private(set) var demand = MonitorDemand.inactive
-    private(set) var displaysAsleep = false
+    @Published private(set) var displaysAsleep = false
     private var screenSleepObservers: [NSObjectProtocol] = []
     private(set) var lastRefreshAt: Date?
     private(set) var lastGPUSampleAt: Date?
     private(set) var lastThermalSampleAt: Date?
     var samplingInterval: TimeInterval { timerInterval }
+    var isSamplingScheduled: Bool { timer?.isValid == true }
     private var lastDiskSampleAt: TimeInterval = -.infinity
     private static let diskSampleInterval: TimeInterval = 15
     private var prevCPU: host_cpu_load_info?
@@ -108,15 +111,20 @@ final class SystemMonitor: ObservableObject {
         defaults: UserDefaults = .standard,
         historyStore: any MonitorHistoryStoring = MonitorHistoryStore(),
         now: @escaping () -> Date = Date.init,
-        performInitialRefresh: Bool = true
+        performInitialRefresh: Bool = true,
+        readDisplaysAsleep: @escaping () -> Bool? = { DisplaySleepState.read() },
+        screenSleepNotificationCenter: NotificationCenter = NSWorkspace.shared.notificationCenter
     ) {
         self.defaults = defaults
         self.historyStore = historyStore
         self.now = now
+        self.readDisplaysAsleep = readDisplaysAsleep
+        self.screenSleepNotificationCenter = screenSleepNotificationCenter
         let launchTime = now().timeIntervalSinceReferenceDate
         lastCheckpointAt = launchTime
         memoryTotal = Double(ProcessInfo.processInfo.physicalMemory)
         restoreHistory(now: launchTime)
+        setDisplaysAsleep(readDisplaysAsleep() ?? false)
         if performInitialRefresh { refresh() }
     }
 
@@ -124,7 +132,14 @@ final class SystemMonitor: ObservableObject {
         timerInterval = interval
         isRunning = true
         observeScreenSleep()
-        installTimerIfNeeded()
+        // Notifications do not replay the current state, and stop() removes
+        // observers. Reconcile after subscribing on every start/restart.
+        let asleep = readDisplaysAsleep() ?? false
+        if asleep == displaysAsleep {
+            installTimerIfNeeded()
+        } else {
+            setDisplaysAsleep(asleep)
+        }
     }
 
     func stop() {
@@ -164,7 +179,7 @@ final class SystemMonitor: ObservableObject {
     /// for samples nobody can see; wake performs one fresh refresh.
     private func observeScreenSleep() {
         guard screenSleepObservers.isEmpty else { return }
-        let center = NSWorkspace.shared.notificationCenter
+        let center = screenSleepNotificationCenter
         screenSleepObservers = [
             center.addObserver(forName: NSWorkspace.screensDidSleepNotification,
                                object: nil, queue: .main) { [weak self] _ in
@@ -178,7 +193,7 @@ final class SystemMonitor: ObservableObject {
     }
 
     private func removeScreenSleepObservers() {
-        let center = NSWorkspace.shared.notificationCenter
+        let center = screenSleepNotificationCenter
         for observer in screenSleepObservers { center.removeObserver(observer) }
         screenSleepObservers.removeAll()
     }

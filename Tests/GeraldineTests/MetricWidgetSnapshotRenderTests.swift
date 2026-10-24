@@ -29,7 +29,8 @@ final class MetricWidgetSnapshotRenderTests: XCTestCase {
 
         let monitor = SystemMonitor(defaults: defaults,
                                     historyStore: NullHistoryStore(),
-                                    performInitialRefresh: false)
+                                    performInitialRefresh: false,
+                                    readDisplaysAsleep: { false })
         populate(monitor)
         let network = NetworkMonitor()
 
