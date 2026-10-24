@@ -101,7 +101,7 @@ final class PrivacyViewModel: ObservableObject {
         groups = []; selection = []; result = nil; diagnostics = .empty; phase = .idle
     }
 
-    private nonisolated static func buildGroups() -> ScanReport {
+    nonisolated static func buildGroups() -> ScanReport {
         let fm = FileManager.default
         let home = fm.homeDirectoryForCurrentUser
         let caches = home.appendingPathComponent("Library/Caches")

@@ -178,35 +178,53 @@ static double smc_decode_temperature(const char type[5], const uint8_t *bytes, u
     return -1;
 }
 
+// Cache successful key info for the lifetime of the AppleSMC connection,
+// avoiding an extra kernel round trip per known key on later samples.
+// Failed metadata reads remain retryable. Cleared when the connection is replaced.
+typedef struct {
+    uint32_t dataType;
+    uint32_t dataSize;
+    uint8_t dataAttributes;
+    uint8_t valid;
+} SMCKeyCacheEntry;
+
 // Distinguish an unavailable key from a dead kernel connection. Missing keys
 // are normal across Mac models; transport failures require reconnecting.
 //  1 = temperature read, 0 = key unavailable/invalid, -1 = connection failed.
-static int smc_read_key(io_connect_t conn, const char *key, double *temp) {
+static int smc_read_key(io_connect_t conn, const char *key,
+                        SMCKeyCacheEntry *cache, double *temp) {
     SMCParamStruct input;
     SMCParamStruct output;
     memset(&input, 0, sizeof(input));
-    memset(&output, 0, sizeof(output));
 
     input.key = smc_fourcc(key);
-    input.data8 = 9; // read key info
+    if (!cache->valid) {
+        memset(&output, 0, sizeof(output));
+        input.data8 = 9; // read key info
+        size_t infoSize = sizeof(output);
+        kern_return_t infoResult = IOConnectCallStructMethod(
+            conn, 2, &input, sizeof(input), &output, &infoSize);
+        if (infoResult != KERN_SUCCESS) return -1;
+        if (output.result != 0) return 0;
+        cache->dataType = output.keyInfo.dataType;
+        cache->dataSize = output.keyInfo.dataSize;
+        cache->dataAttributes = output.keyInfo.dataAttributes;
+        cache->valid = 1;
+    }
+
+    input.keyInfo.dataSize = cache->dataSize;
+    input.keyInfo.dataType = cache->dataType;
+    input.keyInfo.dataAttributes = cache->dataAttributes;
+    input.data8 = 5; // read bytes
+    memset(&output, 0, sizeof(output));
     size_t outputSize = sizeof(output);
     kern_return_t kr = IOConnectCallStructMethod(conn, 2, &input, sizeof(input), &output, &outputSize);
     if (kr != KERN_SUCCESS) return -1;
     if (output.result != 0) return 0;
 
-    input.keyInfo.dataSize = output.keyInfo.dataSize;
-    input.keyInfo.dataType = output.keyInfo.dataType;
-    input.keyInfo.dataAttributes = output.keyInfo.dataAttributes;
-    input.data8 = 5; // read bytes
-    memset(&output, 0, sizeof(output));
-    outputSize = sizeof(output);
-    kr = IOConnectCallStructMethod(conn, 2, &input, sizeof(input), &output, &outputSize);
-    if (kr != KERN_SUCCESS) return -1;
-    if (output.result != 0) return 0;
-
     char type[5];
-    smc_fourcc_string(input.keyInfo.dataType, type);
-    double t = smc_decode_temperature(type, output.bytes, input.keyInfo.dataSize);
+    smc_fourcc_string(cache->dataType, type);
+    double t = smc_decode_temperature(type, output.bytes, cache->dataSize);
     if (t > 1.0 && t < 150.0) {
         *temp = t;
         return 1;
@@ -227,6 +245,10 @@ static const char *const kCleanMyMacSMCTemperatureKeys[] = {
     "TCDX"
 };
 
+static SMCKeyCacheEntry g_smc_key_cache[
+    sizeof(kCleanMyMacSMCTemperatureKeys) / sizeof(kCleanMyMacSMCTemperatureKeys[0])
+];
+
 static size_t smc_temperature_key_count(void) {
     return sizeof(kCleanMyMacSMCTemperatureKeys) / sizeof(kCleanMyMacSMCTemperatureKeys[0]);
 }
@@ -245,6 +267,7 @@ static void smc_invalidate_connection(void) {
     if (g_smc_conn == IO_OBJECT_NULL) return;
     IOServiceClose(g_smc_conn);
     g_smc_conn = IO_OBJECT_NULL;
+    memset(g_smc_key_cache, 0, sizeof(g_smc_key_cache));
 }
 
 static io_connect_t smc_connection(void) {
@@ -270,7 +293,7 @@ int smc_thermal_read(double *temps, char *names, int nameStride, int maxCount) {
     for (size_t i = 0; i < smc_temperature_key_count() && count < maxCount; i++) {
         const char *key = kCleanMyMacSMCTemperatureKeys[i];
         double t = 0;
-        int status = smc_read_key(conn, key, &t);
+        int status = smc_read_key(conn, key, &g_smc_key_cache[i], &t);
         if (status < 0) {
             // Sleep/wake and AppleSMC service restarts can invalidate an open
             // user client. The next sample will establish a fresh connection.

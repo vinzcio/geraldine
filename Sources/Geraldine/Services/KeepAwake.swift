@@ -139,6 +139,8 @@ final class KeepAwakeController: ObservableObject {
     private let defaults: UserDefaults
     private let currentPowerSourceIsBattery: () -> Bool
     private let idleActivitySimulator: IdleActivitySimulationService
+    private let createPowerAssertion: @MainActor (CFString, IOPMAssertionLevel, CFString, inout IOPMAssertionID) -> IOReturn
+    private let releasePowerAssertion: @MainActor (IOPMAssertionID) -> IOReturn
     private var activeSince: Date?
     private var idleAssertion: IOPMAssertionID = 0
     private var displayAssertion: IOPMAssertionID = 0
@@ -152,10 +154,16 @@ final class KeepAwakeController: ObservableObject {
 
     init(defaults: UserDefaults = .standard,
          currentPowerSourceIsBattery: @escaping () -> Bool = KeepAwakeController.isOnBatteryPower,
-         idleActivitySimulator: IdleActivitySimulationService? = nil) {
+         idleActivitySimulator: IdleActivitySimulationService? = nil,
+         createAssertion: @escaping @MainActor (CFString, IOPMAssertionLevel, CFString, inout IOPMAssertionID) -> IOReturn = { type, level, name, id in
+             IOPMAssertionCreateWithName(type, level, name, &id)
+         },
+         releaseAssertion: @escaping @MainActor (IOPMAssertionID) -> IOReturn = { IOPMAssertionRelease($0) }) {
         self.defaults = defaults
         self.currentPowerSourceIsBattery = currentPowerSourceIsBattery
         self.idleActivitySimulator = idleActivitySimulator ?? IdleActivitySimulationService()
+        createPowerAssertion = createAssertion
+        releasePowerAssertion = releaseAssertion
 
         let rawDuration = defaults.string(forKey: DefaultsKey.defaultDuration) ?? KeepAwakeDuration.oneHour.rawValue
         defaultDuration = KeepAwakeDuration(rawValue: rawDuration) ?? .oneHour
@@ -534,10 +542,10 @@ final class KeepAwakeController: ObservableObject {
     private func holdAssertion(type: CFString, storage: inout IOPMAssertionID) -> Bool {
         guard storage == 0 else { return true }
         var assertionID: IOPMAssertionID = 0
-        let result = IOPMAssertionCreateWithName(type,
-                                                 IOPMAssertionLevel(kIOPMAssertionLevelOn),
-                                                 "Geraldine Keep Awake" as CFString,
-                                                 &assertionID)
+        let result = createPowerAssertion(type,
+                                          IOPMAssertionLevel(kIOPMAssertionLevelOn),
+                                          "Geraldine Keep Awake" as CFString,
+                                          &assertionID)
         guard result == kIOReturnSuccess else { return false }
         storage = assertionID
         return true
@@ -555,7 +563,7 @@ final class KeepAwakeController: ObservableObject {
 
     private func releaseAssertion(_ assertion: inout IOPMAssertionID) {
         guard assertion != 0 else { return }
-        IOPMAssertionRelease(assertion)
+        _ = releasePowerAssertion(assertion)
         assertion = 0
     }
 

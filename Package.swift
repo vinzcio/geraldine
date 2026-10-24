@@ -9,9 +9,13 @@ let package = Package(
             name: "CThermal",
             path: "Sources/CThermal"
         ),
+        .target(
+            name: "GeraldineControl",
+            path: "Sources/GeraldineControl"
+        ),
         .executableTarget(
             name: "Geraldine",
-            dependencies: ["CThermal"],
+            dependencies: ["CThermal", "GeraldineControl"],
             path: "Sources/Geraldine",
             resources: [
                 .process("Resources")
@@ -28,9 +32,14 @@ let package = Package(
                 .linkedLibrary("sqlite3")
             ]
         ),
+        .executableTarget(
+            name: "GeraldineCLI",
+            dependencies: ["GeraldineControl"],
+            path: "Sources/GeraldineCLI"
+        ),
         .testTarget(
             name: "GeraldineTests",
-            dependencies: ["Geraldine"],
+            dependencies: ["Geraldine", "GeraldineControl"],
             path: "Tests/GeraldineTests"
         )
     ]

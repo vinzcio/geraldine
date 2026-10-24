@@ -91,7 +91,7 @@ final class LargeFilesViewModel: ObservableObject {
         groups = []; selection = []; result = nil; diagnostics = .empty; scannedCount = 0; phase = .idle
     }
 
-    private nonisolated static func scan(root: URL, minBytes: UInt64) -> ScanReport {
+    nonisolated static func scan(root: URL, minBytes: UInt64) -> ScanReport {
         let fm = FileManager.default
         let cutoff = Date().addingTimeInterval(-365 * 24 * 3600)
         // One formatter for the whole scan — building one per old file is needless work.

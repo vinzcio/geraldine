@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 
 /// A metric that can appear as a resizable widget in the menu-bar popover.
 /// The first item in the layout also drives the live menu-bar status item.
@@ -225,6 +226,9 @@ struct WidgetItem: Codable, Identifiable, Equatable {
 @MainActor
 final class WidgetLayoutStore: ObservableObject {
     @Published private(set) var items: [WidgetItem]
+    /// Staged moves publish `items` immediately; a later drop also needs to
+    /// notify consumers of the committed menu-bar metric after it changes.
+    let committedItemsDidChange = PassthroughSubject<Void, Never>()
     private let defaults: UserDefaults
 
     /// The last persisted order. The menu-bar status item reads this instead of `items`
@@ -407,9 +411,35 @@ final class WidgetLayoutStore: ObservableObject {
         persist()
     }
 
+    /// Replace the whole layout from a control request. Unknown or duplicate
+    /// kinds are dropped, and every widget this build knows about is restored
+    /// (hidden when absent) so a partial payload can never leave the popover or
+    /// the menu-bar metric without a usable tile.
+    func replaceItems(_ replacements: [WidgetItem]) {
+        var seen = Set<WidgetKind>()
+        var next = replacements.filter { seen.insert($0.kind).inserted }
+        guard !next.isEmpty else { return }
+        for kind in MetricKind.allCases where !seen.contains(.metric(kind)) {
+            next.append(Self.defaultItem(for: .metric(kind)))
+        }
+        if !seen.contains(.keepAwake) {
+            next.append(Self.defaultItem(for: .keepAwake))
+        }
+        if !seen.contains(.calendar) {
+            next.append(Self.defaultItem(for: .calendar))
+        }
+        for provider in AICodingProvider.allCases where !seen.contains(.aiUsage(provider)) {
+            next.append(Self.defaultItem(for: .aiUsage(provider)))
+        }
+        items = next
+        persist()
+    }
+
     private func persist() {
+        let changed = committedItems != items
         committedItems = items
         Self.save(items, key: Self.key, defaults: defaults)
+        if changed { committedItemsDidChange.send() }
     }
 
     private static func save(_ items: [WidgetItem], key: String, defaults: UserDefaults) {

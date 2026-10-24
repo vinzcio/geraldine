@@ -39,7 +39,7 @@ final class UninstallerViewModel: ObservableObject {
         }
     }
 
-    private nonisolated static func discover() -> UninstallerDiscovery {
+    nonisolated static func discover() -> UninstallerDiscovery {
         let fm = FileManager.default
         let home = fm.homeDirectoryForCurrentUser
         let dirs = [
@@ -85,7 +85,7 @@ final class UninstallerViewModel: ObservableObject {
     }
 }
 
-private struct UninstallerDiscovery {
+struct UninstallerDiscovery {
     var apps: [AppEntry]
     var diagnostics: ScanDiagnostics
 }

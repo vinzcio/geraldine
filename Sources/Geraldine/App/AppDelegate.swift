@@ -19,6 +19,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         state.powerTools.start()
         state.aiUsage.start()
         menuBarController = MenuBarController(state: state)
+        // Best-effort: a failed socket bind must never interrupt the app.
+        ControlHost.shared.start()
         // SwiftUI restores the Window scene as visible. Hide it on the next
         // turn after the hosting window exists so menu-bar-only does not
         // mount the dashboard layout loop.
@@ -96,6 +98,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        ControlHost.shared.stop()
         AppState.shared.monitor.stop()
         AppState.shared.monitor.flushHistory()
         AppState.shared.keepAwake.shutdown()

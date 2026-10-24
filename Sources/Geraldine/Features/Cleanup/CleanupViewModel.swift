@@ -93,7 +93,7 @@ final class CleanupViewModel: ObservableObject {
         scanProgressText = text
     }
 
-    private nonisolated static func buildGroups(
+    nonisolated static func buildGroups(
         progress: @escaping @Sendable (String) async -> Void
     ) async -> ScanReport {
         let home = FileManager.default.homeDirectoryForCurrentUser
