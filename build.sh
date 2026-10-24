@@ -106,7 +106,7 @@ sanitize_app_executable_rpaths() {
       /usr/lib/swift|@loader_path*|@executable_path*)
         ;;
       /*)
-        echo "▸ Removing external app rpath from $APP_NAME: $rpath"
+        echo "▸ Removing external rpath from $executable: $rpath"
         install_name_tool -delete_rpath "$rpath" "$executable"
         ;;
     esac
@@ -114,6 +114,7 @@ sanitize_app_executable_rpaths() {
 }
 
 sanitize_app_executable_rpaths "$CONTENTS/MacOS/$APP_NAME"
+sanitize_app_executable_rpaths "$CONTENTS/Helpers/geraldine"
 
 if [ -f "$SRC_DIR/Resources/AppIcon.icns" ]; then
   cp "$SRC_DIR/Resources/AppIcon.icns" "$CONTENTS/Resources/AppIcon.icns"

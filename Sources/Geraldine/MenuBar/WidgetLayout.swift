@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 
 /// A metric that can appear as a resizable widget in the menu-bar popover.
 /// The first item in the layout also drives the live menu-bar status item.
@@ -225,6 +226,9 @@ struct WidgetItem: Codable, Identifiable, Equatable {
 @MainActor
 final class WidgetLayoutStore: ObservableObject {
     @Published private(set) var items: [WidgetItem]
+    /// Staged moves publish `items` immediately; a later drop also needs to
+    /// notify consumers of the committed menu-bar metric after it changes.
+    let committedItemsDidChange = PassthroughSubject<Void, Never>()
     private let defaults: UserDefaults
 
     /// The last persisted order. The menu-bar status item reads this instead of `items`
@@ -432,8 +436,10 @@ final class WidgetLayoutStore: ObservableObject {
     }
 
     private func persist() {
+        let changed = committedItems != items
         committedItems = items
         Self.save(items, key: Self.key, defaults: defaults)
+        if changed { committedItemsDidChange.send() }
     }
 
     private static func save(_ items: [WidgetItem], key: String, defaults: UserDefaults) {

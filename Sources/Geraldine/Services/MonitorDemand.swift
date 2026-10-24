@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 
 /// Which expensive live samples a visible surface actually needs.
 ///
@@ -24,19 +25,34 @@ struct MonitorDemand: Equatable, Sendable {
     var samplesGPU: Bool { showsGPU && !displaysAsleep }
 }
 
-/// Cadence for the ~130-sensor thermal read. Five seconds keeps the sparkline
-/// and headline honest without paying a HID/SMC sweep every tick.
-enum ThermalSamplePolicy {
-    static let activeInterval: TimeInterval = 5
+/// Published values deliver in willSet. Reconcile after assignments finish;
+/// a later drag commit must also reconcile the committed menu-bar metric.
+@MainActor
+final class MonitorDemandObservation {
+    private var cancellables = Set<AnyCancellable>()
+    private var reconciliationPending = false
+    private let reconcile: () -> Void
 
-    static func shouldSample(
-        now: TimeInterval,
-        lastSampleAt: TimeInterval?,
-        isDisplayed: Bool
-    ) -> Bool {
-        guard isDisplayed, now.isFinite else { return false }
-        guard let lastSampleAt, lastSampleAt.isFinite else { return true }
-        // A clock that moved backwards must not park sampling forever.
-        return now < lastSampleAt || now - lastSampleAt >= activeInterval
+    init(layout: WidgetLayoutStore, monitor: SystemMonitor, reconcile: @escaping () -> Void) {
+        self.reconcile = reconcile
+        layout.$items.removeDuplicates().dropFirst()
+            .sink { [weak self] _ in self?.scheduleReconciliation() }
+            .store(in: &cancellables)
+        layout.committedItemsDidChange
+            .sink { [weak self] _ in self?.scheduleReconciliation() }
+            .store(in: &cancellables)
+        monitor.$hasBattery.removeDuplicates().dropFirst()
+            .sink { [weak self] _ in self?.scheduleReconciliation() }
+            .store(in: &cancellables)
+    }
+
+    private func scheduleReconciliation() {
+        guard !reconciliationPending else { return }
+        reconciliationPending = true
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.reconciliationPending = false
+            self.reconcile()
+        }
     }
 }

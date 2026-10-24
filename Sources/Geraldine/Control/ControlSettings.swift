@@ -37,12 +37,25 @@ enum ControlWidgetError: Error, LocalizedError {
 /// UI uses, so it applies immediately and persists through the existing didSet
 /// hooks. Nothing here writes a preference behind a live object's back.
 @MainActor
-enum ControlSettings {
-    private static var state: AppState { .shared }
+final class ControlSettings {
+    private var state: AppState { .shared }
+    private let defaults: UserDefaults
+    private let keepAwakeProvider: @MainActor () -> KeepAwakeController
+    private var keepAwake: KeepAwakeController { keepAwakeProvider() }
+    private var calendar: CalendarSettingsStore { state.calendar }
+    private var tools: PowerToolsController { state.powerTools }
+
+    init(
+        defaults: UserDefaults = .standard,
+        keepAwake: @escaping @MainActor () -> KeepAwakeController = { AppState.shared.keepAwake }
+    ) {
+        self.defaults = defaults
+        self.keepAwakeProvider = keepAwake
+    }
 
     // MARK: - Reading
 
-    static func snapshot() -> [String: JSONValue] {
+    func snapshot() -> [String: JSONValue] {
         var values: [String: JSONValue] = [:]
         for definition in SettingsCatalog.definitions {
             values[definition.key] = value(for: definition)
@@ -50,11 +63,8 @@ enum ControlSettings {
         return values
     }
 
-    static func value(for definition: SettingDefinition) -> JSONValue {
+    func value(for definition: SettingDefinition) -> JSONValue {
         let key = definition.key
-        let keepAwake = state.keepAwake
-        let calendar = state.calendar
-        let tools = state.powerTools
 
         switch key {
         case "keepAwake.defaultDuration":
@@ -72,7 +82,7 @@ enum ControlSettings {
         case "appShape":
             return .string(state.appShape.rawValue)
         case "networkRateUnit":
-            return .string((UserDefaults.standard.string(forKey: "networkRateUnit"))
+            return .string((defaults.string(forKey: "networkRateUnit"))
                 .flatMap(NetworkRateUnit.init(rawValue:))?.rawValue
                 ?? NetworkRateUnit.bytesPerSecond.rawValue)
         case "launchAtLogin":
@@ -147,7 +157,7 @@ enum ControlSettings {
         }
     }
 
-    static func definitionsValue() -> JSONValue {
+    func definitionsValue() -> JSONValue {
         .array(SettingsCatalog.definitions.map { definition in
             .object([
                 "key": .string(definition.key),
@@ -164,7 +174,7 @@ enum ControlSettings {
 
     // MARK: - Writing
 
-    static func set(key: String, rawValue: String) throws -> (previous: JSONValue, current: JSONValue) {
+    func set(key: String, rawValue: String) throws -> (previous: JSONValue, current: JSONValue) {
         guard let definition = SettingsCatalog.definition(for: key) else {
             throw ControlSettingsError.unknownKey(key)
         }
@@ -183,11 +193,7 @@ enum ControlSettings {
         return (previous, current)
     }
 
-    private static func apply(definition: SettingDefinition, value: JSONValue) throws {
-        let keepAwake = state.keepAwake
-        let calendar = state.calendar
-        let tools = state.powerTools
-
+    private func apply(definition: SettingDefinition, value: JSONValue) throws {
         switch definition.key {
         case "keepAwake.defaultDuration":
             guard let raw = value.stringValue,
@@ -217,7 +223,7 @@ enum ControlSettings {
             guard let raw = value.stringValue, NetworkRateUnit(rawValue: raw) != nil else {
                 throw ControlSettingsError.invalidValue(key: definition.key, message: "expected bytesPerSecond or bitsPerSecond")
             }
-            UserDefaults.standard.set(raw, forKey: "networkRateUnit")
+            defaults.set(raw, forKey: "networkRateUnit")
         case "launchAtLogin":
             let enabled = try bool(value, definition)
             guard LaunchAtLogin.set(enabled) else {
@@ -311,14 +317,14 @@ enum ControlSettings {
         }
     }
 
-    private static func bool(_ value: JSONValue, _ definition: SettingDefinition) throws -> Bool {
+    private func bool(_ value: JSONValue, _ definition: SettingDefinition) throws -> Bool {
         guard let flag = value.boolValue else {
             throw ControlSettingsError.invalidValue(key: definition.key, message: "expected true or false")
         }
         return flag
     }
 
-    private static func clocks(from value: JSONValue) throws -> [WorldClock] {
+    private func clocks(from value: JSONValue) throws -> [WorldClock] {
         guard let array = value.arrayValue else {
             throw ControlSettingsError.invalidValue(
                 key: "calendar.worldClocks.v1",
@@ -343,7 +349,7 @@ enum ControlSettings {
         return clocks
     }
 
-    private static func applyLayout(_ value: JSONValue) throws {
+    private func applyLayout(_ value: JSONValue) throws {
         guard let array = value.arrayValue, !array.isEmpty else {
             throw ControlSettingsError.invalidValue(
                 key: "geraldine.widgetLayout.v3",
@@ -380,7 +386,7 @@ enum ControlSettings {
 
     // MARK: - Layout values
 
-    static func layoutValue() -> JSONValue {
+    func layoutValue() -> JSONValue {
         .array(state.layout.items.map { item in
             .object([
                 "kind": .string(item.kind.id),
@@ -392,7 +398,7 @@ enum ControlSettings {
         })
     }
 
-    private static func connectedUsageValue() -> JSONValue {
+    private func connectedUsageValue() -> JSONValue {
         let identities = state.layout.items.compactMap { item -> String? in
             guard item.isShown, case .aiUsage(let identity) = item.kind else { return nil }
             return identity.id
@@ -402,7 +408,7 @@ enum ControlSettings {
 
     // MARK: - Widgets
 
-    static func widgetsListText() -> [String] {
+    func widgetsListText() -> [String] {
         var lines = ["Widgets in popover order:"]
         let barKind = state.layout.menuBarKind(hasBattery: state.monitor.hasBattery)
         for item in state.layout.items {
@@ -417,14 +423,14 @@ enum ControlSettings {
         return lines
     }
 
-    static func widgetsListResult() -> JSONValue {
+    func widgetsListResult() -> JSONValue {
         .object([
             "items": layoutValue(),
             "menuBarMetric": .string(state.layout.menuBarKind(hasBattery: state.monitor.hasBattery).rawValue)
         ])
     }
 
-    static func widgetsAction(
+    func widgetsAction(
         subcommand: String,
         arguments: [String],
         options: [String: String]

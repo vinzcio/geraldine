@@ -57,7 +57,7 @@ public enum JSONValue: Codable, Equatable, Sendable {
     public var intValue: Int? {
         switch self {
         case .int(let value): return value
-        case .double(let value) where value.rounded() == value: return Int(value)
+        case .double(let value): return Int(exactly: value)
         default: return nil
         }
     }
@@ -95,29 +95,25 @@ public enum JSONValue: Codable, Equatable, Sendable {
         switch any {
         case is NSNull:
             return .null
-        case let value as Bool:
-            return .bool(value)
-        case let value as Int:
-            return .int(value)
-        case let value as Int64:
-            return .int(Int(value))
-        case let value as Double:
-            return .double(value)
+        case let value as NSNumber:
+            // Foundation bridges numeric 0/1 to Bool too. Inspect the actual
+            // CFBoolean type before any Swift conditional numeric casts.
+            if CFGetTypeID(value) == CFBooleanGetTypeID() {
+                return .bool(value.boolValue)
+            }
+            let type = String(cString: value.objCType)
+            if "cCsSiIlLqQ".contains(type), let integer = Int(value.stringValue) {
+                // Never round an exact Int64 through Double (Int64.max would
+                // become 2^63). Floating point values keep their own type.
+                return .int(integer)
+            }
+            return .double(value.doubleValue)
         case let value as String:
             return .string(value)
         case let value as [Any]:
             return .array(value.map(JSONValue.from))
         case let value as [String: Any]:
             return .object(value.mapValues(JSONValue.from))
-        case let value as NSNumber:
-            if CFGetTypeID(value) == CFBooleanGetTypeID() {
-                return .bool(value.boolValue)
-            }
-            let double = value.doubleValue
-            if double.rounded() == double, double >= Double(Int.min), double <= Double(Int.max) {
-                return .int(Int(double))
-            }
-            return .double(double)
         default:
             return .string(String(describing: any))
         }

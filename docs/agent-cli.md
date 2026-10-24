@@ -32,28 +32,34 @@ the main actor, through the same controllers the UI uses.
 
 The helper is copied before the app is signed and is signed with the identifier
 `com.vincent.geraldine.helper`, so the app's signature covers the finished
-helper. `GERALDINE_BUILD_ROOT` changes where `build.sh` assembles the bundle; it
+helper. Both executables receive the existing external-rpath sanitation before
+signing. `GERALDINE_BUILD_ROOT` changes where `build.sh` assembles the bundle; it
 does not change the runtime paths.
 
 ### Put it on PATH
 
-Copy the bundled helper into `~/.local/bin`:
+Link the bundled helper into `~/.local/bin`:
 
 ```bash
 /Applications/Geraldine.app/Contents/Helpers/geraldine install-cli
 ```
 
-`install-cli` copies the executable that invoked it into `~/.local/bin/geraldine`
-with mode `0755`. It works without the app running and prints whether the
+`install-cli` creates a symlink from `~/.local/bin/geraldine` to the executable
+that invoked it, resolving an existing PATH symlink back to the helper. It is
+idempotent, works without the app running, and prints whether the
 destination is already on `PATH`. Use `--dir DIR` for another directory:
 
 ```bash
 geraldine install-cli --dir /usr/local/bin
 ```
 
-The copy is a snapshot. After replacing the app, run `install-cli` again so the
-helper and the app speak the same protocol. The destination must be writable by
-your user; `/usr/local/bin` usually needs an administrator. If `~/.local/bin` is
+Replacing the app at the same path updates the helper reached through the link
+automatically. If you move the app, run its bundled helper's `install-cli` again
+to update the link. The installer preserves regular files and unrelated
+symlinks; it only replaces an owned link to a Geraldine bundled helper. A
+previous snapshot installation must be inspected and moved aside explicitly.
+The destination must be writable by your user; the installer never uses sudo.
+If `~/.local/bin` is
 not on `PATH`, add it to the shell profile; the default macOS `PATH` does not
 include it.
 
@@ -61,7 +67,7 @@ include it.
 
 The installed helper is the same executable whether it is launched from the
 bundle or from `PATH`. It is Foundation-only and links no app frameworks, which
-keeps start-up in the low single-digit milliseconds.
+keeps startup small; isolated process timings are recorded below.
 
 ## Surface inventory
 
@@ -149,7 +155,10 @@ geraldine --version
         "summary": "Turn Keep Awake on, off, or toggle it.",
         "usage": "geraldine awake on [--for 90m | --indefinitely] | off | toggle [--json]",
         "subcommands": ["on", "off", "toggle"],
-        "arguments": [],
+        "arguments": [
+          { "name": "action", "type": "enum", "required": true, "description": "on, off, or toggle" },
+          { "name": "--for", "type": "duration", "required": false, "description": "Duration for on/toggle, such as 90m or 1h30m" }
+        ],
         "needsRunningApp": true,
         "sideEffects": ["Creates or releases IOPM power assertions."]
       }
@@ -164,17 +173,20 @@ whether a call requires the app and whether it changes state before invoking it.
 `geraldine <command> --help` also prints the side effects and the argument
 types, and names the subcommands.
 
-Running `geraldine` with no command prints the same overview and exits `2`:
-without a command, there is nothing to do. Explicit `--help` exits `0`.
+Running `geraldine` with no command invokes `status`, including its JSON output
+and unavailable-app errors. It never implicitly launches the app.
+Explicit `--help` exits `0` and also supports the JSON envelope.
 
 ## Running, closed, and degraded states
 
 | Situation | Behaviour |
 | --- | --- |
 | App running, control socket ready | Every command works against live state. |
-| App running, no control socket | Control commands exit `3` and say the app is running but the socket is unavailable. `awake on\|off\|toggle` falls back to the `geraldine:` URL handler and reports `result.method = "url"`; the result cannot be confirmed. `settings list\|get` read saved preferences with `appRunning: true`. `doctor` reports the socket failure. |
+| App running, default control socket absent or refusing connections | Control commands exit `3`. `awake on\|off\|toggle` retains the legacy `geraldine:` URL fallback and reports `result.method = "url"`; the resulting state cannot be confirmed. `settings list\|get` read saved preferences with `appRunning: true`. `doctor` reports the socket failure. |
+| Explicit socket unavailable | `--socket` and `GERALDINE_CONTROL_SOCKET` isolate the request to that endpoint. The CLI exits `3` without a URL fallback, launch, or saved-preferences fallback, including with `--launch`. |
+| Connected socket returns an invalid reply or fails during I/O | The CLI reports an error and does not retry through another transport; a state-changing request may already have taken effect. |
 | App closed | `settings list\|get` read the `com.vincent.geraldine` preference domain with `appRunning: false`; the four virtual keys are omitted from `list` and report `null` from `get`. Every other command exits `3` with a hint to open the app or pass `--launch`. |
-| App closed, `--launch` | The CLI opens the app once, waits two seconds, and retries the original request. It never launches the app implicitly. If the retry still fails, it exits `3`. |
+| App closed, `--launch` | The CLI requests launch once and retries immediately without a fixed sleep, including for settings and doctor. A missing/refused retry exits `3` with an unconfirmed-readiness hint; connected/protocol failures retain their error meaning. There is no second transport attempt. |
 
 Local commands never need the app: `commands`, `install-cli`, `help`,
 `--version`, and read-only `settings`. `doctor` can run locally, but exits `3`
@@ -193,14 +205,16 @@ Global options, accepted before or after the command name:
 | --- | --- |
 | `--json` | Print one JSON envelope instead of human text. |
 | `--socket PATH` | Use another Unix socket. Also `GERALDINE_CONTROL_SOCKET`. |
-| `--timeout SECONDS` | Client send and read deadline. Default `120`. The connect attempt itself does not wait. |
+| `--timeout SECONDS` | Optional finite positive deadline for the entire request, including connect, send, read, and an explicit launch/retry. There is no implicit request deadline, including for doctor. Watch applies this budget to each sample request. |
 | `--launch` | Open Geraldine if it is not running, then retry once. |
 | `--no-color` | Accepted for compatibility; output is already plain text. |
 | `--help`, `-h` | Overview, or help for the command that follows. |
 | `--version`, `-v` | CLI, protocol, and schema versions. |
 
-`GERALDINE_CONTROL_SOCKET` is the injectable path used by tests and wrappers. The
-path must fit a Unix socket address (about 104 bytes on macOS).
+`GERALDINE_CONTROL_SOCKET` is the injectable path used by tests and wrappers.
+An empty override is a usage error. The path must fit a Unix socket address
+(about 104 bytes on macOS). Malformed options and unsupported extra arguments
+are rejected before requests, launches, or installation.
 
 ### `status`
 
@@ -284,8 +298,9 @@ geraldine awake toggle [--json]
 
 Duration grammar: `90m`, `2h`, `1h30m`, `45s`, `1.5h`, `2 days`, bare minutes
 (`90`), or `indefinitely` / `forever` / `infinite`. Fractions are allowed.
-Durations must be at least one second and at most 30 days. `awake off --for 5m`
-is a usage error.
+Durations must be finite, positive, and representable by the app's whole-second
+display. Subsecond/fractional seconds round up; there is no product duration
+ceiling. `awake off --for 5m` is a usage error.
 
 Result:
 
@@ -403,17 +418,18 @@ changing visibility.
 ### `stats`
 
 ```text
-geraldine stats [cpu|memory|gpu|network|battery|thermal|storage|all] [--watch] [--json]
+geraldine stats [cpu|memory|gpu|network|battery|thermal|storage|all] [--watch <seconds>] [--json]
 ```
 
 Returns the current reading for one metric, or all of them. It does not return
-history: charts are a GUI surface. `all` also includes `uptimeSeconds`.
+history: charts are a GUI surface. `all` also includes `uptimeSeconds`,
+`sampledAt`, and `samplingPaused`. Requests read the existing cache and do not
+start sampling hidden metrics.
 
-`--watch` repeats the request every two seconds. With `--json` it emits one
-envelope per line (NDJSON) and never stops on its own; stop it with Ctrl-C. In
-human mode it reprints a block. When stdout is not a TTY, `--watch` in human
-mode prints one sample and a warning instead of looping, so scripts and agents
-do not hang by accident. JSON watch is explicit and always loops.
+`--watch <seconds>` requires an explicit finite positive representable interval.
+It waits that interval between completed requests. With `--json` it emits one
+envelope per line (NDJSON); errors go to stderr and stop the stream. In human
+mode it reprints a block. Stop a watch with Ctrl-C.
 
 Metric shapes:
 
@@ -427,6 +443,12 @@ Metric shapes:
 | `thermal` | `available`, `sensorCount`, `cpuCelsius`, `peakCelsius`, `cpuSource`, `batteryCelsius`, `storageCelsius` |
 | `storage` | `totalBytes`, `usedBytes`, `freeBytes`, `usedPercent` |
 
+GPU and thermal objects additionally carry `sampledAt`, `samplingPaused`,
+`samplingState` (`neverSampled`, `observed`, or `paused`), and `pauseReason`
+(`hidden`, `displaysAsleep`, `monitorStopped`, or null). Cached readings remain
+available when sampling pauses and are labeled in warnings; never-sampled
+readings are not presented as a fresh observation.
+
 Byte counts are integers. Percentages are `0...100` doubles. A reading that has
 not arrived yet is `null`, never `NaN` or a fabricated zero.
 
@@ -436,7 +458,8 @@ not arrived yet is `null`, never `NaN` or a fabricated zero.
 geraldine processes [--top N] [--sort cpu|memory] [--json]
 ```
 
-`--top` is `1...200`, default `10`. Sorting is descending. Each row has `pid`,
+`--top` is a positive integer, default `10`; its doubled app sampling count must
+fit an integer. Sorting is descending. Each row has `pid`,
 `name`, `cpuPercent`, `memoryPercent`, and `path` (null when unavailable). The
 sample is a point-in-time snapshot, not an average.
 
@@ -452,11 +475,12 @@ known, and all returned quota windows with `usedPercent`, `remainingPercent`,
 `resetsAt`, and `durationSeconds`.
 
 `--refresh` asks the existing `AIUsageMonitor` to refresh the accounts already
-connected in the layout, then waits up to 25 seconds for that batch. It does not
-start a second refresh, does not poll, and does not launch a provider CLI that
-the UI would not launch. If the batch is still running, the response keeps the
-last known values and adds a warning. Geraldine sends no usage HTTP requests of
-its own; the providers' CLIs own that traffic.
+connected in the layout and waits for that batch through cancellation-aware
+request waiters. It does not start an unrelated refresh or add a request
+deadline; the caller may choose `--timeout`. Disconnecting cancels that request's
+waiter without cancelling an independently owned shared provider refresh. The
+official provider CLIs may contact their providers and update local caches.
+Geraldine sends no usage HTTP requests of its own and reads no Keychain.
 
 Result:
 
@@ -532,7 +556,8 @@ geraldine doctor [--json]
 
 Checks, in order: the app process, the control socket (type, owner, mode `0600`),
 Full Disk Access, Accessibility, launch at login, the Keep Awake assertion
-invariants, and whether the CLI is installed at `~/.local/bin/geraldine`.
+invariants, installed-app directory presence, actual `geraldine` resolution on
+the caller's supplied `PATH`, and CLI/app build identity.
 
 - Missing permissions and a missing CLI install are `warn`, not failures.
 - A mismatched or missing assertion while Keep Awake says it is active is a
@@ -543,7 +568,16 @@ invariants, and whether the CLI is installed at `~/.local/bin/geraldine`.
 
 The result is `{ "checks": [{ "name", "status", "detail" }], "socket": "..." }`
 with `status` in `ok`, `warn`, `fail`. The local fallback adds `appRunning` and
-omits `socket` from the top level.
+omits `socket` from the top level. Both include `appInstalled`,
+`installedAppPath`, `cliAppIdentityMatch` (`match`, `mismatch`, `unknown`), and
+`cli` with helper version, executable, `pathOnPATH`, `currentHelperOnPATH`, and
+containing-bundle metadata when available. A PATH symlink is resolved to
+`Contents/Helpers/geraldine` and its app's `Info.plist` using Foundation only.
+The responding app's `app` identity includes version, build, commit,
+shortCommit, isDirty, builtAt, and configuration. A mismatch fails doctor;
+missing metadata or an unbundled debug helper is unknown, never a fabricated
+match. Directory presence does not prove which app is running. Socket file
+attributes alone never prove a successful handshake.
 
 ### Read-only scans
 
@@ -558,7 +592,8 @@ geraldine login-items list [--json]
 ```
 
 None of these deletes, moves, uninstalls, ejects, or changes launchd state.
-Human output shows a bounded preview; JSON carries the full, capped arrays.
+Human output shows a preview; JSON carries the full arrays returned by the
+existing scanners, without additional CLI adapter truncation.
 
 `cleanup`, `large-files`, and `privacy` share this shape:
 
@@ -587,8 +622,9 @@ Human output shows a bounded preview; JSON carries the full, capped arrays.
 }
 ```
 
-Each group carries at most 50 items; `itemCount` and `totalBytes` still describe
-the whole group. A skipped path is reported rather than silently dropped.
+Each group carries every item the scanner returned. Skipped-path diagnostics
+are preserved. Pre-existing scanner traversal/diagnostic limits remain; the
+socket and adapters add no item or line-size ceiling.
 `large-files` adds `root` and `minSizeMB`; `--min-size` defaults to 100 MB and
 `--path` defaults to the home folder.
 
@@ -613,13 +649,19 @@ would need an action are reported, never queued.
 ```text
 geraldine commands [--json]
 geraldine install-cli [--dir DIR] [--json]
-geraldine help [command]
-geraldine --version
+geraldine help [command] [--json]
+geraldine --version [--json]
 ```
 
 `commands` and `install-cli` are local and never contact the app. `install-cli`
-returns `installed`, `path`, `source`, and `onPath`. `--version` prints
-`geraldine 0.1.0 (protocol 1, schema 1)`.
+returns `installed`, `path`, `source`, and `onPath`; `path` is the symlink and
+`source` is the resolved helper. `--version` prints
+`geraldine 0.1.0 (protocol 1, schema 1)`. With `--json`, its envelope has
+`command: "version"` and `result: { "version", "protocolVersion", "schemaVersion" }`.
+JSON help has `command: "help"` and `result: { "topic", "usage" }`; `topic` is
+`null` for the overview or a command name. Unknown help topics exit `2` on
+stderr. String settings containing spaces need shell quotes so the value is
+one argument.
 
 ## Settings catalog
 
@@ -742,30 +784,45 @@ Error codes and exit status:
 | `unsupported` | 3 | Protocol version or build does not support the request |
 | `permission` | 4 | A required macOS permission is missing |
 
-`ok: true` always means exit `0`. A command can be `ok: true` with warnings; for
-example, `usage --refresh` that times out keeps the previous values and adds a
-warning.
+`ok: true` always means exit `0`. A command can be `ok: true` with warnings, such
+as cached GPU/thermal observations whose sampling is paused.
 
-The app enforces a 1 MiB maximum for one request or response line. The server
-reads with a 15-second receive timeout and writes with a 120-second send
-timeout; the client default is 120 seconds. `--timeout` lowers or raises the
-client side. Oversized responses are rejected rather than buffered.
+Requests and responses are newline framed without a product line-size cap.
+New chunks are searched once rather than repeatedly rescanning a growing frame.
+There is no implicit server/client request deadline; an explicit `--timeout`
+bounds that caller's request. A partial reply cannot reset the budget.
 
 ## Security and privacy
 
 - Socket path:
   `~/Library/Application Support/Geraldine/control.sock`, overridable with
   `GERALDINE_CONTROL_SOCKET`.
-- The containing directory is created with mode `0700` (and re-chmodded), the
-  socket is `0600`.
-- The server calls `getpeereid(2)` and closes any connection whose effective UID
-  differs from the app's UID. There is no token to leak, and no TCP port.
-- Requests and responses are newline-delimited JSON with a 1 MiB cap. A request
+- A newly created containing directory uses mode `0700`. Vincent approved a
+  future-startup repair only for Geraldine's owned default directory: existing
+  mode `0755` is tightened to `0700` through a checked directory descriptor.
+  Other existing modes and all custom parents must already be private and owned
+  by the current user. Symlink parents are rejected. The socket is `0600`, and
+  permission-setting/read-back errors fail startup. No live permission repair
+  was performed during source verification.
+- Both client and server call `getpeereid(2)` and reject a different effective
+  UID. There is no token to leak, and no TCP port. The client checks protocol,
+  schema, request ID, command, and success/error consistency on replies.
+- Requests and responses are newline-delimited JSON. A request
   must match the protocol version before it is dispatched.
-- A stale socket left by a crash is removed only after a probe connection fails.
-  A live one makes the new server back off instead of stealing the path.
-- The socket is removed on quit. SIGPIPE is ignored and `SO_NOSIGPIPE` is set so
-  a client that disconnects mid-request cannot kill the app.
+- Only an owned socket whose probe is refused is eligible for stale cleanup;
+  the same device/inode must still occupy the path before unlink. Regular
+  files, symlinks, foreign sockets, live sockets, and other probe errors are
+  preserved. A nonblocking advisory lock on the directory serializes startup
+  through bind/listen without creating a lock file.
+- Stop unlinks only the socket it created and closes accepted connections.
+  Replaced sockets/files are preserved. Start/stop and accept state are
+  synchronized; old dispatch callbacks cannot act on a restarted listener.
+  `SO_NOSIGPIPE` protects each socket without changing process-wide signals.
+- A connection owns its handler task; peer EOF/disconnect or server stop cancels
+  that task. Cancellation is cooperative and cannot undo a committed action.
+  One source cancellation handler owns descriptor close, so a late result cannot
+  write to a descriptor reused by a restarted server. The listener and connections
+  use dispatch readiness events, with no server polling timer or request deadline.
 - Settings go through a typed allowlist. Unknown keys, read-only keys, invalid
   values, and malformed JSON are rejected before any state changes.
 - No Keychain access, no network listener, no usage HTTP requests from
@@ -783,15 +840,24 @@ client side. Oversized responses are rejected rather than buffered.
 or the app's feature graph. A `status --json` run opens one Unix socket, writes
 one line, reads one line, prints it, and exits.
 
-Measured on this Mac against a local Unix-socket server, start-to-exit over
-repeated real spawns:
+Measured on this Mac after the reviewed CLI/socket repairs, using a debug helper
+built with SDK 27.0 against an isolated Python Unix-socket fixture: 50 real
+start-to-exit subprocess runs, excluding three warmups:
 
 | Metric | Result |
 | --- | --- |
-| Median | 5.65 ms |
-| p95 | 6.79 ms |
-| Minimum | 5.18 ms |
-| Maximum | 12.54 ms |
+| Median | 6.75 ms |
+| p95 | 9.71 ms |
+| Minimum | 5.88 ms |
+| Maximum | 11.09 ms |
+
+The CLI-focused run on 2026-10-23 passed 64 tests, including in-process and
+real-binary latency checks, cancellation/restart, large frames, JSON numeric
+types, typed catalog/arguments, doctor provenance, and the approved default-only
+directory repair. Another 35 executable smoke cases passed, including a scan
+response larger than 1 MiB and JSON watch lines. This is local SDK 27.0 fixture
+proof; the canonical SDK 26.5 gate was unavailable, and no installed-app or
+whole-app CPU acceptance is implied.
 
 The real-subprocess regression test uses `posix_spawn` + `waitpid` because
 `Process.waitUntilExit` polls a run loop inside XCTest and adds about 60 ms,
@@ -806,8 +872,8 @@ GERALDINE_CLI_BINARY=<build>/GeraldineCLI \
 ```
 
 The server itself adds no idle work: it waits on a dispatch read source, not a
-timer, and request handling runs off the accept path. The only idle cost is the
-open descriptor and its dispatch source.
+timer, and request handling runs off the accept path. It retains the listener
+and directory descriptors plus the dispatch source while idle.
 
 ### App idle CPU
 
@@ -821,26 +887,28 @@ even when nothing displayed those values.
 
 The installed app could not be relaunched during this change (a paid shift
 depends on its Keep Awake and Stay Active session), so no after idle-CPU
-percentage is claimed here. The after evidence is component-level and
-reproducible from source:
+percentage is claimed here. The current source preserves the original animation
+rate and one-second visible thermal cadence. Source tests can verify state and
+demand decisions; they cannot prove an idle-CPU percentage or visual parity:
 
 | Change | Before | After | Evidence |
 | --- | --- | --- | --- |
-| Status animation compositing | every display-link vblank, up to 144 fps | capped at 30 fps; the final frame always renders | `StatusAnimationFramePolicyTests` |
+| Status animation compositing | every display-link vblank, up to 144 fps | original uncapped display-link rate retained; cached plans/final images avoid redundant work | `MonitorRenderingReviewTests`, `MenuBarStatusAnimationPolicyTests` |
 | Unchanged status redraws | one `NSImage` per monitor publish | skipped when the render signature is unchanged | `StatusRenderSignature` in `MenuBarController` |
-| Shimmer | could fire on every unchanged sample | at most once per 10 s; a real value change supersedes an in-flight shimmer | `MenuBarController` cooldown |
-| Thermal cadence while visible | 1 Hz | 0.2 Hz (5 s) | `MonitorDemandTests` |
+| Shimmer | existing 10 s cooldown and interruption behavior | existing policy retained | `MenuBarStatusAnimationPolicyTests` |
+| Thermal cadence while visible | 1 Hz | original 1 Hz cadence retained, sensor reads off the main actor | `MonitorDemandTests` |
 | Thermal cadence while hidden | 1 Hz | none | demand wiring from menu bar, popover, and window |
 | GPU discovery while hidden | 1 Hz | none | demand wiring |
 | Monitor wakeups while displays sleep | 1 Hz timer | timer stopped; one refresh on wake | `SystemMonitor` screen-sleep observers |
-| Thermal resource setup | SMC key info and IOHID service list rebuilt per read | cached and reused | `CThermal.c` |
+| Thermal resource setup | SMC key metadata read repeatedly | successful SMC metadata cached with capacity derived from the actual key list; original per-read HID enumeration/recovery retained | `CThermal.c` |
 
 Component timings from the same machine, debug build:
 
 - A post-change `Thermal.read()` over 12 samples took 46.9–81.4 ms with 50
   sensors and `available = yes`. The per-read cost is dominated by sensor I/O;
-  the win is that it now runs off the main thread and five times less often
-  while visible, and never while hidden.
+  these historical component samples are not a benchmark of the final reviewed
+  thermal implementation. The current source moves reads off the main actor and
+  skips hidden demand, while preserving the original visible cadence.
 - The CLI median above is the start-to-exit number, not a socket round trip.
 
 To reproduce the CPU investigation, compare `ps -o %cpu= -p <pid>` over several
@@ -848,6 +916,45 @@ short intervals with only the menu bar visible, then with the popover open, then
 with the displays asleep. Use `sample <pid> 5` to confirm where the time goes.
 Do not use these commands to justify killing or relaunching a working session;
 they are read-only measurements.
+
+## Verification record — 2026-10-23
+
+The parent verified the shared repairs with the available SDK 27.0:
+
+- 93 combined focused tests passed with no failures or skips, including the
+  actual CLI → isolated socket → production `ControlHost` → fake IOPM and
+  isolated preferences workflow.
+- The full suite reused that test binary with `--skip-build`: 516 XCTest cases,
+  9 optional visual/UI skips, no failures, plus 8 Swift Testing passes. That is
+  515 passes and 9 skips, taking 91.46 seconds in XCTest (96.79 seconds including
+  the wrapper). The 60-second Stay Active timer check used fake input and
+  recorded successful pulses in 28 of 60 seconds.
+- An initial clean release package completed in 80.11 seconds under a temporary
+  `GERALDINE_BUILD_ROOT`, using the existing default ad-hoc signature. This
+  preceded the helper rpath correction.
+- After `build.sh` applied the existing external-rpath sanitizer to the helper
+  before signing, final reassembly/resigning passed in 8.10 seconds with SDK
+  27.0 and unchanged default ad-hoc signing. Final metadata reported
+  `a086cb2f64c1-dirty`, `release`, and `2026-10-23T08:23:54Z`.
+- Strict deep app and helper signature checks passed. Both binaries' rpaths
+  are exactly `/usr/lib/swift` and `@loader_path`, with no external Xcode path.
+  `LSUIElement` is true, and the helper links no AppKit or SwiftUI.
+- The actual packaged helper passed 7 isolated checks in 3.22 seconds: JSON
+  version, the 22-command typed catalog, fixture install, idempotent reinstall
+  via symlink, catalog via symlink, socket status, and doctor metadata/caller
+  PATH. These checks used fixture endpoints and never ran the app entry point.
+- All 197 staged source/test/resource files plus `Package.swift` matched the
+  working tree. Runtime source/tests were unchanged since the passing full
+  suite, so no full-suite rerun was needed for the script/documentation repair.
+  Shell syntax and the existing Dock-presentation packaging check passed after
+  the correction.
+
+The canonical `verify.sh` gate stopped before building because its pinned SDK
+26.5 is unavailable. SDK 27.0 source/fixture and temporary ad-hoc-package proof
+does not replace that gate or installed/live acceptance. No app entry point,
+real input, installation, notarization, live preference/permission change, or
+visible UI was exercised. The installed running build remains `993433a`; its
+after-change CPU and visual behavior require a separately authorized relaunch.
 
 ## Compatibility
 
@@ -874,19 +981,28 @@ executable entry point. The app side lives in `Sources/Geraldine/App/ControlHost
 `Sources/Geraldine/Control/`, and starts the server at the end of
 `applicationDidFinishLaunching`; it stops it first in `applicationWillTerminate`.
 
-Tests live in `Tests/GeraldineTests/AgentControlTests.swift` and cover the
+Tests live in `Tests/GeraldineTests/AgentControlTests.swift`,
+`AgentControlRegressionTests.swift`, `AgentControlRound2Tests.swift`, and
+`DurationParserTests.swift` and cover the
 envelope, socket permissions and ownership, live-socket protection, stale-socket
 replacement, protocol mismatch, help and catalog shape, JSON errors and exit
 codes, settings offline behaviour, the in-process latency bound, and the
-optional real-binary latency bound.
+optional real-binary latency bound. Regression fixtures use disposable socket
+directories, fake executable sources, and injected launch/URL effects.
+Set `GERALDINE_CONTROL_TEST_ROOT` to an owned scratch fixture directory to keep
+all temporary sockets and installer fixtures under that root.
 
 ```bash
 # Targeted control tests, in-process only.
-swift test --scratch-path <owned-path> --filter AgentControlTests
+GERALDINE_CONTROL_TEST_ROOT=<owned-root>/fixtures \
+  swift test --scratch-path <owned-root>/swiftpm \
+  --filter 'AgentControlTests|AgentControlRegressionTests|AgentControlRound2Tests|DurationParserTests'
 
 # Add the real-binary latency check.
 GERALDINE_CLI_BINARY=<build>/GeraldineCLI \
-  swift test --scratch-path <owned-path> --filter AgentControlTests
+GERALDINE_CONTROL_TEST_ROOT=<owned-root>/fixtures \
+  swift test --scratch-path <owned-root>/swiftpm \
+  --filter 'AgentControlTests|AgentControlRegressionTests|AgentControlRound2Tests|DurationParserTests'
 
 # Performance policies.
 swift test --scratch-path <owned-path> \

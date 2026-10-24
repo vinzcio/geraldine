@@ -12,8 +12,38 @@ final class ControlHost {
     static let shared = ControlHost()
 
     private var server: ControlServer?
-    private var usageWaiter: UsageRefreshWaiter?
+    private var usageWaiters: [UUID: UsageRefreshWaiter] = [:]
     private(set) var startupError: String?
+    private let keepAwakeProvider: @MainActor () -> KeepAwakeController
+    private let monitorProvider: @MainActor () -> SystemMonitor
+    private let usageProvider: @MainActor () -> AIUsageMonitor
+    private let assertionSnapshot: () -> PowerAssertionSnapshot
+    private let sampleProcesses: (Int) async -> [ProcUsage]
+    private let defaults: UserDefaults
+    private let controlSettings: ControlSettings
+
+    /// Lazy providers keep isolated handler tests on the production dispatch
+    /// path without initializing AppState.shared or any unrelated controllers.
+    init(
+        defaults: UserDefaults = .standard,
+        keepAwake: @escaping @MainActor () -> KeepAwakeController = { AppState.shared.keepAwake },
+        monitor: @escaping @MainActor () -> SystemMonitor = { AppState.shared.monitor },
+        usage: @escaping @MainActor () -> AIUsageMonitor = { AppState.shared.aiUsage },
+        assertions: @escaping () -> PowerAssertionSnapshot = { .current() },
+        sampleProcesses: @escaping (Int) async -> [ProcUsage] = { limit in
+            await Task.detached(priority: .userInitiated) { ProcessSampler.sample(limit: limit) }.value
+        }
+    ) {
+        self.defaults = defaults
+        keepAwakeProvider = keepAwake
+        monitorProvider = monitor
+        usageProvider = usage
+        assertionSnapshot = assertions
+        self.sampleProcesses = sampleProcesses
+        controlSettings = ControlSettings(defaults: defaults, keepAwake: keepAwake)
+    }
+
+    var pendingUsageRefreshCount: Int { usageWaiters.count }
 
     var socketPath: String {
         server?.socketURL.path ?? ControlEndpoint.socketURL().path
@@ -47,15 +77,19 @@ final class ControlHost {
     }
 
     func stop() {
-        usageWaiter?.cancel()
-        usageWaiter = nil
+        let waiters = Array(usageWaiters.values)
+        usageWaiters.removeAll()
+        for waiter in waiters { waiter.cancel() }
         server?.stop()
         server = nil
     }
 
     // MARK: - Dispatch
 
-    private func handle(_ request: ControlRequest) async -> ControlResponse {
+    func handle(_ request: ControlRequest) async -> ControlResponse {
+        if let error = ControlRequestValidation.error(for: request) {
+            return usageFailure(request, hint: error)
+        }
         switch request.command {
         case "status":
             return status(request)
@@ -107,10 +141,24 @@ final class ControlHost {
 
     // MARK: - Status
 
+    /// Shared by status and doctor without resolving AppState or controllers.
+    static func appIdentityJSON(build: BuildInfo = .current) -> [String: JSONValue] {
+        [
+            "name": .string("Geraldine"),
+            "version": .string(build.version),
+            "build": .string(build.bundleVersion),
+            "configuration": .string(build.configuration),
+            "commit": .string(build.commit),
+            "shortCommit": .string(build.shortCommit),
+            "isDirty": .bool(build.isDirty),
+            "builtAt": .string(build.builtAt)
+        ]
+    }
+
     private func status(_ request: ControlRequest) -> ControlResponse {
         let state = AppState.shared
-        let keepAwake = state.keepAwake
-        let assertions = PowerAssertionSnapshot.current()
+        let keepAwake = keepAwakeProvider()
+        let assertions = assertionSnapshot()
         let build = BuildInfo.current
 
         var keepAwakeJSON: [String: JSONValue] = [
@@ -131,19 +179,15 @@ final class ControlHost {
         keepAwakeJSON["lastError"] = keepAwake.lastError.map { .string($0) } ?? .null
         keepAwakeJSON["assertions"] = assertions.json
 
+        var app = Self.appIdentityJSON(build: build)
+        app["pid"] = .int(Int(getpid()))
+        app["appShape"] = .string(state.appShape.rawValue)
+        app["launchAtLogin"] = .bool(LaunchAtLogin.isEnabled)
+        app["socket"] = .string(socketPath)
+        app["fullDiskAccess"] = .bool(state.hasFullDiskAccess)
+        app["accessibility"] = .bool(state.hasAccessibility)
         let result = JSONValue.object([
-            "app": .object([
-                "name": .string("Geraldine"),
-                "version": .string(build.version),
-                "build": .string(build.bundleVersion),
-                "configuration": .string(build.configuration),
-                "pid": .int(Int(getpid())),
-                "appShape": .string(state.appShape.rawValue),
-                "launchAtLogin": .bool(LaunchAtLogin.isEnabled),
-                "socket": .string(socketPath),
-                "fullDiskAccess": .bool(state.hasFullDiskAccess),
-                "accessibility": .bool(state.hasAccessibility)
-            ]),
+            "app": .object(app),
             "keepAwake": .object(keepAwakeJSON),
             "stayActive": stayActiveJSON(),
             "vitals": vitalsJSON(includeAll: true)
@@ -159,11 +203,11 @@ final class ControlHost {
         text.append("Stay Active: \(keepAwake.idleActivityStatusLine)")
         text.append(assertions.humanLine)
         text.append(vitalsText(includeAll: true).joined(separator: " · "))
-        return ControlResponse.success(for: request, text: text, result: result)
+        return ControlResponse.success(for: request, text: text, result: result, warnings: vitalsWarnings())
     }
 
     private func stayActiveJSON() -> JSONValue {
-        let keepAwake = AppState.shared.keepAwake
+        let keepAwake = keepAwakeProvider()
         var object: [String: JSONValue] = [
             "enabled": .bool(keepAwake.simulateIdleActivity),
             "delayMinutes": .int(keepAwake.idleActivityDelayMinutes),
@@ -190,7 +234,7 @@ final class ControlHost {
     // MARK: - Keep Awake
 
     private func awake(_ request: ControlRequest) -> ControlResponse {
-        let keepAwake = AppState.shared.keepAwake
+        let keepAwake = keepAwakeProvider()
         guard let subcommand = request.arguments.first,
               ["on", "off", "toggle"].contains(subcommand) else {
             return usageFailure(request, hint: "Use `geraldine awake on|off|toggle`.")
@@ -200,7 +244,7 @@ final class ControlHost {
         if let raw = request.options["duration"] {
             if raw == "indefinitely" {
                 requestedDuration = nil
-            } else if let seconds = Double(raw), seconds > 0 {
+            } else if let seconds = ControlRequestValidation.durationSeconds(raw) {
                 requestedDuration = seconds
             } else {
                 return usageFailure(request, hint: "The duration must be seconds or \"indefinitely\".")
@@ -232,7 +276,7 @@ final class ControlHost {
             )
         }
 
-        let assertions = PowerAssertionSnapshot.current()
+        let assertions = assertionSnapshot()
         let result = keepAwakeJSON(assertions: assertions)
         var text = ["Keep Awake: \(keepAwake.statusLine)"]
         if keepAwake.isActive { text.append(keepAwake.endTimeLine) }
@@ -241,7 +285,7 @@ final class ControlHost {
     }
 
     private func keepAwakeJSON(assertions: PowerAssertionSnapshot) -> JSONValue {
-        let keepAwake = AppState.shared.keepAwake
+        let keepAwake = keepAwakeProvider()
         var object: [String: JSONValue] = [
             "active": .bool(keepAwake.isActive),
             "paused": .bool(keepAwake.isPaused),
@@ -258,7 +302,7 @@ final class ControlHost {
     }
 
     private func stayActive(_ request: ControlRequest) -> ControlResponse {
-        let keepAwake = AppState.shared.keepAwake
+        let keepAwake = keepAwakeProvider()
         guard let subcommand = request.arguments.first else {
             return usageFailure(request, hint: "Use `geraldine stay-active on|off` or `stay-active delay 2`.")
         }
@@ -318,13 +362,13 @@ final class ControlHost {
 
         switch subcommand {
         case "list":
-            let values = ControlSettings.snapshot()
+            let values = controlSettings.snapshot()
             let constantKeys = ["keepAwake.defaultDuration", "keepAwake.allowDisplaySleep",
                                 "appShape", "launchAtLogin"]
             let result = JSONValue.object([
                 "appRunning": .bool(true),
                 "settings": .object(values),
-                "definitions": ControlSettings.definitionsValue()
+                "definitions": controlSettings.definitionsValue()
             ])
             var text = ["Live settings from the running app."]
             for definition in SettingsCatalog.definitions {
@@ -340,7 +384,7 @@ final class ControlHost {
                   let definition = SettingsCatalog.definition(for: request.arguments[1]) else {
                 return usageFailure(request, hint: "settings get needs a known key; run `geraldine settings list`.")
             }
-            let value = ControlSettings.value(for: definition)
+            let value = controlSettings.value(for: definition)
             let result = JSONValue.object([
                 "key": .string(definition.key),
                 "value": value,
@@ -356,13 +400,13 @@ final class ControlHost {
             )
 
         case "set":
-            guard request.arguments.count >= 3 else {
+            guard request.arguments.count == 3 else {
                 return usageFailure(request, hint: "settings set needs a known key and a value.")
             }
             let key = request.arguments[1]
-            let raw = request.arguments.dropFirst(2).joined(separator: " ")
+            let raw = request.arguments[2]
             do {
-                let change = try ControlSettings.set(key: key, rawValue: raw)
+                let change = try controlSettings.set(key: key, rawValue: raw)
                 let result = JSONValue.object([
                     "key": .string(key),
                     "previousValue": change.previous,
@@ -416,7 +460,7 @@ final class ControlHost {
             return usageFailure(request, hint: "Use `geraldine widgets list|show|hide|size|move|reset`.")
         }
         do {
-            let outcome = try ControlSettings.widgetsAction(
+            let outcome = try controlSettings.widgetsAction(
                 subcommand: subcommand,
                 arguments: request.arguments,
                 options: request.options
@@ -456,7 +500,7 @@ final class ControlHost {
             }
             if text.isEmpty { text = [vitalsText(includeAll: false).joined(separator: " · ")] }
         }
-        return ControlResponse.success(for: request, text: text, result: result)
+        return ControlResponse.success(for: request, text: text, result: result, warnings: vitalsWarnings(metric: metric))
     }
 
     private func metricTextPrefix(_ metric: String) -> String {
@@ -475,8 +519,11 @@ final class ControlHost {
     /// Every live metric in one object. `includeAll` is kept explicit so both
     /// `status` and `stats` use exactly the same shapes.
     private func vitalsJSON(includeAll: Bool) -> JSONValue {
-        let monitor = AppState.shared.monitor
+        let monitor = monitorProvider()
         var object: [String: JSONValue] = [:]
+
+        object["sampledAt"] = ControlJSON.date(monitor.lastRefreshAt)
+        object["samplingPaused"] = .bool(!monitor.isRunning || monitor.displaysAsleep)
 
         object["cpu"] = .object([
             "percent": ControlJSON.number(monitor.cpuUsage * 100),
@@ -502,9 +549,11 @@ final class ControlHost {
             "available": .bool(!gpuDevices.isEmpty)
         ]
         gpuObject["selectedID"] = monitor.gpuHistory.selectedDeviceID.map { .string(String($0)) } ?? .null
+        addSampleState(to: &gpuObject, sampledAt: monitor.lastGPUSampleAt,
+                       isDisplayed: monitor.demand.showsGPU, monitor: monitor)
         object["gpu"] = .object(gpuObject)
 
-        let unit = NetworkRateUnit(rawValue: UserDefaults.standard.string(forKey: "networkRateUnit") ?? "")
+        let unit = NetworkRateUnit(rawValue: defaults.string(forKey: "networkRateUnit") ?? "")
             ?? .bytesPerSecond
         object["network"] = .object([
             "downBytesPerSecond": ControlJSON.number(monitor.netDown),
@@ -544,6 +593,8 @@ final class ControlHost {
         }
         thermalObject["batteryCelsius"] = ControlJSON.optionalNumber(thermal.battery)
         thermalObject["storageCelsius"] = ControlJSON.optionalNumber(thermal.storage)
+        addSampleState(to: &thermalObject, sampledAt: monitor.lastThermalSampleAt,
+                       isDisplayed: monitor.demand.showsThermal, monitor: monitor)
         object["thermal"] = .object(thermalObject)
 
         let diskTotal = monitor.diskTotal
@@ -563,12 +614,14 @@ final class ControlHost {
     }
 
     private func vitalsText(includeAll: Bool) -> [String] {
-        let monitor = AppState.shared.monitor
+        let monitor = monitorProvider()
         var lines: [String] = []
         lines.append("CPU: \(ControlFormat.percent(monitor.cpuUsage))")
         lines.append("Memory: \(ControlFormat.percent(monitor.memoryFraction)) used · \(Fmt.size(monitor.memoryUsed)) of \(Fmt.size(monitor.memoryTotal))")
 
-        if let device = monitor.gpuHistory.selectedDevice {
+        if monitor.lastGPUSampleAt == nil {
+            lines.append("GPU: not sampled")
+        } else if let device = monitor.gpuHistory.selectedDevice {
             if let activity = device.activity {
                 lines.append("GPU: \(ControlFormat.percent(activity)) · \(device.displayName)")
             } else {
@@ -578,7 +631,7 @@ final class ControlHost {
             lines.append("GPU: no accelerated device reported")
         }
 
-        let unit = NetworkRateUnit(rawValue: UserDefaults.standard.string(forKey: "networkRateUnit") ?? "")
+        let unit = NetworkRateUnit(rawValue: defaults.string(forKey: "networkRateUnit") ?? "")
             ?? .bytesPerSecond
         lines.append("Network: ↓ \(Fmt.rate(monitor.netDown, unit: unit)) · ↑ \(Fmt.rate(monitor.netUp, unit: unit))")
 
@@ -597,7 +650,9 @@ final class ControlHost {
             lines.append("Battery: no internal battery")
         }
 
-        if monitor.thermal.available {
+        if monitor.lastThermalSampleAt == nil {
+            lines.append("Temperature: not sampled")
+        } else if monitor.thermal.available {
             lines.append("Temperature: \(String(format: "%.1f", monitor.thermal.cpu))°C · peak \(String(format: "%.1f", monitor.thermal.peak))°C")
         } else {
             lines.append("Temperature: unavailable")
@@ -614,15 +669,55 @@ final class ControlHost {
         return lines
     }
 
+    private func samplePauseReason(isDisplayed: Bool, monitor: SystemMonitor) -> String? {
+        if monitor.displaysAsleep { return "displaysAsleep" }
+        if !monitor.isRunning { return "monitorStopped" }
+        if !isDisplayed { return "hidden" }
+        return nil
+    }
+
+    private func addSampleState(
+        to object: inout [String: JSONValue], sampledAt: Date?,
+        isDisplayed: Bool, monitor: SystemMonitor
+    ) {
+        let pause = samplePauseReason(isDisplayed: isDisplayed, monitor: monitor)
+        object["sampledAt"] = ControlJSON.date(sampledAt)
+        object["samplingState"] = .string(sampledAt == nil ? "neverSampled" : (pause == nil ? "observed" : "paused"))
+        object["samplingPaused"] = .bool(pause != nil)
+        object["pauseReason"] = pause.map(JSONValue.string) ?? .null
+    }
+
+    private func vitalsWarnings(metric: String = "all") -> [String] {
+        let monitor = monitorProvider()
+        var warnings: [String] = []
+        if let pause = samplePauseReason(isDisplayed: true, monitor: monitor) {
+            let when = monitor.lastRefreshAt.map { "cached vitals from \(ControlFormat.iso($0))" } ?? "no live sample yet"
+            warnings.append("Vitals sampling paused (\(pause)); \(when).")
+        }
+        for (key, name, sampledAt, displayed) in [
+            ("gpu", "GPU", monitor.lastGPUSampleAt, monitor.demand.showsGPU),
+            ("thermal", "Temperature", monitor.lastThermalSampleAt, monitor.demand.showsThermal)
+        ] where metric == "all" || metric == key {
+            let pause = samplePauseReason(isDisplayed: displayed, monitor: monitor)
+            let state = pause.map { "sampling paused (\($0))" } ?? "sampling enabled"
+            if let sampledAt {
+                warnings.append("\(name): cached sample from \(ControlFormat.iso(sampledAt)); \(state).")
+            } else {
+                warnings.append("\(name): never sampled; \(state).")
+            }
+        }
+        return warnings
+    }
+
     // MARK: - Processes
 
     private func processes(_ request: ControlRequest) async -> ControlResponse {
-        let top = max(1, min(200, Int(request.options["top"] ?? "") ?? 10))
-        let sort = request.options["sort"] == "memory" ? "memory" : "cpu"
-        let sampleLimit = max(top * 2, 20)
-        let sampled = await Task.detached(priority: .userInitiated) {
-            ProcessSampler.sample(limit: sampleLimit)
-        }.value
+        let top = request.options["top"].flatMap(Int.init) ?? 10
+        guard let sampleLimit = ControlRequestValidation.processSampleLimit(top: top) else {
+            return usageFailure(request, hint: "top needs a positive integer with a representable sampling count.")
+        }
+        let sort = request.options["sort"] ?? "cpu"
+        let sampled = await sampleProcesses(sampleLimit)
 
         let sorted = sampled.sorted { lhs, rhs in
             let left = sort == "memory" ? lhs.mem : lhs.cpu
@@ -658,18 +753,19 @@ final class ControlHost {
     // MARK: - Coding usage
 
     private func usage(_ request: ControlRequest) async -> ControlResponse {
-        let usage = AppState.shared.aiUsage
+        let usage = usageProvider()
         var warnings: [String] = []
         var refreshed = false
 
         if request.options["refresh"] == "true" {
             usage.refreshConnected()
             let waiter = UsageRefreshWaiter()
-            usageWaiter = waiter
-            refreshed = await waiter.wait(for: usage, timeout: 25)
-            usageWaiter = nil
+            let id = UUID()
+            usageWaiters[id] = waiter
+            refreshed = await waiter.wait(isRefreshing: usage.isRefreshing, changes: usage.$isRefreshing.eraseToAnyPublisher())
+            usageWaiters[id] = nil
             if !refreshed {
-                warnings.append("The provider refresh is still running; showing the last known values.")
+                warnings.append("The usage request was cancelled; showing the last known values.")
             }
             if usage.accounts.allSatisfy({ !usage.isConnected($0.identity) }) {
                 warnings.append("No coding-usage tiles are connected. Show one with `geraldine widgets show ai.claude`.")
@@ -860,7 +956,7 @@ final class ControlHost {
         checks.append(DoctorCheck(
             name: "Geraldine",
             status: "ok",
-            detail: "Version \(build.version), pid \(getpid()), answering on the control socket."
+            detail: "Version \(build.version) (\(build.bundleVersion)), revision \(build.revisionLabel), \(build.configuration), built \(build.builtAt), pid \(getpid()), answering on the control socket."
         ))
 
         let path = socketPath
@@ -937,7 +1033,10 @@ final class ControlHost {
         ))
 
         let failed = checks.contains { $0.status == "fail" }
+        var app = Self.appIdentityJSON(build: build)
+        app["pid"] = .int(Int(getpid()))
         let result = JSONValue.object([
+            "app": .object(app),
             "checks": .array(checks.map { check in
                 .object([
                     "name": .string(check.name),
@@ -1081,31 +1180,38 @@ final class ControlHost {
 
 // MARK: - Usage refresh waiter
 
-/// Bridges the monitor's published refresh flag to one bounded await. The
+/// Bridges the monitor's published refresh flag to one request-owned await. The
 /// control server never polls: a command that asks for fresh usage waits for the
-/// same batch the UI uses, and gives up with a warning rather than hanging.
+/// same batch the UI uses until completion or cancellation.
 @MainActor
-private final class UsageRefreshWaiter {
+final class UsageRefreshWaiter {
     private var continuation: CheckedContinuation<Bool, Never>?
     private var cancellable: AnyCancellable?
-    private var timeoutTask: Task<Void, Never>?
+    private var isCancelled = false
 
-    func wait(for usage: AIUsageMonitor, timeout: TimeInterval) async -> Bool {
-        guard usage.isRefreshing else { return true }
-        return await withCheckedContinuation { continuation in
-            self.continuation = continuation
-            self.cancellable = usage.$isRefreshing.sink { [weak self] refreshing in
-                guard !refreshing else { return }
-                Task { @MainActor in self?.finish(true) }
+    func wait(isRefreshing: Bool, changes: AnyPublisher<Bool, Never>) async -> Bool {
+        guard !isCancelled, !Task.isCancelled else { return false }
+        guard isRefreshing else { return true }
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                self.continuation = continuation
+                guard !isCancelled, !Task.isCancelled else {
+                    finish(false)
+                    return
+                }
+                self.cancellable = changes.sink { [weak self] refreshing in
+                    guard !refreshing else { return }
+                    // @Published emits before the monitor stores its final flag.
+                    Task { @MainActor in self?.finish(true) }
+                }
             }
-            self.timeoutTask = Task { @MainActor [weak self] in
-                try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
-                self?.finish(false)
-            }
+        } onCancel: {
+            Task { @MainActor [weak self] in self?.cancel() }
         }
     }
 
     func cancel() {
+        isCancelled = true
         finish(false)
     }
 
@@ -1114,8 +1220,6 @@ private final class UsageRefreshWaiter {
         self.continuation = nil
         cancellable?.cancel()
         cancellable = nil
-        timeoutTask?.cancel()
-        timeoutTask = nil
         continuation.resume(returning: value)
     }
 }

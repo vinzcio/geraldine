@@ -8,7 +8,6 @@ public enum AwakeDuration: Equatable, Sendable {
 public enum DurationParserError: Error, LocalizedError, Equatable {
     case empty
     case invalid(String)
-    case tooLong
 
     public var errorDescription: String? {
         switch self {
@@ -16,15 +15,11 @@ public enum DurationParserError: Error, LocalizedError, Equatable {
             return "A duration is required."
         case .invalid(let value):
             return "\"\(value)\" is not a duration. Use forms like 90m, 2h, 1h30m, 45s, or indefinitely."
-        case .tooLong:
-            return "Durations longer than 30 days are not supported."
         }
     }
 }
 
 public enum DurationParser {
-    public static let maximumSeconds: TimeInterval = 30 * 24 * 60 * 60
-
     /// Accepts `indefinitely`, `forever`, `infinite`, `∞`, bare minutes
     /// (`90`), and compound units (`1h30m`, `2 hours`, `1.5h`, `45s`).
     public static func parse(_ raw: String) throws -> AwakeDuration {
@@ -84,13 +79,15 @@ public enum DurationParser {
         }
 
         guard matched else { throw DurationParserError.invalid(raw) }
-        guard total >= 1 else { throw DurationParserError.invalid(raw) }
-        guard total <= maximumSeconds else { throw DurationParserError.tooLong }
+        guard total.isFinite, total > 0, Int(exactly: total.rounded(.up)) != nil else {
+            throw DurationParserError.invalid(raw)
+        }
         return .seconds(total)
     }
 
     public static func format(_ seconds: TimeInterval) -> String {
-        let total = max(0, Int(seconds.rounded(.up)))
+        guard seconds.isFinite, let rounded = Int(exactly: seconds.rounded(.up)) else { return "Unknown" }
+        let total = max(0, rounded)
         let days = total / 86_400
         let hours = (total % 86_400) / 3_600
         let minutes = (total % 3_600) / 60

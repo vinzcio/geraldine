@@ -25,7 +25,7 @@ enum ControlJSON {
     /// out-of-range value; those become zero.
     static func uint64(_ value: Double) -> UInt64 {
         guard value.isFinite, value > 0 else { return 0 }
-        return UInt64(min(value, 1e18))
+        return UInt64(exactly: value.rounded(.towardZero)) ?? 0
     }
 
     static func date(_ value: Date?) -> JSONValue {
@@ -183,7 +183,7 @@ struct ControlScanDiagnostics: Sendable {
     init(_ diagnostics: ScanDiagnostics) {
         scannedItems = diagnostics.scannedItems
         skippedTotal = diagnostics.skippedTotal
-        skipped = diagnostics.skipped.prefix(10).map { issue in
+        skipped = diagnostics.skipped.map { issue in
             "\(issue.path): \(issue.message)"
         }
         failure = diagnostics.failure
@@ -251,6 +251,9 @@ struct ControlScanReport: Sendable {
             for item in group.items.prefix(3) {
                 lines.append("    \(item.name) — \(ControlFormat.size(item.bytes))")
             }
+            if group.items.count > 3 {
+                lines.append("    …\(group.items.count - 3) more items omitted from this summary; --json includes all scanned items.")
+            }
         }
         if let failure = diagnostics.failure {
             lines.append("Scan failed: \(failure)")
@@ -265,13 +268,13 @@ struct ControlScanReport: Sendable {
         return lines
     }
 
-    static func group(_ group: ScanGroup, itemLimit: Int = 50) -> ControlScanGroup {
+    static func group(_ group: ScanGroup) -> ControlScanGroup {
         ControlScanGroup(
             title: group.title,
             itemCount: group.items.count,
             totalBytes: group.totalSize,
             safeByDefault: group.safeByDefault,
-            items: group.items.prefix(itemLimit).map { item in
+            items: group.items.map { item in
                 ControlScanItem(
                     name: item.name,
                     path: item.url.path,

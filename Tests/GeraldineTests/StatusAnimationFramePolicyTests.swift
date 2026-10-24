@@ -2,38 +2,6 @@ import XCTest
 @testable import Geraldine
 
 final class StatusAnimationFramePolicyTests: XCTestCase {
-    func testFirstFrameRendersImmediately() {
-        var policy = StatusAnimationFramePolicy()
-        XCTAssertTrue(policy.shouldRender(at: 10, isFinal: false))
-    }
-
-    func testFramesAreCappedAtThirtyHertz() {
-        var policy = StatusAnimationFramePolicy()
-        XCTAssertTrue(policy.shouldRender(at: 10.000, isFinal: false))
-        XCTAssertFalse(policy.shouldRender(at: 10.010, isFinal: false))
-        XCTAssertFalse(policy.shouldRender(at: 10.032, isFinal: false))
-        XCTAssertTrue(policy.shouldRender(at: 10.034, isFinal: false))
-    }
-
-    func testFinalFrameAlwaysRenders() {
-        var policy = StatusAnimationFramePolicy()
-        XCTAssertTrue(policy.shouldRender(at: 10, isFinal: false))
-        XCTAssertTrue(policy.shouldRender(at: 10.001, isFinal: true))
-    }
-
-    func testResetAllowsTheNextAnimationToStartImmediately() {
-        var policy = StatusAnimationFramePolicy()
-        XCTAssertTrue(policy.shouldRender(at: 10, isFinal: false))
-        XCTAssertFalse(policy.shouldRender(at: 10.001, isFinal: false))
-        policy.reset()
-        XCTAssertTrue(policy.shouldRender(at: 10.001, isFinal: false))
-    }
-
-    func testNonFiniteTimeDoesNotDropAFrame() {
-        var policy = StatusAnimationFramePolicy()
-        XCTAssertTrue(policy.shouldRender(at: .nan, isFinal: false))
-    }
-
     func testSignaturesIgnoreNothingThatPaints() {
         let base = StatusRenderSignature(
             kind: "cpu",

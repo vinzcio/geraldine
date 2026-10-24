@@ -1,5 +1,6 @@
 import XCTest
-import GeraldineControl
+import Darwin
+@testable import GeraldineControl
 
 final class AgentControlTests: XCTestCase {
     private final class OutputBox: @unchecked Sendable {
@@ -30,7 +31,9 @@ final class AgentControlTests: XCTestCase {
     /// path with a UUID already exceeds that on macOS. Keep the test socket short
     /// and remove the whole directory in teardown.
     private func temporarySocket() -> URL {
-        URL(fileURLWithPath: "/private/tmp/geraldine-control-\(UUID().uuidString.prefix(8))")
+        let root = ProcessInfo.processInfo.environment["GERALDINE_CONTROL_TEST_ROOT"] ?? "/private/tmp"
+        return URL(fileURLWithPath: root)
+            .appendingPathComponent("gctl-\(UUID().uuidString.prefix(8))")
             .appendingPathComponent("c.sock")
     }
 
@@ -105,9 +108,16 @@ final class AgentControlTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: socket.deletingLastPathComponent()) }
         try FileManager.default.createDirectory(
             at: socket.deletingLastPathComponent(),
-            withIntermediateDirectories: true
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
         )
-        try Data().write(to: socket)
+        let descriptor = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
+        XCTAssertGreaterThanOrEqual(descriptor, 0)
+        let bound = ControlSocketAddress.withAddress(path: socket.path) {
+            Darwin.bind(descriptor, $0, $1)
+        }
+        Darwin.close(descriptor)
+        XCTAssertEqual(bound, 0)
 
         let server = try makeServer(at: socket) { request in
             ControlResponse.success(for: request)

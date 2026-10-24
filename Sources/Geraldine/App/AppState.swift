@@ -133,7 +133,7 @@ final class AppState: ObservableObject {
     private var windowVisibilityCancellable: AnyCancellable?
     private var aiUsageAccountsCancellable: AnyCancellable?
     private var aiUsageLayoutCancellable: AnyCancellable?
-    private var monitorDemandCancellables: Set<AnyCancellable> = []
+    private var monitorDemandObservation: MonitorDemandObservation?
 
     private init() {
         appShape = AppShape.load()
@@ -147,12 +147,9 @@ final class AppState: ObservableObject {
     /// Thermal and GPU sampling follow what is actually on screen. The menu-bar
     /// metric is cheap to check; the popover and the window show both widgets.
     private func observeMonitorDemand() {
-        layout.$items
-            .sink { [weak self] _ in self?.updateMonitorDemand() }
-            .store(in: &monitorDemandCancellables)
-        monitor.$hasBattery
-            .sink { [weak self] _ in self?.updateMonitorDemand() }
-            .store(in: &monitorDemandCancellables)
+        monitorDemandObservation = MonitorDemandObservation(layout: layout, monitor: monitor) { [weak self] in
+            self?.updateMonitorDemand()
+        }
     }
 
     private func updateMonitorDemand() {

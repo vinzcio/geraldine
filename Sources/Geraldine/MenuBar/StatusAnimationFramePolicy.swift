@@ -1,35 +1,5 @@
 import Foundation
 
-/// Caps status-item compositing at 30 fps while still guaranteeing the final
-/// frame. The status item sits on a 60–144 Hz display link; a 0.24 s roll does
-/// not need a fresh `NSImage` at every vblank, and each frame forces
-/// WindowServer to recomposite the menu bar.
-struct StatusAnimationFramePolicy {
-    static let framesPerSecond: Double = 30
-    static let minimumInterval: TimeInterval = 1 / framesPerSecond
-
-    private var lastRenderedAt: TimeInterval?
-
-    mutating func reset() {
-        lastRenderedAt = nil
-    }
-
-    /// `isFinal` always renders so an animation can never stall one frame short.
-    mutating func shouldRender(at now: TimeInterval, isFinal: Bool) -> Bool {
-        guard now.isFinite else { return true }
-        if isFinal {
-            lastRenderedAt = now
-            return true
-        }
-        if let lastRenderedAt, now >= lastRenderedAt,
-           now - lastRenderedAt < Self.minimumInterval {
-            return false
-        }
-        lastRenderedAt = now
-        return true
-    }
-}
-
 /// Everything that changes the pixels of the status item. Monitor publishes
 /// arrive several times per second (CPU, memory, network, GPU, thermal); when
 /// only a hidden metric moved, the existing image is already correct and the
@@ -38,6 +8,7 @@ struct StatusRenderSignature: Equatable {
     struct Sample: Equatable {
         var timestamp: TimeInterval
         var value: Double
+        var sessionID: UUID? = nil
     }
 
     var kind: String
@@ -50,6 +21,7 @@ struct StatusRenderSignature: Equatable {
     var domainLower: Double?
     var domainUpper: Double?
     var showsLatestEndpoint: Bool
+    var timelineEnd: TimeInterval?
 
     init(
         kind: String,
@@ -60,7 +32,8 @@ struct StatusRenderSignature: Equatable {
         colorToken: String,
         samples: [Sample] = [],
         domain: ClosedRange<Double>? = nil,
-        showsLatestEndpoint: Bool = true
+        showsLatestEndpoint: Bool = true,
+        timelineEnd: TimeInterval? = nil
     ) {
         self.kind = kind
         self.sourceID = sourceID
@@ -72,5 +45,24 @@ struct StatusRenderSignature: Equatable {
         self.domainLower = domain?.lowerBound
         self.domainUpper = domain?.upperBound
         self.showsLatestEndpoint = showsLatestEndpoint
+        self.timelineEnd = timelineEnd
+    }
+}
+
+/// A signature is reusable only after its final image reaches the current
+/// status button. Replacing the button or interrupting a render invalidates it.
+struct StatusRenderCache {
+    private var renderedSignature: StatusRenderSignature?
+
+    func canReuse(_ signature: StatusRenderSignature, hasImage: Bool) -> Bool {
+        hasImage && renderedSignature == signature
+    }
+
+    mutating func record(_ signature: StatusRenderSignature) {
+        renderedSignature = signature
+    }
+
+    mutating func invalidate() {
+        renderedSignature = nil
     }
 }

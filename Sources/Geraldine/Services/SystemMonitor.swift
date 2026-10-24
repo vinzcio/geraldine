@@ -40,6 +40,7 @@ struct NetworkSample: Codable, Equatable, Identifiable, TimelineSample {
 /// Samples live system vitals on a timer. Drives both the menu bar and the dashboard.
 @MainActor
 final class SystemMonitor: ObservableObject {
+    nonisolated static let defaultSampleInterval: TimeInterval = 1
     nonisolated static let liveHistoryWindow: TimeInterval = 5 * 60
     nonisolated static let longHistoryWindow: TimeInterval = 24 * 60 * 60
     nonisolated static let longHistorySampleInterval: TimeInterval = 60
@@ -84,12 +85,15 @@ final class SystemMonitor: ObservableObject {
     private let sessionID = UUID()
 
     private var timer: Timer?
-    private var timerInterval: TimeInterval = 1
-    private var isRunning = false
-    private var demand = MonitorDemand.inactive
-    private var displaysAsleep = false
+    private var timerInterval: TimeInterval = SystemMonitor.defaultSampleInterval
+    private(set) var isRunning = false
+    private(set) var demand = MonitorDemand.inactive
+    private(set) var displaysAsleep = false
     private var screenSleepObservers: [NSObjectProtocol] = []
-    private var lastThermalSampleAt: TimeInterval?
+    private(set) var lastRefreshAt: Date?
+    private(set) var lastGPUSampleAt: Date?
+    private(set) var lastThermalSampleAt: Date?
+    var samplingInterval: TimeInterval { timerInterval }
     private var lastDiskSampleAt: TimeInterval = -.infinity
     private static let diskSampleInterval: TimeInterval = 15
     private var prevCPU: host_cpu_load_info?
@@ -116,8 +120,8 @@ final class SystemMonitor: ObservableObject {
         if performInitialRefresh { refresh() }
     }
 
-    func start(interval: TimeInterval = 1) {
-        timerInterval = max(0.2, interval)
+    func start(interval: TimeInterval = SystemMonitor.defaultSampleInterval) {
+        timerInterval = interval
         isRunning = true
         observeScreenSleep()
         installTimerIfNeeded()
@@ -139,6 +143,7 @@ final class SystemMonitor: ObservableObject {
         let wasSamplingThermal = demand.samplesThermal
         let wasSamplingGPU = demand.samplesGPU
         demand = updated
+        guard isRunning else { return }
         if (updated.samplesThermal && !wasSamplingThermal) || (updated.samplesGPU && !wasSamplingGPU) {
             refresh()
         }
@@ -178,7 +183,7 @@ final class SystemMonitor: ObservableObject {
         screenSleepObservers.removeAll()
     }
 
-    private func setDisplaysAsleep(_ asleep: Bool) {
+    func setDisplaysAsleep(_ asleep: Bool) {
         guard displaysAsleep != asleep else { return }
         displaysAsleep = asleep
         demand.displaysAsleep = asleep
@@ -187,7 +192,7 @@ final class SystemMonitor: ObservableObject {
             timer = nil
         } else {
             installTimerIfNeeded()
-            refresh()
+            if isRunning { refresh() }
         }
     }
 
@@ -236,12 +241,14 @@ final class SystemMonitor: ObservableObject {
 
     func refresh() {
         guard !displaysAsleep else { return }
-        let timestamp = now().timeIntervalSinceReferenceDate
+        let date = now()
+        let timestamp = date.timeIntervalSinceReferenceDate
+        lastRefreshAt = date
         if demand.samplesGPU, !gpuInFlight {
             gpuInFlight = true
             Task.detached(priority: .utility) { [weak self] in
                 let usage = GPUSampler.sample()
-                await self?.applyGPU(usage)
+                await self?.applyGPU(usage, sampledAt: date)
             }
         }
         let sampledCPU = sampleCPU()
@@ -302,17 +309,11 @@ final class SystemMonitor: ObservableObject {
         // number animations (menu bar, popover, and main window). Sample it off the
         // main actor and apply the result back on the main actor. The in-flight guard
         // skips a tick rather than queueing if a read ever outlasts the cadence.
-        if demand.samplesThermal, !thermalInFlight,
-           ThermalSamplePolicy.shouldSample(
-               now: timestamp,
-               lastSampleAt: lastThermalSampleAt,
-               isDisplayed: true
-           ) {
+        if demand.samplesThermal, !thermalInFlight {
             thermalInFlight = true
-            lastThermalSampleAt = timestamp
             Task.detached(priority: .utility) { [weak self] in
                 let reading = Thermal.read()
-                await self?.applyThermal(reading)
+                await self?.applyThermal(reading, sampledAt: date)
             }
         }
     }
@@ -321,16 +322,20 @@ final class SystemMonitor: ObservableObject {
         gpuHistory.selectDevice(id)
     }
 
-    private func applyGPU(_ readings: [GPUReading]?) {
+    // Keep an already-started read even if its surface hides before completion.
+    // Its collection timestamp stays honest; control responses report it paused.
+    func applyGPU(_ readings: [GPUReading]?, sampledAt date: Date) {
         gpuInFlight = false
-        gpuHistory.apply(readings, at: now().timeIntervalSinceReferenceDate)
+        lastGPUSampleAt = date
+        gpuHistory.apply(readings, at: date.timeIntervalSinceReferenceDate)
     }
 
-    private func applyThermal(_ reading: Thermal.Reading) {
+    func applyThermal(_ reading: Thermal.Reading, sampledAt date: Date) {
         thermalInFlight = false
+        lastThermalSampleAt = date
         thermal = reading
         if reading.available {
-            let timestamp = now().timeIntervalSinceReferenceDate
+            let timestamp = date.timeIntervalSinceReferenceDate
             historyDirty = Self.appendMetricSample(
                 &thermalHistory,
                 value: reading.cpu,

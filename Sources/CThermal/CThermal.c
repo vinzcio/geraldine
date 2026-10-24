@@ -38,12 +38,8 @@ static void load_symbols(void) {
 // Cached for the lifetime of the process. Creating an IOHIDEventSystemClient
 // opens a connection to the system-wide HID event server — the same one that
 // services the keyboard and mouse — so it must be reused, never recreated per
-// sample (this is polled every second). The service array is cached too: the
-// sensor set is stable, and re-enumerating it costs another IPC round trip per
-// sample. It is refreshed once a minute to notice hot-plugged sensors.
+// sample (this is polled every second).
 static CFTypeRef g_thermal_client = NULL;
-static CFArrayRef g_thermal_services = NULL;
-static int g_thermal_service_age = 0;
 
 static CFTypeRef thermal_client(void) {
     if (g_thermal_client) return g_thermal_client;
@@ -75,28 +71,14 @@ int thermal_read(double *temps, char *names, int nameStride, int maxCount) {
     CFTypeRef client = thermal_client();
     if (!client) return 0;
 
-    if (g_thermal_services && ++g_thermal_service_age > 60) {
-        CFRelease(g_thermal_services);
-        g_thermal_services = NULL;
-    }
-
-    CFArrayRef svcs = g_thermal_services;
+    CFArrayRef svcs = g_copyServices(client);
     if (!svcs) {
-        svcs = g_copyServices(client);
-        if (!svcs) {
-            // A NULL service list (as opposed to an empty one) means the
-            // connection to the HID event server is gone; drop the client so
-            // the next sample reconnects.
-            if (g_thermal_services) {
-                CFRelease(g_thermal_services);
-                g_thermal_services = NULL;
-            }
-            CFRelease(g_thermal_client);
-            g_thermal_client = NULL;
-            return 0;
-        }
-        g_thermal_services = svcs;
-        g_thermal_service_age = 0;
+        // A NULL service list (as opposed to an empty one) means the connection
+        // to the HID event server is gone; drop the client so the next sample
+        // reconnects.
+        CFRelease(g_thermal_client);
+        g_thermal_client = NULL;
+        return 0;
     }
 
     int count = 0;
@@ -122,12 +104,7 @@ int thermal_read(double *temps, char *names, int nameStride, int maxCount) {
             CFRelease(ev);
         }
     }
-    // Retained in g_thermal_services. An empty result from a non-empty list
-    // usually means the cached sensor registrations died; rebuild next sample.
-    if (count == 0 && CFArrayGetCount(svcs) > 0) {
-        CFRelease(g_thermal_services);
-        g_thermal_services = NULL;
-    }
+    CFRelease(svcs);
     return count;
 }
 
@@ -201,51 +178,43 @@ static double smc_decode_temperature(const char type[5], const uint8_t *bytes, u
     return -1;
 }
 
-// Key info (data type and width) never changes while the AppleSMC connection
-// lives. Reading it costs one extra kernel round trip per key — on the first
-// sample this list probes ~65 keys, most of which do not exist on a given Mac.
-// Cache the answer so later samples issue one read per *present* key and no
-// calls at all for absent ones. Cleared whenever the connection is replaced.
-#define SMC_KEY_CACHE_CAPACITY 96
-
+// Cache successful key info for the lifetime of the AppleSMC connection,
+// avoiding an extra kernel round trip per known key on later samples.
+// Failed metadata reads remain retryable. Cleared when the connection is replaced.
 typedef struct {
     uint32_t dataType;
     uint32_t dataSize;
-    uint8_t state; // 0 = unknown, 1 = present, 2 = absent
+    uint8_t dataAttributes;
+    uint8_t valid;
 } SMCKeyCacheEntry;
-
-static SMCKeyCacheEntry g_smc_key_cache[SMC_KEY_CACHE_CAPACITY];
 
 // Distinguish an unavailable key from a dead kernel connection. Missing keys
 // are normal across Mac models; transport failures require reconnecting.
 //  1 = temperature read, 0 = key unavailable/invalid, -1 = connection failed.
 static int smc_read_key(io_connect_t conn, const char *key,
                         SMCKeyCacheEntry *cache, double *temp) {
-    if (cache->state == 2) return 0;
-
     SMCParamStruct input;
     SMCParamStruct output;
     memset(&input, 0, sizeof(input));
 
     input.key = smc_fourcc(key);
-    if (cache->state == 0) {
+    if (!cache->valid) {
         memset(&output, 0, sizeof(output));
         input.data8 = 9; // read key info
         size_t infoSize = sizeof(output);
         kern_return_t infoResult = IOConnectCallStructMethod(
             conn, 2, &input, sizeof(input), &output, &infoSize);
         if (infoResult != KERN_SUCCESS) return -1;
-        if (output.result != 0) {
-            cache->state = 2;
-            return 0;
-        }
+        if (output.result != 0) return 0;
         cache->dataType = output.keyInfo.dataType;
         cache->dataSize = output.keyInfo.dataSize;
-        cache->state = 1;
+        cache->dataAttributes = output.keyInfo.dataAttributes;
+        cache->valid = 1;
     }
 
     input.keyInfo.dataSize = cache->dataSize;
     input.keyInfo.dataType = cache->dataType;
+    input.keyInfo.dataAttributes = cache->dataAttributes;
     input.data8 = 5; // read bytes
     memset(&output, 0, sizeof(output));
     size_t outputSize = sizeof(output);
@@ -275,6 +244,10 @@ static const char *const kCleanMyMacSMCTemperatureKeys[] = {
     "TC0P", "TCAD", "TC0H", "TC0F", "TCAH", "TCBH",
     "TCDX"
 };
+
+static SMCKeyCacheEntry g_smc_key_cache[
+    sizeof(kCleanMyMacSMCTemperatureKeys) / sizeof(kCleanMyMacSMCTemperatureKeys[0])
+];
 
 static size_t smc_temperature_key_count(void) {
     return sizeof(kCleanMyMacSMCTemperatureKeys) / sizeof(kCleanMyMacSMCTemperatureKeys[0]);
@@ -315,8 +288,6 @@ static io_connect_t smc_connection(void) {
 int smc_thermal_read(double *temps, char *names, int nameStride, int maxCount) {
     io_connect_t conn = smc_connection();
     if (conn == IO_OBJECT_NULL) return 0;
-
-    if (smc_temperature_key_count() > SMC_KEY_CACHE_CAPACITY) return 0;
 
     int count = 0;
     for (size_t i = 0; i < smc_temperature_key_count() && count < maxCount; i++) {

@@ -82,6 +82,7 @@ final class MenuBarController: NSObject, NSWindowDelegate {
     private var statusItem: NSStatusItem?
     private var monitorSink: AnyCancellable?
     private var layoutSink: AnyCancellable?
+    private var appearanceSink: AnyCancellable?
     private var currentStatusPlan: StatusPlan?
     private var cancellables = Set<AnyCancellable>()
     private let menuBarSparklineLimit = 60
@@ -101,8 +102,8 @@ final class MenuBarController: NSObject, NSWindowDelegate {
     private var lastShimmerStart: CFTimeInterval = -.infinity
     private var lastStatusAnimationAt: CFTimeInterval = -.infinity
     private var statusRenderPending = false
-    private var statusFramePolicy = StatusAnimationFramePolicy()
-    private var lastRenderedStatusSignature: StatusRenderSignature?
+    private var statusRenderCache = StatusRenderCache()
+    private var statusDisplaysAsleep = false
 
     private enum StatusAnimationMode {
         case digits
@@ -189,7 +190,10 @@ final class MenuBarController: NSObject, NSWindowDelegate {
         NSWorkspace.shared.notificationCenter
             .publisher(for: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification)
             .sink { [weak self] _ in
-                Task { @MainActor in self?.renderStatusItem() }
+                Task { @MainActor in
+                    self?.invalidateStatusRendering()
+                    self?.renderStatusItem()
+                }
             }
             .store(in: &cancellables)
 
@@ -201,9 +205,20 @@ final class MenuBarController: NSObject, NSWindowDelegate {
             .sink { [weak self] _ in
                 Task { @MainActor in
                     guard let self else { return }
-                    self.statusDisplayLink?.isPaused = true
-                    self.clearStatusAnimation()
-                    self.statusFramePolicy.reset()
+                    self.statusDisplaysAsleep = true
+                    self.invalidateStatusRendering()
+                }
+            }
+            .store(in: &cancellables)
+
+        NSWorkspace.shared.notificationCenter
+            .publisher(for: NSWorkspace.screensDidWakeNotification)
+            .sink { [weak self] _ in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.statusDisplaysAsleep = false
+                    self.invalidateStatusRendering()
+                    self.renderStatusItem()
                 }
             }
             .store(in: &cancellables)
@@ -219,10 +234,10 @@ final class MenuBarController: NSObject, NSWindowDelegate {
                 self.statusItem = nil
                 self.monitorSink = nil
                 self.layoutSink = nil
+                self.appearanceSink = nil
                 self.statusDisplayLink?.invalidate()
                 self.statusDisplayLink = nil
-                clearStatusAnimation()
-                self.currentStatusPlan = nil
+                invalidateStatusRendering()
             }
         }
     }
@@ -233,6 +248,7 @@ final class MenuBarController: NSObject, NSWindowDelegate {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.isVisible = true
         statusItem = item
+        invalidateStatusRendering()
         guard let button = item.button else { return }
 
         button.target = self
@@ -240,6 +256,14 @@ final class MenuBarController: NSObject, NSWindowDelegate {
         button.toolTip = "Geraldine"
         button.imageScaling = .scaleNone
         button.imagePosition = .imageOnly
+
+        appearanceSink = button.publisher(for: \.effectiveAppearance, options: [.new])
+            .sink { [weak self] _ in
+                Task { @MainActor in
+                    self?.invalidateStatusRendering()
+                    self?.renderStatusItem()
+                }
+            }
 
         renderStatusItem()
 
@@ -383,6 +407,7 @@ final class MenuBarController: NSObject, NSWindowDelegate {
         var samples: [StatusTimelineSample]? = nil
         var fallbackSeries: [Double]? = nil
         var timelineDuration: TimeInterval = 60
+        var timelineEnd: TimeInterval = Date().timeIntervalSinceReferenceDate
         var timelineMaximumCount: Int? = nil
         var glyph: String?        // SF Symbol name for slow metrics
         var label: String
@@ -398,14 +423,19 @@ final class MenuBarController: NSObject, NSWindowDelegate {
     }
 
     private func renderStatusItem() {
-        guard let button = statusItem?.button else { return }
+        guard !statusDisplaysAsleep, let button = statusItem?.button else { return }
         let nextPlan = plan()
         let signature = statusSignature(for: nextPlan)
         // Monitor publishes several times per second (CPU, memory, network, GPU,
         // thermal). When only a hidden metric moved, the image already on screen
         // is pixel-identical; redrawing it would just wake WindowServer.
-        if statusAnimMode == nil, signature == lastRenderedStatusSignature { return }
-        lastRenderedStatusSignature = signature
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        if statusAnimMode == nil,
+           statusRenderCache.canReuse(signature, hasImage: button.image != nil) { return }
+        statusRenderCache.invalidate()
+        defer {
+            if statusAnimMode == nil { statusRenderCache.record(signature) }
+        }
         // Drawn lazily: the digit-roll and shimmer branches render their own
         // frames, so an eager draw here would be thrown away on those paths.
         var cachedNextImage: NSImage?
@@ -417,7 +447,7 @@ final class MenuBarController: NSObject, NSWindowDelegate {
         }
         applyAccessibility(for: nextPlan, to: button)
 
-        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+        if reduceMotion {
             statusDisplayLink?.isPaused = true
             clearStatusAnimation()
             applyStatusImage(nextImage(), to: button)
@@ -522,10 +552,11 @@ final class MenuBarController: NSObject, NSWindowDelegate {
             glyph: plan.glyph,
             colorToken: Self.colorToken(plan.color),
             samples: plan.samples?.map {
-                StatusRenderSignature.Sample(timestamp: $0.timestamp, value: $0.value)
+                StatusRenderSignature.Sample(timestamp: $0.timestamp, value: $0.value, sessionID: $0.sessionID)
             } ?? [],
             domain: plan.domain,
-            showsLatestEndpoint: plan.showsLatestEndpoint
+            showsLatestEndpoint: plan.showsLatestEndpoint,
+            timelineEnd: plan.samples?.isEmpty == false ? plan.timelineEnd : nil
         )
     }
 
@@ -537,6 +568,16 @@ final class MenuBarController: NSObject, NSWindowDelegate {
     }
 
     private func plan() -> StatusPlan {
+        var result = metricPlan()
+        // One shared refresh already supplies the visible sampling cadence.
+        // Anchor the cached chart to that frame, so duplicate async publishes
+        // can reuse it while retained history still advances on every tick.
+        result.timelineEnd = state.monitor.lastRefreshAt?.timeIntervalSinceReferenceDate
+            ?? Date().timeIntervalSinceReferenceDate
+        return result
+    }
+
+    private func metricPlan() -> StatusPlan {
         let m = state.monitor
         switch state.layout.menuBarKind(hasBattery: m.hasBattery) {
         case .temperature:
@@ -799,7 +840,6 @@ final class MenuBarController: NSObject, NSWindowDelegate {
         statusAnimTo = newPlan
         statusAnimCompletion = completion
         statusAnimStart = CACurrentMediaTime()
-        statusFramePolicy.reset()
         if statusItem?.length != ceil(geometry.size.width + statusItemHorizontalPadding) {
             statusItem?.length = max(24, ceil(geometry.size.width + statusItemHorizontalPadding))
         }
@@ -823,7 +863,6 @@ final class MenuBarController: NSObject, NSWindowDelegate {
         statusAnimNewNumber = ""
         statusAnimCompletion = nil
         statusAnimStart = CACurrentMediaTime()
-        statusFramePolicy.reset()
 
         // Adopt the target width immediately; only pixels dissolve. The status item
         // never interpolates its width or perturbs neighboring menu-bar items.
@@ -849,7 +888,6 @@ final class MenuBarController: NSObject, NSWindowDelegate {
         statusAnimNewNumber = splitLabel(newPlan.label).number
         statusAnimCompletion = nil
         statusAnimStart = CACurrentMediaTime()
-        statusFramePolicy.reset()
         lastShimmerStart = statusAnimStart
 
         let targetWidth = max(24, ceil(geometry.size.width + statusItemHorizontalPadding))
@@ -882,6 +920,21 @@ final class MenuBarController: NSObject, NSWindowDelegate {
             return
         }
         let progress = min(1, (CACurrentMediaTime() - statusAnimStart) / max(statusAnimDuration, 0.001))
+        // Complete before composing an intermediate image. Reduce Motion can
+        // change during a roll, and the latest plan may include newer chart data.
+        if progress >= 1 || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            link.isPaused = true
+            let completion = statusAnimCompletion
+            let finalPlan = currentStatusPlan ?? newPlan
+            let finalImage = statusSignature(for: finalPlan) == statusSignature(for: newPlan)
+                ? (statusAnimToImage ?? drawStatus(finalPlan))
+                : drawStatus(finalPlan)
+            clearStatusAnimation()
+            applyStatusImage(finalImage, to: button)
+            statusRenderCache.record(statusSignature(for: finalPlan))
+            completion?()
+            return
+        }
         let renderedImage: NSImage
         switch mode {
         case .digits:
@@ -909,19 +962,14 @@ final class MenuBarController: NSObject, NSWindowDelegate {
             renderedImage = composeStatusShimmer(base: base, plan: newPlan,
                                                   geometry: geometry, progress: progress)
         }
-        let now = CACurrentMediaTime()
-        if progress < 1,
-           statusFramePolicy.shouldRender(at: now, isFinal: false) {
-            applyStatusImage(renderedImage, to: button)
-        }
-        if progress >= 1 {
-            link.isPaused = true
-            let completion = statusAnimCompletion
-            let finalImage = statusAnimToImage ?? drawStatus(newPlan)
-            clearStatusAnimation()
-            applyStatusImage(finalImage, to: button)
-            completion?()
-        }
+        applyStatusImage(renderedImage, to: button)
+    }
+
+    private func invalidateStatusRendering() {
+        statusDisplayLink?.isPaused = true
+        clearStatusAnimation()
+        currentStatusPlan = nil
+        statusRenderCache.invalidate()
     }
 
     private func clearStatusAnimation() {
@@ -1102,6 +1150,7 @@ final class MenuBarController: NSObject, NSWindowDelegate {
         if let samples = plan.samples {
             drawTimelineSparkline(samples, in: rect,
                                   duration: plan.timelineDuration,
+                                  end: plan.timelineEnd,
                                   maximumCount: plan.timelineMaximumCount,
                                   gradient: plan.gradient,
                                   areaGradient: plan.areaGradient,
@@ -1315,7 +1364,7 @@ final class MenuBarController: NSObject, NSWindowDelegate {
     /// `TimelineWindow.segments` also honors monitor-session boundaries, so persisted
     /// history never connects across an app restart even when the restart is quick.
     private func drawTimelineSparkline(_ samples: [StatusTimelineSample], in rect: NSRect,
-                                       duration: TimeInterval, maximumCount: Int?,
+                                       duration: TimeInterval, end: TimeInterval, maximumCount: Int?,
                                        gradient: MetricGradientSpec?, areaGradient: MetricGradientSpec?,
                                        baseColor: NSColor, domain: ClosedRange<Double>?,
                                        zeroBasedDynamicDomain: Bool,
@@ -1323,7 +1372,7 @@ final class MenuBarController: NSObject, NSWindowDelegate {
                                        showsLatestEndpoint: Bool) {
         guard !samples.isEmpty, let ctx = NSGraphicsContext.current?.cgContext else { return }
 
-        let timeline = TimelineWindow(end: Date().timeIntervalSinceReferenceDate, duration: duration)
+        let timeline = TimelineWindow(end: end, duration: duration)
         let visible = timeline.visible(samples)
         guard !visible.isEmpty else { return }
 

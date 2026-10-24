@@ -5,8 +5,6 @@ public enum ControlProtocol {
     public static let version = 1
     /// Bumped only for a breaking response-schema change.
     public static let schemaVersion = 1
-    /// A request or response larger than this is rejected rather than buffered.
-    public static let maximumLineBytes = 1_048_576
 }
 
 public enum ControlErrorCode: String, Codable, Sendable {
@@ -145,15 +143,25 @@ public struct ControlResponse: Codable, Sendable {
     }
 
     public func encodedLine(pretty: Bool = false) -> String {
+        encodedOutput(pretty: pretty).line
+    }
+
+    /// The CLI must use the encoded response's status too: a serialization
+    /// failure belongs on stderr with a failure exit, even if the original
+    /// response was successful.
+    func encodedOutput(pretty: Bool = false) -> (response: ControlResponse, line: String) {
         let encoder = JSONEncoder()
         encoder.outputFormatting = pretty
             ? [.sortedKeys, .prettyPrinted, .withoutEscapingSlashes]
             : [.sortedKeys, .withoutEscapingSlashes]
         guard let data = try? encoder.encode(self),
               let line = String(data: data, encoding: .utf8) else {
-            return #"{"schemaVersion":1,"ok":false,"error":{"code":"failed","message":"Could not encode the response"}}"#
+            // A non-finite metric can fail JSON encoding. Keep the original
+            // correlation and the complete envelope even on that error path.
+            return ControlResponse.localFailure(id: id, command: command, code: .failed,
+                message: "Could not encode the response.").encodedOutput(pretty: pretty)
         }
-        return line
+        return (self, line)
     }
 
     public var exitCode: Int32 {

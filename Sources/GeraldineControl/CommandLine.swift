@@ -48,48 +48,136 @@ public enum GeraldinePages {
     ]
 }
 
+/// Explicit seams for CLI tests: none needs to find or launch the installed
+/// app, open a real URL, or mistake the test runner for the bundled helper.
+public struct CommandLineDependencies {
+    public var send: (ControlRequest, URL, TimeInterval?) throws -> ControlResponse
+    public var isAppRunning: () -> Bool
+    public var launchApp: (TimeInterval?) throws -> Void
+    public var openURL: (String, TimeInterval?) throws -> Void
+    public var executableURL: () -> URL?
+    public var installedAppURL: () -> URL?
+    public var sleep: (TimeInterval) -> Void
+
+    public init(
+        send: @escaping (ControlRequest, URL, TimeInterval?) throws -> ControlResponse,
+        isAppRunning: @escaping () -> Bool,
+        launchApp: @escaping (TimeInterval?) throws -> Void,
+        openURL: @escaping (String, TimeInterval?) throws -> Void,
+        executableURL: @escaping () -> URL?,
+        installedAppURL: @escaping () -> URL? = { nil },
+        sleep: @escaping (TimeInterval) -> Void = Thread.sleep(forTimeInterval:)
+    ) {
+        self.send = send
+        self.isAppRunning = isAppRunning
+        self.launchApp = launchApp
+        self.openURL = openURL
+        self.executableURL = executableURL
+        self.installedAppURL = installedAppURL
+        self.sleep = sleep
+    }
+
+    public static var live: CommandLineDependencies {
+        CommandLineDependencies(
+            send: { try ControlClient(socketURL: $1).send($0, timeout: $2) },
+            isAppRunning: { ProcessLookup.isRunning() },
+            launchApp: { try runOpen(["-a", "Geraldine"], timeout: $0) },
+            openURL: { try runOpen([$0], timeout: $1) },
+            executableURL: GeraldineCommandLine.currentExecutable,
+            installedAppURL: { URL(fileURLWithPath: "/Applications/Geraldine.app", isDirectory: true) }
+        )
+    }
+
+    private static func runOpen(_ arguments: [String], timeout: TimeInterval?) throws {
+        let process = Process()
+        let finished = DispatchSemaphore(value: 0)
+        let deadline = timeout.map { Date().addingTimeInterval($0) }
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        process.arguments = arguments
+        process.terminationHandler = { _ in finished.signal() }
+        try process.run()
+        if let deadline {
+            while true {
+                let remaining = deadline.timeIntervalSinceNow
+                guard remaining > 0 else {
+                    if process.isRunning { process.terminate() }
+                    throw ControlClientError.timedOut
+                }
+                let nanoseconds = remaining >= Double(Int.max) / 1_000_000_000
+                    ? Int.max : (Int(exactly: ceil(remaining * 1_000_000_000)) ?? Int.max)
+                if finished.wait(timeout: .now() + .nanoseconds(nanoseconds)) == .success { break }
+            }
+        } else {
+            finished.wait()
+        }
+        if process.terminationStatus != 0 {
+            throw NSError(domain: "GeraldineCLI.open", code: Int(process.terminationStatus))
+        }
+    }
+}
+
 public enum GeraldineCommandLine {
     private struct GlobalOptions {
         var json = false
-        var socketURL = ControlEndpoint.socketURL()
-        var timeout: TimeInterval = 120
+        var socketURL: URL
+        var explicitEndpoint = false
+        var timeout: TimeInterval?
         var launch = false
         var help = false
         var version = false
         var arguments: [String] = []
+        var environment: [String: String]
+        var dependencies: CommandLineDependencies
     }
 
     public static func run(
         arguments: [String],
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        io: CommandLineIO = .standard
+        io: CommandLineIO = .standard,
+        dependencies: CommandLineDependencies = .live
     ) -> Int32 {
-        let global = parseGlobal(arguments: Array(arguments.dropFirst()), environment: environment)
+        let raw = Array(arguments.dropFirst())
+        let global: GlobalOptions
+        do {
+            global = try parseGlobal(arguments: raw, environment: environment, dependencies: dependencies)
+        } catch {
+            return fail(command: "", code: .usage, message: error.localizedDescription, hint: nil,
+                        json: raw.contains("--json"), io: io)
+        }
         if global.version {
-            writeLine("geraldine \(CommandCatalog.version) (protocol \(ControlProtocol.version), schema \(ControlProtocol.schemaVersion))", io: io)
-            return 0
+            guard global.arguments.isEmpty, !global.help else {
+                return usageFailure(command: "version", hint: "--version takes no command or arguments.", json: global.json, io: io)
+            }
+            return emit(ControlResponse(command: "version", ok: true,
+                text: ["geraldine \(CommandCatalog.version) (protocol \(ControlProtocol.version), schema \(ControlProtocol.schemaVersion))"],
+                result: .object(["version": .string(CommandCatalog.version),
+                                 "protocolVersion": .int(ControlProtocol.version),
+                                 "schemaVersion": .int(ControlProtocol.schemaVersion)])), json: global.json, io: io)
         }
-        guard let first = global.arguments.first else {
-            writeLine(overview, io: io)
-            return global.help ? 0 : 2
-        }
+        if global.arguments.isEmpty, global.help { return emitHelp(topic: nil, json: global.json, io: io) }
+        let first = global.arguments.first ?? "status"
 
         if first == "help" {
+            guard global.arguments.count <= 2 else {
+                return usageFailure(command: "help", hint: "help takes at most one command name.", json: global.json, io: io)
+            }
             let topic = global.arguments.dropFirst().first
-            writeLine(topic.map(help(for:)) ?? overview, io: io)
-            return 0
+            return emitHelp(topic: topic, json: global.json, io: io)
         }
         if global.help {
-            writeLine(help(for: first), io: io)
-            return 0
+            guard global.arguments.count == 1 else {
+                return usageFailure(command: first, hint: "Use `geraldine <command> --help` without action arguments.", json: global.json, io: io)
+            }
+            return emitHelp(topic: first, json: global.json, io: io)
         }
 
         let rest = Array(global.arguments.dropFirst())
         switch first {
         case "commands":
+            guard rest.isEmpty else { return usageFailure(command: first, hint: "commands takes no arguments.", json: global.json, io: io) }
             return runCommands(json: global.json, io: io)
         case "install-cli":
-            return runInstallCLI(arguments: rest, json: global.json, io: io)
+            return runInstallCLI(arguments: rest, global: global, io: io)
         case "settings":
             return runSettings(arguments: rest, global: global, io: io)
         case "doctor":
@@ -101,8 +189,30 @@ public enum GeraldineCommandLine {
 
     // MARK: - Global parsing
 
-    private static func parseGlobal(arguments: [String], environment: [String: String]) -> GlobalOptions {
-        var global = GlobalOptions(socketURL: ControlEndpoint.socketURL(environment: environment))
+    private struct ArgumentError: LocalizedError {
+        let message: String
+        var errorDescription: String? { message }
+    }
+
+    private static func parseGlobal(arguments: [String], environment: [String: String], dependencies: CommandLineDependencies) throws -> GlobalOptions {
+        var global = GlobalOptions(socketURL: ControlEndpoint.socketURL(environment: environment),
+                                   explicitEndpoint: environment[ControlEndpoint.environmentKey] != nil,
+                                   environment: environment, dependencies: dependencies)
+        if let override = environment[ControlEndpoint.environmentKey], override.isEmpty {
+            throw ArgumentError(message: "\(ControlEndpoint.environmentKey) must name a socket path.")
+        }
+        func socketPath(_ raw: String) throws -> URL {
+            guard !raw.isEmpty, !raw.hasPrefix("-"), !raw.utf8.contains(0) else {
+                throw ArgumentError(message: "--socket needs a non-empty path.")
+            }
+            return URL(fileURLWithPath: raw)
+        }
+        func timeout(_ raw: String) throws -> TimeInterval {
+            guard let value = Double(raw), value.isFinite, value > 0 else {
+                throw ArgumentError(message: "--timeout needs a finite positive number of seconds.")
+            }
+            return value
+        }
         var index = 0
         while index < arguments.count {
             let argument = arguments[index]
@@ -118,20 +228,20 @@ public enum GeraldineCommandLine {
             case "--no-color":
                 break
             case "--socket":
-                if index + 1 < arguments.count {
-                    index += 1
-                    global.socketURL = URL(fileURLWithPath: arguments[index])
-                }
+                guard index + 1 < arguments.count else { throw ArgumentError(message: "--socket needs a path.") }
+                index += 1
+                global.socketURL = try socketPath(arguments[index])
+                global.explicitEndpoint = true
             case "--timeout":
-                if index + 1 < arguments.count, let value = Double(arguments[index + 1]), value > 0 {
-                    index += 1
-                    global.timeout = value
-                }
+                guard index + 1 < arguments.count else { throw ArgumentError(message: "--timeout needs a value.") }
+                index += 1
+                global.timeout = try timeout(arguments[index])
             default:
                 if argument.hasPrefix("--socket=") {
-                    global.socketURL = URL(fileURLWithPath: String(argument.dropFirst("--socket=".count)))
-                } else if argument.hasPrefix("--timeout="), let value = Double(argument.dropFirst("--timeout=".count)), value > 0 {
-                    global.timeout = value
+                    global.socketURL = try socketPath(String(argument.dropFirst("--socket=".count)))
+                    global.explicitEndpoint = true
+                } else if argument.hasPrefix("--timeout=") {
+                    global.timeout = try timeout(String(argument.dropFirst("--timeout=".count)))
                 } else {
                     global.arguments.append(argument)
                 }
@@ -160,6 +270,7 @@ public enum GeraldineCommandLine {
 
         var requestArguments: [String] = []
         var options: [String: String] = [:]
+        var watchInterval: TimeInterval?
 
         switch first {
         case "awake":
@@ -256,20 +367,35 @@ public enum GeraldineCommandLine {
             }
 
         case "stats":
-            let metric = rest.first(where: { !$0.hasPrefix("--") }) ?? "all"
-            guard ["cpu", "memory", "gpu", "network", "battery", "thermal", "storage", "all"].contains(metric) else {
-                return usageFailure(command: first, hint: "Unknown metric \"\(metric)\".", json: global.json, io: io)
+            var metric: String?
+            var index = 0
+            while index < rest.count {
+                if rest[index] == "--watch" {
+                    guard watchInterval == nil, index + 1 < rest.count,
+                          let interval = Double(rest[index + 1]), interval.isFinite, interval > 0,
+                          Int(exactly: interval.rounded(.up)) != nil else {
+                        return usageFailure(command: first, hint: "--watch needs a finite positive interval in seconds.", json: global.json, io: io)
+                    }
+                    watchInterval = interval
+                    index += 2
+                } else {
+                    guard metric == nil, ["cpu", "memory", "gpu", "network", "battery", "thermal", "storage", "all"].contains(rest[index]) else {
+                        return usageFailure(command: first, hint: "Use `geraldine stats [metric] [--watch <seconds>]`.", json: global.json, io: io)
+                    }
+                    metric = rest[index]
+                    index += 1
+                }
             }
-            requestArguments = [metric]
-            if rest.contains("--watch") { options["watch"] = "true" }
+            requestArguments = [metric ?? "all"]
 
         case "processes":
             var index = 0
             while index < rest.count {
                 switch rest[index] {
                 case "--top":
-                    guard index + 1 < rest.count, let value = Int(rest[index + 1]), value > 0, value <= 200 else {
-                        return usageFailure(command: first, hint: "--top needs a number from 1 to 200.", json: global.json, io: io)
+                    guard index + 1 < rest.count, let value = Int(rest[index + 1]), value > 0,
+                          !value.multipliedReportingOverflow(by: 2).overflow else {
+                        return usageFailure(command: first, hint: "--top needs a positive integer with a representable sampling count.", json: global.json, io: io)
                     }
                     options["top"] = String(value)
                     index += 2
@@ -285,6 +411,9 @@ public enum GeraldineCommandLine {
             }
 
         case "usage":
+            guard rest.isEmpty || rest == ["--refresh"] else {
+                return usageFailure(command: first, hint: "Use `geraldine usage [--refresh]`.", json: global.json, io: io)
+            }
             if rest.contains("--refresh") { options["refresh"] = "true" }
 
         case "permissions", "devices":
@@ -293,6 +422,9 @@ public enum GeraldineCommandLine {
             }
 
         case "open":
+            guard rest.count <= 1 else {
+                return usageFailure(command: first, hint: "open takes at most one page name.", json: global.json, io: io)
+            }
             if let page = rest.first {
                 guard GeraldinePages.all.contains(page) else {
                     return usageFailure(
@@ -320,14 +452,17 @@ public enum GeraldineCommandLine {
             while index < rest.count {
                 switch rest[index] {
                 case "--path":
-                    guard index + 1 < rest.count else {
+                    guard index + 1 < rest.count, !rest[index + 1].isEmpty,
+                          !rest[index + 1].hasPrefix("-"), !rest[index + 1].utf8.contains(0) else {
                         return usageFailure(command: first, hint: "--path needs a directory.", json: global.json, io: io)
                     }
                     options["path"] = rest[index + 1]
                     index += 2
                 case "--min-size":
-                    guard index + 1 < rest.count, let value = Int(rest[index + 1]), value > 0 else {
-                        return usageFailure(command: first, hint: "--min-size needs a positive number of megabytes.", json: global.json, io: io)
+                    guard index + 1 < rest.count, let value = Int(rest[index + 1]), value > 0,
+                          let megabytes = UInt64(exactly: value),
+                          !megabytes.multipliedReportingOverflow(by: 1_000_000).overflow else {
+                        return usageFailure(command: first, hint: "--min-size needs positive integer megabytes representable in bytes.", json: global.json, io: io)
                     }
                     options["minSizeMB"] = String(value)
                     index += 2
@@ -348,13 +483,8 @@ public enum GeraldineCommandLine {
             }
         }
 
-        if first == "stats", options["watch"] == "true", !global.json, !io.isTTY {
-            options["watch"] = nil
-            emitWarning("--watch needs a TTY; emitting one sample instead.", json: false, io: io)
-        }
-
-        if options["watch"] == "true" {
-            return watch(command: first, arguments: requestArguments, global: global, io: io)
+        if let watchInterval {
+            return watch(command: first, arguments: requestArguments, interval: watchInterval, global: global, io: io)
         }
         return performRemote(command: first, arguments: requestArguments, options: options, global: global, io: io)
     }
@@ -364,7 +494,10 @@ public enum GeraldineCommandLine {
         case .indefinite:
             return "indefinitely"
         case .seconds(let seconds):
-            return String(Int(seconds.rounded()))
+            guard seconds.isFinite, seconds > 0, let rounded = Int(exactly: seconds.rounded(.up)) else {
+                throw ArgumentError(message: "Duration must be finite positive seconds representable by the app.")
+            }
+            return String(rounded)
         }
     }
 
@@ -383,53 +516,36 @@ public enum GeraldineCommandLine {
         io: CommandLineIO
     ) -> Int32 {
         let request = ControlRequest(command: command, arguments: arguments, options: options)
-        let client = ControlClient(socketURL: global.socketURL)
+        let deadline = global.timeout.map { Date().addingTimeInterval($0) }
         do {
-            let response = try client.send(request, timeout: global.timeout)
-            return emit(response, json: global.json, io: io)
+            let response = try global.dependencies.send(request, global.socketURL, remaining(until: deadline))
+            return emitRemote(response, global: global, io: io)
         } catch {
-            return handleUnavailable(command: command, arguments: arguments, options: options, global: global, error: error, io: io)
+            return handleUnavailable(command: command, arguments: arguments, options: options, global: global, deadline: deadline, error: error, io: io)
         }
+    }
+
+    private static func remaining(until deadline: Date?) throws -> TimeInterval? {
+        guard let deadline else { return nil }
+        let seconds = deadline.timeIntervalSinceNow
+        guard seconds > 0 else { throw ControlClientError.timedOut }
+        return seconds
     }
 
     private static func watch(
         command: String,
         arguments: [String],
+        interval: TimeInterval,
         global: GlobalOptions,
         io: CommandLineIO
     ) -> Int32 {
-        let client = ControlClient(socketURL: global.socketURL)
         var first = true
         while true {
-            let request = ControlRequest(command: command, arguments: arguments, options: [:])
-            do {
-                let response = try client.send(request, timeout: global.timeout)
-                if global.json {
-                    let line = response.encodedLine()
-                    if response.ok {
-                        io.out(line)
-                        io.out("\n")
-                    } else {
-                        io.err(line)
-                        io.err("\n")
-                    }
-                } else {
-                    if !first { io.out("\n") }
-                    emitHuman(response, io: io)
-                }
-                first = false
-                if !response.ok { return response.exitCode }
-            } catch {
-                return handleUnavailable(
-                    command: command,
-                    arguments: arguments,
-                    options: [:],
-                    global: global,
-                    error: error,
-                    io: io
-                )
-            }
-            Thread.sleep(forTimeInterval: 2)
+            if !first, !global.json { io.out("\n") }
+            let code = performRemote(command: command, arguments: arguments, options: [:], global: global, io: io)
+            first = false
+            if code != 0 { return code }
+            global.dependencies.sleep(interval)
         }
     }
 
@@ -438,10 +554,58 @@ public enum GeraldineCommandLine {
         arguments: [String],
         options: [String: String],
         global: GlobalOptions,
+        deadline: Date?,
         error: Error,
         io: CommandLineIO
     ) -> Int32 {
-        let running = ProcessLookup.isRunning()
+        // A failed response/read/write may follow a successful state change.
+        // Only an absent/refused connection permits a legacy fallback; never
+        // retry an ambiguous toggle through another transport.
+        guard case ControlClientError.unavailable(let code) = error else {
+            let failureCode: ControlErrorCode
+            switch error {
+            case ControlClientError.untrustedPeer: failureCode = .permission
+            case ControlClientError.unsupportedProtocol, ControlClientError.unsupportedSchema: failureCode = .unsupported
+            case ControlClientError.invalidTimeout: failureCode = .usage
+            default: failureCode = .failed
+            }
+            return fail(command: command, code: failureCode, message: error.localizedDescription,
+                        hint: "The request was not retried; verify the endpoint and resulting state before retrying.",
+                        json: global.json, io: io)
+        }
+        guard code == ENOENT || code == ECONNREFUSED else {
+            return fail(command: command, code: code == EACCES || code == EPERM ? .permission : .notRunning,
+                        message: error.localizedDescription, hint: "Check the requested socket and its permissions.",
+                        json: global.json, io: io)
+        }
+        if global.explicitEndpoint {
+            return fail(command: command, code: .notRunning,
+                        message: "The requested control endpoint is unavailable at \(global.socketURL.path).",
+                        hint: "Check this socket path. An explicit endpoint never launches Geraldine or uses the installed app's URL handler or saved preferences.",
+                        json: global.json, io: io)
+        }
+        let running = global.dependencies.isAppRunning()
+
+        if global.launch, !running {
+            do {
+                try global.dependencies.launchApp(remaining(until: deadline))
+                let request = ControlRequest(command: command, arguments: arguments, options: options)
+                let response = try global.dependencies.send(request, global.socketURL, remaining(until: deadline))
+                return emitRemote(response, global: global, io: io)
+            } catch {
+                let failureCode: ControlErrorCode
+                switch error {
+                case ControlClientError.unavailable(let code):
+                    failureCode = code == EACCES || code == EPERM ? .permission : .notRunning
+                case ControlClientError.unsupportedProtocol, ControlClientError.unsupportedSchema:
+                    failureCode = .unsupported
+                case ControlClientError.untrustedPeer: failureCode = .permission
+                default: failureCode = .failed
+                }
+                return fail(command: command, code: failureCode, message: error.localizedDescription,
+                            hint: "The launch/retry did not return a confirmed result. Wait for Geraldine's control socket to become ready, then retry; the command was not sent through another transport.", json: global.json, io: io)
+            }
+        }
 
         if command == "settings" {
             return runSettingsLocally(arguments: arguments, appRunning: running, json: global.json, io: io)
@@ -450,17 +614,8 @@ public enum GeraldineCommandLine {
             return runLocalDoctor(global: global, io: io, appError: error)
         }
 
-        if global.launch, !running {
-            launchApp()
-            Thread.sleep(forTimeInterval: 2)
-            let request = ControlRequest(command: command, arguments: arguments, options: options)
-            if let response = try? ControlClient(socketURL: global.socketURL).send(request, timeout: global.timeout) {
-                return emit(response, json: global.json, io: io)
-            }
-        }
-
         if command == "awake", running {
-            return awakeURLFallback(arguments: arguments, options: options, global: global, io: io)
+            return awakeURLFallback(arguments: arguments, options: options, global: global, deadline: deadline, io: io)
         }
 
         let message: String
@@ -479,6 +634,7 @@ public enum GeraldineCommandLine {
         arguments: [String],
         options: [String: String],
         global: GlobalOptions,
+        deadline: Date?,
         io: CommandLineIO
     ) -> Int32 {
         guard let sub = arguments.first else {
@@ -494,22 +650,8 @@ public enum GeraldineCommandLine {
             }
         }
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        process.arguments = [url]
         do {
-            try process.run()
-            process.waitUntilExit()
-            guard process.terminationStatus == 0 else {
-                return fail(
-                    command: "awake",
-                    code: .failed,
-                    message: "The URL fallback could not reach Geraldine.",
-                    hint: "Open Geraldine and try again.",
-                    json: global.json,
-                    io: io
-                )
-            }
+            try global.dependencies.openURL(url, remaining(until: deadline))
         } catch {
             return fail(
                 command: "awake",
@@ -534,14 +676,6 @@ public enum GeraldineCommandLine {
         return emit(response, json: global.json, io: io)
     }
 
-    private static func launchApp() {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        process.arguments = ["-a", "Geraldine"]
-        try? process.run()
-        process.waitUntilExit()
-    }
-
     // MARK: - Settings
 
     private static func runSettings(arguments: [String], global: GlobalOptions, io: CommandLineIO) -> Int32 {
@@ -562,14 +696,14 @@ public enum GeraldineCommandLine {
             return performRemote(command: "settings", arguments: ["get", arguments[1]], options: [:], global: global, io: io)
 
         case "set":
-            guard arguments.count >= 3,
+            guard arguments.count == 3,
                   let definition = SettingsCatalog.definition(for: arguments[1]) else {
                 return usageFailure(command: "settings", hint: "settings set needs a known key and a value.", json: global.json, io: io)
             }
             guard !definition.readOnly else {
                 return usageFailure(command: "settings", hint: "\"\(definition.key)\" is read-only.", json: global.json, io: io)
             }
-            let raw = arguments.dropFirst(2).joined(separator: " ")
+            let raw = arguments[2]
             do {
                 _ = try SettingsCatalog.parse(raw, for: definition)
             } catch {
@@ -659,18 +793,12 @@ public enum GeraldineCommandLine {
         guard rest.isEmpty else {
             return usageFailure(command: "doctor", hint: "doctor takes no arguments.", json: global.json, io: io)
         }
-        let request = ControlRequest(command: "doctor")
-        do {
-            let response = try ControlClient(socketURL: global.socketURL).send(request, timeout: 10)
-            return emit(response, json: global.json, io: io)
-        } catch {
-            return runLocalDoctor(global: global, io: io, appError: error)
-        }
+        return performRemote(command: "doctor", arguments: [], options: [:], global: global, io: io)
     }
 
     private static func runLocalDoctor(global: GlobalOptions, io: CommandLineIO, appError: Error?) -> Int32 {
         var checks: [DoctorCheck] = []
-        let appRunning = ProcessLookup.isRunning()
+        let appRunning = global.dependencies.isAppRunning()
         checks.append(DoctorCheck(
             name: "Geraldine",
             status: appRunning ? "ok" : "fail",
@@ -684,7 +812,7 @@ public enum GeraldineCommandLine {
             let mode = (attributes[.posixPermissions] as? NSNumber)?.intValue ?? 0
             let type = attributes[.type] as? FileAttributeType
             let owner = (attributes[.ownerAccountID] as? NSNumber)?.intValue
-            if type == .typeSocket, owner == Int(geteuid()) {
+            if type == .typeSocket, owner == Int(geteuid()), mode == 0o600 {
                 socketStatus = "ok"
                 socketDetail = "Socket exists with mode \(String(mode, radix: 8)) and the current owner."
             } else {
@@ -699,18 +827,10 @@ public enum GeraldineCommandLine {
             checks.append(DoctorCheck(name: "Control handshake", status: "fail", detail: appError.localizedDescription))
         }
 
-        let helper = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".local/bin/geraldine")
-        let helperInstalled = FileManager.default.isExecutableFile(atPath: helper.path)
-        checks.append(DoctorCheck(
-            name: "CLI on PATH",
-            status: helperInstalled ? "ok" : "warn",
-            detail: helperInstalled
-                ? "Found \(helper.path)."
-                : "Not installed at \(helper.path). Run `geraldine install-cli`."
-        ))
+        let diagnostics = cliDiagnostics(global: global, appIdentity: nil)
+        checks += diagnostics.checks
 
-        let result = JSONValue.object([
+        var resultFields: [String: JSONValue] = [
             "appRunning": .bool(appRunning),
             "checks": .array(checks.map { check in
                 .object([
@@ -719,11 +839,13 @@ public enum GeraldineCommandLine {
                     "detail": .string(check.detail)
                 ])
             })
-        ])
+        ]
+        resultFields.merge(diagnostics.fields) { _, local in local }
+        let result = JSONValue.object(resultFields)
         let text = checks.map { check in
             "[\(check.status.uppercased())] \(check.name): \(check.detail)"
         }
-        let controlReady = appRunning && socketStatus == "ok"
+        let controlReady = appRunning && socketStatus == "ok" && appError == nil
         let response = ControlResponse(
             command: "doctor",
             ok: controlReady,
@@ -741,14 +863,42 @@ public enum GeraldineCommandLine {
                         : "Open Geraldine, or rerun with --launch."
                 )
         )
-        let exit: Int32 = controlReady ? 0 : 3
-        if global.json {
-            let line = response.encodedLine()
-            if controlReady { io.out(line) } else { io.err(line) }
-        } else {
-            emitHuman(response, io: io)
+        return emit(response, json: global.json, io: io)
+    }
+
+    private static func cliDiagnostics(global: GlobalOptions, appIdentity: JSONValue?) -> CLIDiagnostics {
+        CLIDiagnostics(executableURL: global.dependencies.executableURL(),
+                       installedAppURL: global.dependencies.installedAppURL(),
+                       environment: global.environment, appIdentity: appIdentity)
+    }
+
+    private static func emitRemote(_ original: ControlResponse, global: GlobalOptions, io: CommandLineIO) -> Int32 {
+        guard original.command == "doctor" else { return emit(original, json: global.json, io: io) }
+        var response = original
+        var fields = response.result?.objectValue ?? [:]
+        let diagnostics = cliDiagnostics(global: global, appIdentity: fields["app"])
+        let localNames = Set(diagnostics.checks.map(\.name))
+        // PATH belongs to the caller's environment, not the menu-bar process.
+        var checks = (fields["checks"]?.arrayValue ?? []).filter {
+            !localNames.contains($0["name"]?.stringValue ?? "")
         }
-        return exit
+        checks += diagnostics.checks.map {
+            .object(["name": .string($0.name), "status": .string($0.status), "detail": .string($0.detail)])
+        }
+        fields.merge(diagnostics.fields) { _, local in local }
+        fields["appRunning"] = .bool(true) // a validated handshake, not a process-name guess
+        fields["checks"] = .array(checks)
+        response.result = .object(fields)
+        response.text = checks.compactMap { check in
+            guard let name = check["name"]?.stringValue, let status = check["status"]?.stringValue,
+                  let detail = check["detail"]?.stringValue else { return nil }
+            return "[\(status.uppercased())] \(name): \(detail)"
+        }
+        if diagnostics.identityMismatch, response.ok {
+            response.ok = false
+            response.error = ControlErrorPayload(code: .failed, message: "The CLI's containing app and responding app have different build identities.")
+        }
+        return emit(response, json: global.json, io: io)
     }
 
     // MARK: - Catalog / install
@@ -767,12 +917,13 @@ public enum GeraldineCommandLine {
         return emit(response, json: json, io: io)
     }
 
-    private static func runInstallCLI(arguments: [String], json: Bool, io: CommandLineIO) -> Int32 {
+    private static func runInstallCLI(arguments: [String], global: GlobalOptions, io: CommandLineIO) -> Int32 {
         var destinationDirectory = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".local/bin", isDirectory: true)
         var index = 0
         while index < arguments.count {
-            if arguments[index] == "--dir", index + 1 < arguments.count {
+            if arguments[index] == "--dir", index + 1 < arguments.count,
+               !arguments[index + 1].isEmpty, !arguments[index + 1].hasPrefix("-"), !arguments[index + 1].utf8.contains(0) {
                 var path = arguments[index + 1]
                 if path == "~" {
                     path = FileManager.default.homeDirectoryForCurrentUser.path
@@ -783,42 +934,35 @@ public enum GeraldineCommandLine {
                 destinationDirectory = URL(fileURLWithPath: path, isDirectory: true)
                 index += 2
             } else {
-                return usageFailure(command: "install-cli", hint: "Use `geraldine install-cli [--dir DIR]`.", json: json, io: io)
+                return usageFailure(command: "install-cli", hint: "Use `geraldine install-cli [--dir DIR]`.", json: global.json, io: io)
             }
         }
 
-        guard let source = currentExecutable() else {
-            return fail(command: "install-cli", code: .failed, message: "Could not locate the running geraldine executable.", hint: nil, json: json, io: io)
+        guard let source = global.dependencies.executableURL()?.resolvingSymlinksInPath() else {
+            return fail(command: "install-cli", code: .failed, message: "Could not locate the running geraldine executable.", hint: nil, json: global.json, io: io)
         }
         let destination = destinationDirectory.appendingPathComponent("geraldine")
         do {
-            try FileManager.default.createDirectory(
-                at: destinationDirectory,
-                withIntermediateDirectories: true,
-                attributes: [.posixPermissions: 0o755]
-            )
-            let data = try Data(contentsOf: source, options: .mappedIfSafe)
-            try data.write(to: destination, options: .atomic)
-            _ = chmod(destination.path, 0o755)
+            try CLIInstaller.install(source: source, directory: destinationDirectory)
         } catch {
             return fail(
                 command: "install-cli",
                 code: .failed,
                 message: "Could not install the CLI at \(destination.path): \(error.localizedDescription)",
-                hint: "Choose a writable directory with --dir.",
-                json: json,
+                hint: "Choose a writable directory with --dir. Existing unrelated files and links are preserved.",
+                json: global.json,
                 io: io
             )
         }
 
-        let onPath = (ProcessInfo.processInfo.environment["PATH"] ?? "")
+        let onPath = (global.environment["PATH"] ?? "")
             .split(separator: ":")
             .contains { $0 == destinationDirectory.path }
         let response = ControlResponse(
             command: "install-cli",
             ok: true,
             text: [
-                "Installed geraldine at \(destination.path).",
+                "Linked geraldine at \(destination.path) to \(source.path).",
                 onPath
                     ? "The directory is already on PATH."
                     : "Add \(destinationDirectory.path) to PATH to run `geraldine` from anywhere."
@@ -830,10 +974,10 @@ public enum GeraldineCommandLine {
                 "onPath": .bool(onPath)
             ])
         )
-        return emit(response, json: json, io: io)
+        return emit(response, json: global.json, io: io)
     }
 
-    private static func currentExecutable() -> URL? {
+    fileprivate static func currentExecutable() -> URL? {
         let first = ProcessInfo.processInfo.arguments.first ?? ""
         if first.contains("/") {
             return URL(fileURLWithPath: first).resolvingSymlinksInPath()
@@ -852,12 +996,9 @@ public enum GeraldineCommandLine {
     @discardableResult
     private static func emit(_ response: ControlResponse, json: Bool, io: CommandLineIO) -> Int32 {
         if json {
-            let line = response.encodedLine()
-            if response.ok {
-                io.out(line)
-            } else {
-                io.err(line)
-            }
+            let output = response.encodedOutput()
+            writeLine(output.line, to: output.response.ok ? io.out : io.err)
+            return output.response.exitCode
         } else {
             emitHuman(response, io: io)
         }
@@ -877,10 +1018,6 @@ public enum GeraldineCommandLine {
             writeLine("error: \(error.message)", to: io.err)
             if let hint = error.hint { writeLine("hint: \(hint)", to: io.err) }
         }
-    }
-
-    private static func emitWarning(_ message: String, json: Bool, io: CommandLineIO) {
-        if !json { writeLine("warning: \(message)", to: io.err) }
     }
 
     private static func fail(
@@ -922,7 +1059,8 @@ public enum GeraldineCommandLine {
     geraldine \(CommandCatalog.version) — control Geraldine from the terminal
 
     USAGE
-      geraldine [--json] [--socket PATH] <command> [arguments]
+      geraldine [--json] [--socket PATH] [command] [arguments]
+      (no command means status)
 
     CORE
       status                     App, Keep Awake, assertions, and vitals
@@ -931,7 +1069,7 @@ public enum GeraldineCommandLine {
       settings list|get|set      Typed, live, persisted settings
       widgets list|show|hide|size|move|reset
                                  Popover and menu-bar layout
-      stats [metric]             Live metrics, optional --watch
+      stats [metric]             Cached metrics, optional --watch <seconds>
       processes --top N --sort   Busiest processes
       usage [--refresh]          Coding-assistant allowances
       devices | permissions      Hardware and access readiness
@@ -944,7 +1082,7 @@ public enum GeraldineCommandLine {
 
     MORE
       commands --json            Machine-readable command catalog
-      install-cli [--dir DIR]    Copy the CLI into ~/.local/bin
+      install-cli [--dir DIR]    Symlink the helper into ~/.local/bin
       geraldine <command> --help
 
     Every command supports --json. Exit codes: 0 ok, 1 failed, 2 usage,
@@ -964,7 +1102,7 @@ public enum GeraldineCommandLine {
             "  \(definition.usage)",
             "",
             "NEEDS",
-            "  \(definition.needsRunningApp ? "Geraldine running" : "No app required")"
+            "  \(definition.name == "settings" ? "list/get can read saved preferences offline on the default endpoint; set and virtual settings need Geraldine running" : definition.name == "doctor" ? "A working socket for complete checks; offline diagnostics report unavailable control" : definition.needsRunningApp ? "Geraldine running" : "No app required")"
         ]
         if !definition.subcommands.isEmpty {
             lines.append("")
@@ -986,6 +1124,16 @@ public enum GeraldineCommandLine {
         lines.append("")
         lines.append("Add --json for a stable machine-readable envelope.")
         return lines.joined(separator: "\n")
+    }
+
+    private static func emitHelp(topic: String?, json: Bool, io: CommandLineIO) -> Int32 {
+        if let topic, CommandCatalog.command(named: topic) == nil {
+            return usageFailure(command: "help", hint: "Unknown command \"\(topic)\".", json: json, io: io)
+        }
+        let content = topic.map(help(for:)) ?? overview
+        return emit(ControlResponse(command: "help", ok: true, text: [content],
+            result: .object(["topic": topic.map(JSONValue.string) ?? .null, "usage": .string(content)])),
+            json: json, io: io)
     }
 }
 

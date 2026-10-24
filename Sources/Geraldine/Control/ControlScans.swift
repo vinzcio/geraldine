@@ -4,11 +4,13 @@ import GeraldineControl
 enum ControlScanError: Error, LocalizedError {
     case pathNotFound(String)
     case notADirectory(String)
+    case invalidMinimumSize
 
     var errorDescription: String? {
         switch self {
         case .pathNotFound(let path): return "No folder exists at \(path)."
         case .notADirectory(let path): return "\(path) is not a folder."
+        case .invalidMinimumSize: return "Minimum size must be positive whole megabytes representable in bytes."
         }
     }
 }
@@ -140,6 +142,10 @@ enum ControlScans {
     }
 
     static func largeFiles(path: String?, minSizeMB: Int?) async throws -> ControlScanReport {
+        let megabytes = minSizeMB ?? 100
+        guard let minBytes = ControlRequestValidation.largeFileMinimumBytes(megabytes: megabytes) else {
+            throw ControlScanError.invalidMinimumSize
+        }
         let defaultRoot = FileManager.default.homeDirectoryForCurrentUser
         let root = path.map(expand) ?? defaultRoot
         var isDirectory: ObjCBool = false
@@ -149,8 +155,6 @@ enum ControlScans {
         guard isDirectory.boolValue else {
             throw ControlScanError.notADirectory(root.path)
         }
-        let megabytes = max(1, minSizeMB ?? 100)
-        let minBytes = UInt64(megabytes) * 1_000_000
         var report = await Task.detached(priority: .userInitiated) {
             ControlScanReport.report(LargeFilesViewModel.scan(root: root, minBytes: minBytes))
         }.value

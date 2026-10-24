@@ -18,10 +18,13 @@ final class DurationParserTests: XCTestCase {
         XCTAssertEqual(try DurationParser.parse("1d"), .seconds(86_400))
     }
 
-    func testInvalidAndTooLongDurationsAreRejected() {
+    func testInvalidAndUnrepresentableDurationsAreRejected() {
         XCTAssertThrowsError(try DurationParser.parse(""))
         XCTAssertThrowsError(try DurationParser.parse("soon"))
-        XCTAssertThrowsError(try DurationParser.parse("31d"))
+        XCTAssertEqual(try DurationParser.parse("31d"), .seconds(31 * 86_400))
+        XCTAssertEqual(try DurationParser.parse("0.1s"), .seconds(0.1))
+        XCTAssertThrowsError(try DurationParser.parse("9223372036854775808s"))
+        XCTAssertThrowsError(try DurationParser.parse(String(repeating: "9", count: 400) + "d"))
         XCTAssertThrowsError(try DurationParser.parse("0s"))
     }
 
@@ -31,6 +34,11 @@ final class DurationParserTests: XCTestCase {
         XCTAssertEqual(DurationParser.format(90), "1m 30s")
         XCTAssertEqual(DurationParser.format(5_400), "1h 30m")
         XCTAssertEqual(DurationParser.format(86_400), "1d 0h")
+        XCTAssertEqual(DurationParser.format(0.01), "1s")
+        XCTAssertEqual(DurationParser.format(-1), "0s")
+        for value in [Double.nan, .infinity, -.infinity, Double(Int.max), -Double.greatestFiniteMagnitude] {
+            XCTAssertEqual(DurationParser.format(value), "Unknown")
+        }
     }
 
     func testErrorExitCodesMatchTheDocumentedContract() {

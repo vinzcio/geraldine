@@ -45,7 +45,9 @@ The built app ships a `geraldine` helper at `Contents/Helpers/geraldine`. Put it
 geraldine status
 ```
 
-It controls Keep Awake and Stay Active, reads settings and live metrics, drives the read-only scans, and supports `--json` on every command for agents. Destructive actions stay in the UI. While Geraldine is closed, `settings list` and `settings get` still read saved preferences.
+The installer creates a symlink to the bundled helper, so replacing the app at the same path keeps the CLI current. It preserves unrelated files and links.
+
+It controls Keep Awake and Stay Active, reads settings and cached metrics, drives the read-only scans, and supports `--json` on every command for agents, including help and version. Bare `geraldine` means `status`; `stats --watch <seconds>` uses the caller's interval. Requests have no implicit deadline; use `--timeout <seconds>` when needed. Destructive actions stay in the UI. While Geraldine is closed, `settings list` and `settings get` still read saved preferences. An explicit socket override stays isolated from the installed app's launch, URL, and preferences fallbacks.
 
 [`docs/agent-cli.md`](docs/agent-cli.md) documents the surface inventory, every command and result shape, the settings catalog, the JSON contract, exit codes, security, and the performance evidence.
 
