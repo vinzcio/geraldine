@@ -5,3 +5,8 @@ DerivedData/
 .DS_Store
 # Local signing identity for build.sh (git-ignored)
 build.local.sh
+
+# Retained generated verification evidence from completed sessions
+/outputs/01a12eee-astra-improvements/
+/outputs/01a12eee-astra-refactor/
+/outputs/01a13384-feature-improvements/
