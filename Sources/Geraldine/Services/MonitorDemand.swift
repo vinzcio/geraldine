@@ -5,8 +5,8 @@ import Combine
 ///
 /// Thermal and GPU reads are the two costly samples in `SystemMonitor`: thermal
 /// walks every HID/SMC sensor, and GPU discovery opens the IOAccelerator
-/// registry. Neither number can be seen when no menu-bar metric, popover, or
-/// window is showing it, so the monitor only pays for them on demand.
+/// registry. Thermal is only paid for while a surface shows it; `AppState`
+/// keeps GPU demand on so its chart history accumulates like CPU and memory.
 struct MonitorDemand: Equatable, Sendable {
     var showsThermal: Bool
     var showsGPU: Bool

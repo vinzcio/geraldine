@@ -144,8 +144,11 @@ final class AppState: ObservableObject {
         updateMonitorDemand()
     }
 
-    /// Thermal and GPU sampling follow what is actually on screen. The menu-bar
-    /// metric is cheap to check; the popover and the window show both widgets.
+    /// Thermal sampling follows what is actually on screen: the menu-bar metric
+    /// is cheap to check; the popover and the window show the widget. GPU reads
+    /// are a few registry properties off the main actor, so they always run while
+    /// the displays are awake — otherwise the GPU chart would only start filling
+    /// once a surface opened, unlike every other live history.
     private func observeMonitorDemand() {
         monitorDemandObservation = MonitorDemandObservation(layout: layout, monitor: monitor) { [weak self] in
             self?.updateMonitorDemand()
@@ -159,8 +162,7 @@ final class AppState: ObservableObject {
         monitor.setDemand(MonitorDemand(
             showsThermal: showsPopover || showsWindow
                 || (appShape.showsMenuBar && menuBarKind == .temperature),
-            showsGPU: showsPopover || showsWindow
-                || (appShape.showsMenuBar && menuBarKind == .gpu)
+            showsGPU: true
         ))
     }
 
