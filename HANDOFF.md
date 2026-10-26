@@ -7,10 +7,10 @@ Geraldine is a local-only macOS utility. It has no account system, backend, or c
 ## Source checkout after migration
 
 The main checkout is `skyward:/root/Coding Projects/Geraldine`, with a secondary
-Fasaj clone at the same path. The OneDrive folder is a pointer. Native builds
-and tests run on the Mac mini from `~/Library/Caches/geraldine-build-mirror`;
-connect from a VPS through `ssh mac-mini`. App state and the installed app
-remain on the Mac.
+Fasaj clone at the same path. The OneDrive folder is a pointer. The Mac mini
+(`ssh mac-mini`) is a test machine with no repository copies: native builds
+and tests run from a temporary copy that is deleted afterwards (see
+[`README.md`](README.md)). App state and the installed app remain on the Mac.
 
 The three completed-session output directories named in `.gitignore` retain
 all 168 original evidence files. They are generated verification records,
