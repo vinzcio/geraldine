@@ -33,10 +33,14 @@ is the secondary checkout at the same path for load-balanced work. The old
 OneDrive folder is a pointer. Geraldine itself and its preferences remain on
 the Mac mini.
 
-Run native builds and tests on the Mac mini from a mirror of that checkout at
-`~/Library/Caches/geraldine-build-mirror`. Both VPSes reach it through
-`ssh mac-mini`. Preserve the verifier's Git provenance and pinned SDK
-requirements when preparing the mirror.
+The Mac mini is a test machine and keeps no repository copies. Both VPSes
+reach it through `ssh mac-mini`. Run native builds and tests there from a
+temporary copy of a committed revision, preserving the verifier's Git
+provenance and pinned SDK requirements. After the run, delete that copy and
+`build.sh`'s staging (`~/Library/Caches/GeraldineBuild/src` and `build`).
+Over SSH the login keychain is locked, so Developer ID signing fails with
+`errSecInternalComponent`; run `build.sh` as a one-shot launchd job in
+`gui/$(id -u)` instead.
 
 ```bash
 swift test                 # run the test suite
