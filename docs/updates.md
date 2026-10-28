@@ -96,9 +96,11 @@ ssh skyward 'cd /var/www/geraldine.hemisthia.com/updates && cp -p appcast.previo
 
 **First install on each Mac.** A Mac running a build without the updater
 (0.1.0 and earlier, or any local build) needs one manual install of a published
-release: quit Geraldine, unzip the archive from the feed, replace
-`/Applications/Geraldine.app`, open it, and turn Keep Awake and Stay Active back
-on once. Every later release arrives on its own.
+release: record the current Keep Awake session and Stay Active state, quit
+Geraldine, unzip the archive from the feed, replace `/Applications/Geraldine.app`,
+and open it. Restore only the prior state, preserving any session end time and
+activity delay; a feature that was off must remain off. Verify the restored
+state in the running app. Every later release arrives on its own.
 
 ## Keys
 
