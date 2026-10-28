@@ -55,6 +55,12 @@ kept byte-for-byte for their historical proof; they are not app source.
 - `GeraldineSupportFolderName` (Info.plist) exists only for the isolated update-test lane: it moves the control socket and chart history out of `Application Support/Geraldine`. Production bundles never set it.
 - Never publish a rehearsal payload (the publisher refuses one), and never reuse an archive name with different bytes (the publisher refuses that too).
 
+### Shipping status — 2026-10-28
+
+- [PR #36](https://github.com/vinzcio/geraldine/pull/36) merged as `f24152602a7468607879ef2bab27f59af747d9e9`. `package-update.sh` built 0.2.0 (100) from that commit with the Developer ID identity; notarization `f2f0b3f6-9511-4db4-bacb-e00d1bf0b752` was Accepted and stapled, and Gatekeeper reports Notarized Developer ID. Archive `Geraldine-0.2.0-100.zip`: 6,231,158 bytes, SHA-256 `797d6f32b687d57ea0f847ef79e986ebcc17e8de22190c080a89d5e668ec9469`. The payload, with its signed `appcast.xml`, is at `~/geraldine-releases/0.2.0-build100` on the Mac mini.
+- Installed on the Mac mini at 05:33Z over 0.1.0 (`1e741c768a55`) with the bundle root kept in place: CDHash `f8dece58345e24003bed4dbed9ff3d529cd39cbf` matches the release, deep strict signature and stapler checks pass. Accessibility, Full Disk Access, launch at login, and menu-bar-only carried over. Keep Awake was turned back on indefinitely (both assertions held by the new process) and Stay Active came back on with its one-minute delay.
+- **Not yet published.** `geraldine.hemisthia.com` has no DNS record. Codex Personal (`gpt-6-astra`) was asked to add it and stopped without changes: no Cloudflare connector, API credentials, or browser access in a headless session. Until the record exists, the installed app's checks fail and Settings ▸ Updates says so. Then: `deploy/updates/setup-update-host.sh --apply`, then `scripts/release/publish-update.sh --payload ~/geraldine-releases/0.2.0-build100`. The Mac mini already runs build 100, so publishing changes nothing on it; it updates itself from the next release on.
+
 ## Current state
 
 The Plan 001–019 queue is closed; [`plans/README.md`](plans/README.md) remains the historical status record. The source-only completion gate is documented in [`README.md`](README.md).
