@@ -15,8 +15,16 @@ set -euo pipefail
 
 APP_NAME="Geraldine"
 BUNDLE_ID="com.vincent.geraldine"
-VERSION="0.1.0"
+# Marketing version people see. Updates compare the build number below.
+VERSION="0.2.0"
 SRC_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Self-updates. Only a release-channel build names a feed and its public key;
+# every other build (the default) never updates itself. Production releases are
+# built by scripts/release/package-update.sh, never by hand.
+UPDATE_CHANNEL="${GERALDINE_UPDATE_CHANNEL:-none}"
+PRODUCTION_FEED_URL="https://geraldine.hemisthia.com/updates/appcast.xml"
+PRODUCTION_SPARKLE_PUBLIC_KEY="mU+iSnhLnPfYeOkQ5/JVXvLNf3C2K0VFc/q4hlR4uz0="
 ROOT="${GERALDINE_BUILD_ROOT:-$HOME/Library/Caches/GeraldineBuild}"
 STAGE="$ROOT/src"
 BUILD="$ROOT/build"
@@ -60,6 +68,49 @@ else
 fi
 
 echo "▸ Source revision: $GIT_COMMIT_SHORT$GIT_DIRTY_SUFFIX"
+
+# CFBundleVersion: commits reachable from HEAD, which only grows along main,
+# the one branch releases come from. A shallow or missing history cannot count
+# commits, so it gets 0 unless GERALDINE_BUILD_NUMBER says otherwise.
+BUILD_NUMBER="${GERALDINE_BUILD_NUMBER:-}"
+if [ -z "$BUILD_NUMBER" ]; then
+  BUILD_NUMBER=0
+  if [ "$GIT_COMMIT" != "unknown" ] \
+    && [ "$(/usr/bin/git -C "$SRC_DIR" rev-parse --is-shallow-repository)" = "false" ]; then
+    BUILD_NUMBER="$(/usr/bin/git -C "$SRC_DIR" rev-list --count HEAD)"
+  fi
+fi
+case "$BUILD_NUMBER" in
+  ''|*[!0-9]*) echo "✗ The build number must be a whole number, got: $BUILD_NUMBER" >&2; exit 1 ;;
+esac
+
+case "$UPDATE_CHANNEL" in
+  none)
+    UPDATE_KEYS=""
+    ;;
+  production)
+    if [ "$CONFIG" != "release" ]; then
+      echo "✗ The production update channel is for release builds only" >&2
+      exit 1
+    fi
+    case "$PRODUCTION_SPARKLE_PUBLIC_KEY" in
+      __*) echo "✗ build.sh has no production Sparkle public key yet" >&2; exit 1 ;;
+    esac
+    UPDATE_KEYS="<key>GeraldineUpdateChannel</key><string>production</string>
+    <key>SUFeedURL</key><string>$PRODUCTION_FEED_URL</string>
+    <key>SUPublicEDKey</key><string>$PRODUCTION_SPARKLE_PUBLIC_KEY</string>
+    <key>SURequireSignedFeed</key><true/>
+    <key>SUVerifyUpdateBeforeExtraction</key><true/>
+    <key>SUEnableAutomaticChecks</key><true/>
+    <key>SUAutomaticallyUpdate</key><true/>
+    <key>SUScheduledCheckInterval</key><integer>3600</integer>"
+    ;;
+  *)
+    echo "✗ Unknown GERALDINE_UPDATE_CHANNEL: $UPDATE_CHANNEL (use none or production)" >&2
+    exit 1
+    ;;
+esac
+echo "▸ Version $VERSION ($BUILD_NUMBER), update channel: $UPDATE_CHANNEL"
 
 echo "▸ Staging sources → $STAGE"
 mkdir -p "$STAGE"
@@ -116,6 +167,20 @@ sanitize_app_executable_rpaths() {
 sanitize_app_executable_rpaths "$CONTENTS/MacOS/$APP_NAME"
 sanitize_app_executable_rpaths "$CONTENTS/Helpers/geraldine"
 
+# Sparkle ships as a binary framework; the app finds it through
+# @executable_path/../Frameworks. ditto keeps its version symlinks intact.
+SPARKLE_FRAMEWORK="$BUILD/$CONFIG/Sparkle.framework"
+if [ ! -d "$SPARKLE_FRAMEWORK" ]; then
+  SPARKLE_FRAMEWORK="$(/usr/bin/find "$BUILD/artifacts" -path '*/Sparkle.xcframework/macos-*/Sparkle.framework' \
+    -type d -prune -print -quit 2>/dev/null || true)"
+fi
+if [ -z "$SPARKLE_FRAMEWORK" ] || [ ! -d "$SPARKLE_FRAMEWORK" ]; then
+  echo "✗ Sparkle.framework was not found in the SwiftPM build at $BUILD" >&2
+  exit 1
+fi
+mkdir -p "$CONTENTS/Frameworks"
+/usr/bin/ditto "$SPARKLE_FRAMEWORK" "$CONTENTS/Frameworks/Sparkle.framework"
+
 if [ -f "$SRC_DIR/Resources/AppIcon.icns" ]; then
   cp "$SRC_DIR/Resources/AppIcon.icns" "$CONTENTS/Resources/AppIcon.icns"
   ICON_KEY="<key>CFBundleIconFile</key><string>AppIcon</string>"
@@ -155,7 +220,8 @@ cat > "$CONTENTS/Info.plist" <<PLIST
         </dict>
     </array>
     <key>CFBundleShortVersionString</key><string>$VERSION</string>
-    <key>CFBundleVersion</key><string>$VERSION</string>
+    <key>CFBundleVersion</key><string>$BUILD_NUMBER</string>
+    $UPDATE_KEYS
     <key>GeraldineBuildCommit</key><string>$GIT_COMMIT</string>
     <key>GeraldineBuildCommitShort</key><string>$GIT_COMMIT_SHORT</string>
     <key>GeraldineBuildDirty</key>$GIT_DIRTY_PLIST
@@ -187,10 +253,45 @@ PLIST
 CODESIGN_ID="${CODESIGN_ID:--}"
 NOTARY_PROFILE="${NOTARY_PROFILE:-}"
 ENT="$SRC_DIR/Geraldine.entitlements"
+if [ "$UPDATE_CHANNEL" != "none" ] && [ "$CODESIGN_ID" = "-" ]; then
+  # Sparkle only installs an update signed by the same team as the running
+  # app, and an ad-hoc signature would also reset privacy grants.
+  echo "✗ The $UPDATE_CHANNEL update channel needs a Developer ID identity in CODESIGN_ID" >&2
+  exit 1
+fi
+
+# Inside out, as Sparkle documents for Developer ID: each helper, then the
+# framework. The app's own signature then seals the finished framework.
+sign_sparkle_framework() {
+  local framework="$1/Contents/Frameworks/Sparkle.framework"
+  local current="$framework/Versions/Current"
+  local -a sign_args=(--force --options runtime --sign "$CODESIGN_ID")
+
+  echo "▸ Signing Sparkle.framework as: $CODESIGN_ID"
+  codesign "${sign_args[@]}" "$current/XPCServices/Installer.xpc"
+  codesign "${sign_args[@]}" --preserve-metadata=entitlements "$current/XPCServices/Downloader.xpc"
+  codesign "${sign_args[@]}" "$current/Autoupdate"
+  codesign "${sign_args[@]}" "$current/Updater.app"
+  codesign "${sign_args[@]}" "$framework"
+}
 sign_and_verify() {
   local app="$1"
+  local adhoc_entitlements="$ROOT/Geraldine.adhoc.entitlements"
   local -a sign_args=(--force --options runtime)
-  if [ -f "$ENT" ]; then
+  if [ "$CODESIGN_ID" = "-" ]; then
+    # The hardened runtime only loads frameworks signed by the app's own team,
+    # and an ad-hoc signature has no team. A local ad-hoc build relaxes that
+    # one check so it can load its own embedded Sparkle.framework. Developer
+    # ID builds keep full library validation and the checked-in entitlements.
+    if [ -f "$ENT" ]; then
+      cp "$ENT" "$adhoc_entitlements"
+    else
+      /usr/bin/plutil -create xml1 "$adhoc_entitlements"
+    fi
+    /usr/libexec/PlistBuddy -c 'Add :com.apple.security.cs.disable-library-validation bool true' \
+      "$adhoc_entitlements" >/dev/null
+    sign_args+=(--entitlements "$adhoc_entitlements")
+  elif [ -f "$ENT" ]; then
     sign_args+=(--entitlements "$ENT")
   fi
 
@@ -201,7 +302,7 @@ sign_and_verify() {
   echo "▸ Signing $app as: $CODESIGN_ID"
   /usr/bin/xattr -cr "$app" 2>/dev/null || true
   codesign "${sign_args[@]}" --identifier "$BUNDLE_ID" --sign "$CODESIGN_ID" "$app"
-  codesign --verify --verbose=1 "$app" || { echo "✗ signature verification failed"; exit 1; }
+  codesign --verify --deep --strict --verbose=1 "$app" || { echo "✗ signature verification failed"; exit 1; }
 }
 
 verify_bundle_provenance() {
@@ -340,6 +441,7 @@ launch_app_bundle() {
 echo "▸ Signing helper as: $CODESIGN_ID"
 codesign --force --options runtime --identifier "$BUNDLE_ID.helper" \
   --sign "$CODESIGN_ID" "$CONTENTS/Helpers/geraldine"
+sign_sparkle_framework "$APP"
 
 sign_and_verify "$APP"
 verify_bundle_provenance "$APP"

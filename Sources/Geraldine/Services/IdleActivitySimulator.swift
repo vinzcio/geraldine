@@ -72,7 +72,17 @@ final class IdleActivitySimulationService {
     var hasScheduledTimer: Bool { timer != nil }
     var nextFireDate: Date? { timer?.fireDate }
 
-    func start(idleDelay newIdleDelay: TimeInterval? = nil) {
+    /// The system-uptime stamp of the latest pulse while pulsing, so an update
+    /// relaunch can continue the same idle stretch. Nil while waiting.
+    var pulsingSinceUptime: TimeInterval? { isPulsing ? lastPulseUptime : nil }
+
+    /// `resumingPulseAt` continues pulsing straight away when the idle clock
+    /// shows nothing but that earlier pulse since then: the user is still away,
+    /// so the idle delay already elapsed before the relaunch. Any real input in
+    /// between falls back to the ordinary wait.
+    func start(idleDelay newIdleDelay: TimeInterval? = nil,
+               resumingPulseAt previousPulseUptime: TimeInterval? = nil,
+               lastUserInput previousUserInput: Date? = nil) {
         if let newIdleDelay {
             idleDelay = max(1, newIdleDelay)
         }
@@ -93,6 +103,15 @@ final class IdleActivitySimulationService {
         lastPulse = nil
         lastPulseUptime = nil
         isPulsing = false
+
+        if let previousPulseUptime {
+            let sincePreviousPulse = uptime() - previousPulseUptime
+            if sincePreviousPulse >= 0, currentIdle + Self.realInputTolerance >= sincePreviousPulse {
+                if let previousUserInput { lastUserInput = previousUserInput }
+                beginPulsing()
+                return
+            }
+        }
 
         if currentIdle >= idleDelay {
             beginPulsing()

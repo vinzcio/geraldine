@@ -168,6 +168,7 @@ final class MenuBarController: NSObject, NSWindowDelegate {
                 .environmentObject(state.keepAwake)
                 .environmentObject(state.calendar)
                 .environmentObject(state.aiUsage)
+                .environmentObject(state.updates)
         )
         return panel
     }()

@@ -16,11 +16,15 @@ struct GeraldineApp: App {
                 .environmentObject(state.powerTools)
                 .environmentObject(state.calendar)
                 .environmentObject(state.aiUsage)
+                .environmentObject(state.updates)
                 .frame(minWidth: 920, minHeight: 620)
         }
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentMinSize)
         .commands {
+            CommandGroup(after: .appInfo) {
+                CheckForUpdatesCommand(updates: state.updates)
+            }
             CommandGroup(replacing: .newItem) {}   // no "New Window"
             CommandGroup(after: .newItem) {
                 Button("Search Pages and Actions…") {

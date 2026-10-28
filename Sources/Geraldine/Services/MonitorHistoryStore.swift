@@ -153,7 +153,7 @@ struct MonitorHistoryStore: MonitorHistoryStoring {
         let base = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? fileManager.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
         return base
-            .appendingPathComponent("Geraldine", isDirectory: true)
+            .appendingPathComponent(SupportDirectory.folderName, isDirectory: true)
             .appendingPathComponent("monitor-history-v1.json", isDirectory: false)
     }
 }

@@ -132,6 +132,67 @@ final class FeatureSurfaceTests: XCTestCase {
         try capture(surface.host, to: directory.appendingPathComponent("process-detail.png"))
     }
 
+    func testAppUpdateCardStatesAndNotice() throws {
+        let directory = try output
+        let now = Date()
+        let release = AppUpdateRelease(version: "0.2.1", build: "104")
+        func status(_ change: (inout AppUpdatePresentation.Input) -> Void) -> AppUpdateStatusText {
+            var input = AppUpdatePresentation.Input(
+                isEnabled: true, startupError: nil, activity: .idle, lastCheck: now.addingTimeInterval(-600),
+                lastError: nil, automaticallyChecks: true, automaticallyInstalls: true, blockers: [], outcome: nil
+            )
+            change(&input)
+            return AppUpdatePresentation.status(input, now: now)
+        }
+        let cards: [(name: String, status: AppUpdateStatusText, action: AppUpdateCardAction, enabled: Bool)] = [
+            ("up-to-date", status { _ in }, .checkNow(enabled: true), true),
+            ("ready", status { $0.activity = .ready(release); $0.blockers = [.windowOpen] }, .restart, true),
+            ("available", status { $0.activity = .available(release); $0.automaticallyInstalls = false },
+             .viewUpdate(enabled: true), true),
+            ("downloading", status { $0.activity = .downloading(release) }, .progress, true),
+            ("error", status { $0.lastError = "The network connection was lost." }, .checkNow(enabled: true), true),
+            ("updated", status { $0.outcome = .updated(release, at: now) }, .checkNow(enabled: true), true),
+            ("off", status { $0.isEnabled = false }, .none, false)
+        ]
+        for scheme in [ColorScheme.light, .dark] {
+            for card in cards {
+                // The same section card Settings draws around it.
+                let view = VStack(alignment: .leading, spacing: Theme.Spacing.md) {
+                    SectionHeader("Updates", subtitle: card.enabled
+                        ? "Geraldine checks geraldine.hemisthia.com for new versions and verifies each one before installing it."
+                        : "Published Geraldine releases update themselves.")
+                    AppUpdateStatusCard(status: card.status, versionText: "0.2.0 (101)",
+                                        updatesEnabled: card.enabled, action: card.action) {}
+                    if card.enabled {
+                        AppUpdatePreferences(checksAutomatically: .constant(true),
+                                             installsAutomatically: .constant(card.name != "available"))
+                    }
+                }
+                .card(padding: Theme.Spacing.lg, tier: .raised, cornerRadius: Theme.Radius.raised)
+                .padding(20)
+                .frame(width: 680, alignment: .topLeading)
+                .environment(\.colorScheme, scheme)
+                let surface = mount(view, size: CGSize(width: 680, height: card.enabled ? 360 : 240))
+                defer { surface.window.close() }
+                let name = "updates-\(card.name)-\(scheme == .dark ? "dark" : "light").png"
+                try capture(surface.host, to: directory.appendingPathComponent(name))
+            }
+        }
+
+        var restarts = 0
+        var reviews = 0
+        let notices = mount(VStack(spacing: 8) {
+            AppUpdateNoticeButton(release: release, isReady: true) { restarts += 1 }
+            AppUpdateNoticeButton(release: release, isReady: false) { reviews += 1 }
+        }.padding(12).frame(width: 280), size: CGSize(width: 280, height: 132))
+        defer { notices.window.close() }
+        try capture(notices.host, to: directory.appendingPathComponent("updates-notices.png"))
+        click(notices, x: 140, y: 36)
+        XCTAssertEqual(restarts, 1, "The ready notice restarts to update")
+        XCTAssertEqual(reviews, 0)
+        XCTAssertFalse(notices.window.isKeyWindow)
+    }
+
     private func mount(_ view: some View, size: CGSize) -> (window: NSWindow, host: NSHostingView<AnyView>) {
         _ = NSApplication.shared
         NSApp.setActivationPolicy(.accessory)

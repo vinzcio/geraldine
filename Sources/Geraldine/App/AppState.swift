@@ -76,6 +76,7 @@ final class AppState: ObservableObject {
     let powerTools = PowerToolsController()
     let calendar = CalendarSettingsStore()
     let aiUsage = AIUsageMonitor()
+    let updates = AppUpdateController()
     let hardware = HardwareInfo.current
 
     /// Plain storage, not @Published: both only ever change together with
@@ -224,6 +225,35 @@ final class AppState: ObservableObject {
     func refreshPermissions() {
         refreshFullDiskAccess()
         refreshAccessibility()
+    }
+
+    // MARK: - Updates
+
+    /// Continues the Keep Awake session an update restart interrupted. Runs
+    /// once, before anything else starts.
+    func resumeAfterUpdateRelaunch() {
+        guard let handoff = updates.consumeRelaunchHandoff(),
+              let session = handoff.keepAwake else { return }
+        keepAwake.resume(session)
+    }
+
+    func startUpdates() {
+        let changes = Publishers.Merge3(
+            $mainWindowPresented.map { _ in () },
+            $menuBarPopoverVisible.map { _ in () },
+            keepAwake.$isPaused.map { _ in () }
+        )
+        updates.start(
+            installContext: { [unowned self] in
+                AppUpdateInstallContext(
+                    mainWindowPresented: mainWindowPresented,
+                    menuBarPopoverVisible: menuBarPopoverVisible,
+                    keepAwakePaused: keepAwake.isActive && keepAwake.isPaused
+                )
+            },
+            keepAwakeHandoff: { [unowned self] in keepAwake.relaunchHandoff() },
+            contextChanges: changes.eraseToAnyPublisher()
+        )
     }
 
     func setMenuBarPopoverVisible(_ isVisible: Bool) {

@@ -82,6 +82,8 @@ final class ActivityExplorationTests: XCTestCase {
         XCTAssertEqual(GeraldineCommand.matching("find large").first?.action, .module(.largeFiles))
         XCTAssertEqual(GeraldineCommand.matching("keep awake").first?.action, .module(.keepAwake))
         XCTAssertEqual(GeraldineCommand.matching("refresh codex").first?.action, .refreshCodingUsage)
+        XCTAssertEqual(GeraldineCommand.matching("check for geraldine updates").first?.action, .checkForUpdates)
+        XCTAssertEqual(GeraldineCommand.matching("upgrade geraldine").first?.action, .checkForUpdates)
         XCTAssertEqual(GeraldineCommand.matching("  CODING usage ").first?.action, .module(.codingUsage))
         XCTAssertTrue(GeraldineCommand.matching("not-a-real-command").isEmpty)
         let modules = GeraldineCommand.all.compactMap { command -> Module? in

@@ -1,6 +1,6 @@
 # Geraldine
 
-Geraldine is a native macOS 14+ utility for understanding and caring for your Mac. It is local-only freeware: there are no accounts, analytics, cloud services, or cross-device sync. Preferences and other local state live in `UserDefaults` and Application Support on this Mac.
+Geraldine is a native macOS 14+ utility for understanding and caring for your Mac. It is local-only freeware: there are no accounts, analytics, cloud services, or cross-device sync. Preferences and other local state live in `UserDefaults` and Application Support on this Mac. Published builds update themselves from `geraldine.hemisthia.com`; see [Updates](#updates).
 
 ## What it includes
 
@@ -26,7 +26,7 @@ Operations that can remove files or change system state show their scope and req
 
 ## Build and test
 
-Requires macOS 14 or newer and Xcode 15 or newer. Geraldine is a Swift Package with no third-party dependencies.
+Requires macOS 14 or newer and Xcode 15 or newer. Geraldine is a Swift Package whose one third-party dependency is [Sparkle](https://sparkle-project.org) 2.10.0, pinned exactly, for self-updates.
 
 The main checkout is `skyward:/root/Coding Projects/Geraldine`; Fasaj's clone
 is the secondary checkout at the same path for load-balanced work. The old
@@ -50,6 +50,12 @@ swift test                 # run the test suite
 
 `build.sh` signs ad-hoc by default. To keep Full Disk Access and other privacy grants across rebuilds, sign with your own Developer ID: set `CODESIGN_ID` (and `NOTARY_PROFILE` for notarization) in the environment or in a git-ignored `build.local.sh` beside the script.
 
+## Updates
+
+Published releases check `https://geraldine.hemisthia.com/updates/appcast.xml` at launch, every hour, and on **Check for Updates** (Geraldine menu, ⌘K, or Settings ▸ Updates). Each feed and archive must carry a valid signature from Geraldine's own update key, and the new app must come from the same Developer ID team. By default an update downloads in the background and Geraldine restarts to install it only while its window and menu bar panel are closed; a running Keep Awake session, with Stay Active, continues after the restart with its original end time. Settings ▸ Updates can turn off automatic installs or checks.
+
+`./build.sh` builds name no feed and never update themselves. `CFBundleVersion` is the commit count of `HEAD`; `VERSION` in `build.sh` is the marketing version. Releases are packaged with `scripts/release/package-update.sh` and published with `scripts/release/publish-update.sh`. [`docs/updates.md`](docs/updates.md) has the client contract, the release runbook, the key and host setup, and the isolated end-to-end update test.
+
 ## Terminal and agents
 
 The built app ships a `geraldine` helper at `Contents/Helpers/geraldine`. Put it on `PATH` once:
@@ -67,7 +73,7 @@ It controls Keep Awake and Stay Active, reads settings and cached metrics, drive
 
 ## Privacy and permissions
 
-Some features request macOS permissions only when needed, including Accessibility, Screen Recording, Location for the connected Wi-Fi name, and access to user-selected folders. A coding-usage tile runs that assistant's installed CLI with the sign-in already on this Mac, and the CLI asks its provider for remaining usage; Geraldine sends no usage requests of its own and never reads the Keychain.
+Some features request macOS permissions only when needed, including Accessibility, Screen Recording, Location for the connected Wi-Fi name, and access to user-selected folders. A coding-usage tile runs that assistant's installed CLI with the sign-in already on this Mac, and the CLI asks its provider for remaining usage; Geraldine sends no usage requests of its own and never reads the Keychain. The update check is the only request Geraldine makes on its own: one GET of the signed feed, plus the archive when an update exists, with Sparkle's User-Agent and no system profile or identifiers.
 
 ## License
 
@@ -75,7 +81,7 @@ Geraldine is available under the [MIT License](LICENSE).
 
 ## Architecture
 
-The app is a SwiftUI executable with feature surfaces under `Sources/Geraldine/Features`, AppKit integration for app and menu-bar behavior, and an `AppState` composition root that owns the monitoring and utility services. Shared visual behavior lives in the semantic `Theme`, `Components`, and `Motion` layers. The package also includes the small C `CThermal` target. `Package.swift` declares no third-party packages and links only Apple system frameworks.
+The app is a SwiftUI executable with feature surfaces under `Sources/Geraldine/Features`, AppKit integration for app and menu-bar behavior, and an `AppState` composition root that owns the monitoring and utility services. Shared visual behavior lives in the semantic `Theme`, `Components`, and `Motion` layers. The package also includes the small C `CThermal` target. `Package.swift` declares one third-party package, Sparkle 2.10.0 (pinned exactly), which `build.sh` embeds as `Contents/Frameworks/Sparkle.framework`; everything else links only Apple system frameworks.
 
 ## Coding usage
 

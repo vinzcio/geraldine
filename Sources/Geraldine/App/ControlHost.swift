@@ -46,7 +46,11 @@ final class ControlHost {
     var pendingUsageRefreshCount: Int { usageWaiters.count }
 
     var socketPath: String {
-        server?.socketURL.path ?? ControlEndpoint.socketURL().path
+        server?.socketURL.path ?? Self.socketURL.path
+    }
+
+    private static var socketURL: URL {
+        ControlEndpoint.socketURL(supportFolderName: SupportDirectory.folderName)
     }
 
     var isRunning: Bool { server?.isRunning == true }
@@ -55,7 +59,7 @@ final class ControlHost {
 
     func start() {
         guard server == nil else { return }
-        let server = ControlServer { [weak self] request in
+        let server = ControlServer(socketURL: Self.socketURL) { [weak self] request in
             guard let self else {
                 return ControlResponse.localFailure(
                     command: request.command,
