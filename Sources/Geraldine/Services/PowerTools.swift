@@ -39,6 +39,95 @@ enum DockActiveClickInterceptionPolicy {
     }
 }
 
+/// What a click could trigger under the Dock settings, decided from the event
+/// alone. Every other click passes through without an accessibility query.
+enum DockClickIntent: Equatable {
+    case middleClick(DockMiddleClickBehavior)
+    case shiftClickNewWindow
+    case activeClick(DockActiveClickBehavior)
+
+    static func intent(
+        type: CGEventType,
+        buttonNumber: Int64,
+        flags: CGEventFlags,
+        middleClickBehavior: DockMiddleClickBehavior,
+        shiftClickNewWindow: Bool,
+        activeClickBehavior: DockActiveClickBehavior
+    ) -> DockClickIntent? {
+        switch type {
+        case .otherMouseDown:
+            guard buttonNumber == 2, middleClickBehavior != .system else { return nil }
+            return .middleClick(middleClickBehavior)
+        case .leftMouseDown:
+            if flags.contains(.maskShift), shiftClickNewWindow { return .shiftClickNewWindow }
+            guard activeClickBehavior != .system else { return nil }
+            return .activeClick(activeClickBehavior)
+        default:
+            return nil
+        }
+    }
+}
+
+/// The strip along the Dock's screen edge that can hold a Dock item, on
+/// whichever display a click lands. Clicks outside it never ask the Dock what
+/// they hit. Points and bounds use Quartz coordinates (y grows downward).
+struct DockEdgeBand: Equatable {
+    enum Edge: String {
+        case bottom, left, right
+    }
+
+    /// Room beyond the largest tile for the Dock's padding and indicators.
+    static let margin: CGFloat = 40
+    static let defaultTileSize: CGFloat = 64
+    static let defaultMagnifiedSize: CGFloat = 128
+
+    let edge: Edge
+    let depth: CGFloat
+
+    init(edge: Edge, depth: CGFloat) {
+        self.edge = edge
+        self.depth = depth
+    }
+
+    init(orientation: String?, tileSize: Double?, magnifies: Bool, magnifiedSize: Double?) {
+        let tile = Self.size(tileSize) ?? Self.defaultTileSize
+        let magnified = magnifies ? (Self.size(magnifiedSize) ?? Self.defaultMagnifiedSize) : 0
+        self.init(edge: orientation.flatMap(Edge.init(rawValue:)) ?? .bottom,
+                  depth: max(tile, magnified) + Self.margin)
+    }
+
+    /// Reads the Dock's own preferences (`com.apple.dock`).
+    init(dockPreferences defaults: UserDefaults?) {
+        self.init(
+            orientation: defaults?.string(forKey: "orientation"),
+            tileSize: defaults?.object(forKey: "tilesize") as? Double,
+            magnifies: defaults?.bool(forKey: "magnification") ?? false,
+            magnifiedSize: defaults?.object(forKey: "largesize") as? Double
+        )
+    }
+
+    func contains(_ point: CGPoint, displayBounds: CGRect) -> Bool {
+        guard displayBounds.contains(point) else { return false }
+        switch edge {
+        case .bottom: return point.y >= displayBounds.maxY - depth
+        case .left: return point.x < displayBounds.minX + depth
+        case .right: return point.x >= displayBounds.maxX - depth
+        }
+    }
+
+    static func displayBounds(containing point: CGPoint) -> CGRect? {
+        var display: CGDirectDisplayID = 0
+        var count: UInt32 = 0
+        guard CGGetDisplaysWithPoint(point, 1, &display, &count) == .success, count > 0 else { return nil }
+        return CGDisplayBounds(display)
+    }
+
+    private static func size(_ value: Double?) -> CGFloat? {
+        guard let value, value.isFinite, value > 0 else { return nil }
+        return min(max(CGFloat(value), 16), 256)
+    }
+}
+
 enum DockMiddleClickBehavior: String, CaseIterable, Identifiable {
     case system
     case hideApp
@@ -448,7 +537,7 @@ private enum MissionControlWindowServer {
         in: UnsafeMutableRawPointer(bitPattern: -2)
     )
 
-    static func window(at screenPoint: CGPoint) -> AXUIElement? {
+    static func window(at screenPoint: CGPoint, messagingTimeout: Float? = nil) -> AXUIElement? {
         guard let mainConnectionID, let getWindowTransform, let getWindowID else { return nil }
         let connection = mainConnectionID()
         var candidates: [MissionControlWindowCandidate] = []
@@ -491,7 +580,7 @@ private enum MissionControlWindowServer {
             return nil
         }
 
-        return AXTools.windows(of: app).first { window in
+        return AXTools.windows(of: app, messagingTimeout: messagingTimeout).first { window in
             var windowID: CGWindowID = 0
             return getWindowID(window, &windowID) == .success && windowID == candidate.windowID
         }
@@ -514,26 +603,44 @@ final class MissionControlCloseService {
     func stop() { tap.stop() }
 
     private func handle(event: CGEvent) -> Bool {
+        let timeout = AXTools.eventTapMessagingTimeout
         guard UserDefaults.standard.object(forKey: PowerToolKeys.missionControlTwoFingerClose) as? Bool ?? true,
-              AXTools.missionControlGroup() != nil,
-              let window = MissionControlWindowServer.window(at: event.location) else {
+              AXTools.missionControlGroup(messagingTimeout: timeout) != nil,
+              let window = MissionControlWindowServer.window(at: event.location, messagingTimeout: timeout) else {
             return false
         }
 
-        return AXTools.close(window: window)
+        // Closing waits on the window's app (a save sheet, a busy process), so
+        // it runs after the tap answers. A right-click means nothing else in
+        // Mission Control, so it is swallowed once a window is targeted.
+        AXTools.unbounded(window)
+        DispatchQueue.main.async {
+            AXTools.close(window: window)
+        }
+        return true
     }
 }
 
 /// Shared CGEvent-tap plumbing for the Power Tools services: creates the session
-/// tap, keeps its source on the main run loop, re-enables the tap when macOS
-/// disables it after a timeout, and tears everything down on `stop()`. The
-/// handler returns true to swallow the event, false to pass it through.
+/// tap, re-enables it when macOS disables it after a timeout, and tears it down
+/// on `stop()`. The handler returns true to swallow the event, false to pass it
+/// through.
+///
+/// macOS holds every event a filtering tap matches until the callback returns,
+/// so filtering taps deliver on `EventTapThread`, never the main run loop: a busy
+/// main thread must not delay, reorder, or drop clicks and keys across the Mac.
+/// Their handlers run off the main thread. They must use thread-safe state, rule
+/// events out without messaging other processes where they can, bound any
+/// accessibility query with `AXTools.eventTapMessagingTimeout`, and hand the
+/// resulting work to the main queue asynchronously. Listen-only taps cannot hold
+/// input and keep delivering on the main run loop.
 final class EventTapService {
-    private var eventTap: CFMachPort?
-    private var runLoopSource: CFRunLoopSource?
     private let mask: CGEventMask
     private let options: CGEventTapOptions
     private let handler: (CGEventType, CGEvent) -> Bool
+    private let lock = NSLock()
+    private var eventTap: CFMachPort?
+    private var runLoopSource: CFRunLoopSource?
 
     init(mask: CGEventMask, options: CGEventTapOptions = .defaultTap,
          handler: @escaping (CGEventType, CGEvent) -> Bool) {
@@ -542,8 +649,22 @@ final class EventTapService {
         self.handler = handler
     }
 
+    deinit {
+        stop()
+    }
+
+    static func deliversOnMainRunLoop(_ options: CGEventTapOptions) -> Bool {
+        options == .listenOnly
+    }
+
+    private var deliveryRunLoop: CFRunLoop {
+        Self.deliversOnMainRunLoop(options) ? CFRunLoopGetMain() : EventTapThread.shared.runLoop
+    }
+
     @discardableResult
     func start() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
         guard eventTap == nil else { return true }
         guard let tap = CGEvent.tapCreate(tap: .cgSessionEventTap,
                                           place: .headInsertEventTap,
@@ -553,27 +674,51 @@ final class EventTapService {
                                           userInfo: Unmanaged.passUnretained(self).toOpaque()) else {
             return false
         }
-        eventTap = tap
         guard let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0) else {
             CFMachPortInvalidate(tap)
-            eventTap = nil
             return false
         }
+        eventTap = tap
         runLoopSource = source
-        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+        let runLoop = deliveryRunLoop
+        CFRunLoopAddSource(runLoop, source, .commonModes)
+        CFRunLoopWakeUp(runLoop)
         CGEvent.tapEnable(tap: tap, enable: true)
         return true
     }
 
+    /// Returns once no callback for this tap is running or can still arrive, so
+    /// a service may reset its handler state afterwards.
     func stop() {
-        if let eventTap {
-            CFMachPortInvalidate(eventTap)
-        }
-        if let runLoopSource {
-            CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
-        }
+        lock.lock()
+        let tap = eventTap
+        let source = runLoopSource
         eventTap = nil
         runLoopSource = nil
+        lock.unlock()
+        guard let tap else { return }
+
+        let runLoop = deliveryRunLoop
+        let teardown = {
+            CGEvent.tapEnable(tap: tap, enable: false)
+            if let source {
+                CFRunLoopRemoveSource(runLoop, source, .commonModes)
+            }
+            CFMachPortInvalidate(tap)
+        }
+        if Self.deliversOnMainRunLoop(options) {
+            teardown()
+        } else {
+            EventTapThread.shared.sync(teardown)
+        }
+    }
+
+    private func reenable() {
+        lock.lock()
+        defer { lock.unlock() }
+        if let eventTap {
+            CGEvent.tapEnable(tap: eventTap, enable: true)
+        }
     }
 
     private static let callback: CGEventTapCallBack = { _, type, event, refcon in
@@ -581,9 +726,7 @@ final class EventTapService {
         let service = Unmanaged<EventTapService>.fromOpaque(refcon).takeUnretainedValue()
 
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            if let tap = service.eventTap {
-                CGEvent.tapEnable(tap: tap, enable: true)
-            }
+            service.reenable()
             return Unmanaged.passUnretained(event)
         }
 
@@ -591,7 +734,54 @@ final class EventTapService {
     }
 }
 
+/// The run loop that delivers filtering event taps. It never waits on the main
+/// thread, and user-interactive QoS keeps it scheduled while the app is busy.
+final class EventTapThread: Thread {
+    static let shared: EventTapThread = {
+        let thread = EventTapThread()
+        thread.name = "com.vincent.geraldine.event-taps"
+        thread.qualityOfService = .userInteractive
+        thread.start()
+        thread.started.wait()
+        return thread
+    }()
+
+    private let started = DispatchSemaphore(value: 0)
+    private var startedRunLoop: CFRunLoop?
+
+    /// Set by `main()` before `shared` returns.
+    var runLoop: CFRunLoop { startedRunLoop! }
+
+    override func main() {
+        startedRunLoop = CFRunLoopGetCurrent()
+        // A run loop without sources returns at once; the port keeps it running.
+        RunLoop.current.add(NSMachPort(), forMode: .default)
+        started.signal()
+        while true {
+            _ = RunLoop.current.run(mode: .default, before: .distantFuture)
+        }
+    }
+
+    /// Runs `body` on this thread and waits for it. Blocks run between tap
+    /// callbacks, so no callback is in flight while `body` runs.
+    func sync(_ body: @escaping () -> Void) {
+        if Thread.current === self {
+            body()
+            return
+        }
+        let done = DispatchSemaphore(value: 0)
+        CFRunLoopPerformBlock(runLoop, CFRunLoopMode.commonModes.rawValue) {
+            body()
+            done.signal()
+        }
+        CFRunLoopWakeUp(runLoop)
+        done.wait()
+    }
+}
+
 final class DockInteractionService {
+    private static let dockPreferences = UserDefaults(suiteName: "com.apple.dock")
+
     private lazy var tap = EventTapService(
         mask: CGEventMask(1 << CGEventType.leftMouseDown.rawValue) |
             CGEventMask(1 << CGEventType.otherMouseDown.rawValue)
@@ -602,47 +792,65 @@ final class DockInteractionService {
     func start() { tap.start() }
     func stop() { tap.stop() }
 
+    /// Sees every left and middle click on the Mac, so it rules clicks out from
+    /// the event and settings first. Only a click in the Dock's edge band asks
+    /// the Dock what it hit.
     private func handle(type: CGEventType, event: CGEvent) -> Bool {
         let defaults = UserDefaults.standard
         guard defaults.bool(forKey: PowerToolKeys.dockActionsEnabled),
-              let target = DockTarget.target(at: event.location) else {
+              let intent = DockClickIntent.intent(
+                  type: type,
+                  buttonNumber: event.getIntegerValueField(.mouseEventButtonNumber),
+                  flags: event.flags,
+                  middleClickBehavior: defaults.string(forKey: PowerToolKeys.middleClickBehavior)
+                      .flatMap(DockMiddleClickBehavior.init(rawValue:)) ?? .system,
+                  shiftClickNewWindow: defaults.bool(forKey: PowerToolKeys.shiftClickNewWindow),
+                  activeClickBehavior: defaults.string(forKey: PowerToolKeys.activeDockClickBehavior)
+                      .flatMap(DockActiveClickBehavior.init(rawValue:)) ?? .system
+              ) else {
             return false
         }
 
-        if type == .otherMouseDown, event.getIntegerValueField(.mouseEventButtonNumber) == 2 {
-            let raw = defaults.string(forKey: PowerToolKeys.middleClickBehavior) ?? DockMiddleClickBehavior.system.rawValue
-            let behavior = DockMiddleClickBehavior(rawValue: raw) ?? .system
-            guard behavior != .system else { return false }
+        let point = event.location
+        guard let displayBounds = DockEdgeBand.displayBounds(containing: point),
+              DockEdgeBand(dockPreferences: Self.dockPreferences).contains(point, displayBounds: displayBounds),
+              let target = DockTarget.target(at: point) else {
+            return false
+        }
+
+        switch intent {
+        case .middleClick(let behavior):
             DispatchQueue.main.async {
                 Self.performMiddleClick(behavior, app: target.app)
             }
             return true
-        }
-
-        guard type == .leftMouseDown else { return false }
-
-        if event.flags.contains(.maskShift), defaults.bool(forKey: PowerToolKeys.shiftClickNewWindow) {
+        case .shiftClickNewWindow:
             DispatchQueue.main.async {
                 WindowActionService.openNewWindow(for: target.app)
             }
             return true
-        }
+        case .activeClick(let behavior):
+            let timeout = AXTools.eventTapMessagingTimeout
+            // NSWorkspace can lag behind while the main thread is busy, so the
+            // target confirms it is active before its click is taken over.
+            let targetIsFrontmost =
+                target.app.processIdentifier == NSWorkspace.shared.frontmostApplication?.processIdentifier &&
+                AXTools.reportsFrontmost(target.app, messagingTimeout: timeout)
+            guard DockActiveClickInterceptionPolicy.shouldIntercept(
+                behavior: behavior,
+                targetIsFrontmost: targetIsFrontmost,
+                hasVisibleWindow: {
+                    WindowActionService.hasVisibleWindow(of: target.app, messagingTimeout: timeout)
+                }
+            ) else {
+                return false
+            }
 
-        let raw = defaults.string(forKey: PowerToolKeys.activeDockClickBehavior) ?? DockActiveClickBehavior.system.rawValue
-        let behavior = DockActiveClickBehavior(rawValue: raw) ?? .system
-        let targetIsFrontmost = target.app.processIdentifier == NSWorkspace.shared.frontmostApplication?.processIdentifier
-        guard DockActiveClickInterceptionPolicy.shouldIntercept(
-            behavior: behavior,
-            targetIsFrontmost: targetIsFrontmost,
-            hasVisibleWindow: { WindowActionService.hasVisibleWindow(of: target.app) }
-        ) else {
-            return false
+            DispatchQueue.main.async {
+                Self.performActiveClick(behavior, app: target.app)
+            }
+            return true
         }
-
-        DispatchQueue.main.async {
-            Self.performActiveClick(behavior, app: target.app)
-        }
-        return true
     }
 
     private static func performActiveClick(_ behavior: DockActiveClickBehavior, app: NSRunningApplication) {
@@ -682,9 +890,55 @@ private struct DockTarget {
               let target = DockWindowPreviewAccessibility.target(
                   at: point,
                   dockProcessIdentifier: dockProcessIdentifier,
-                  candidates: DockWindowPreviewAccessibility.applicationCandidates()
+                  candidates: DockWindowPreviewAccessibility.applicationCandidates(),
+                  messagingTimeout: AXTools.eventTapMessagingTimeout
               ) else { return nil }
         return DockTarget(app: target.app)
+    }
+}
+
+/// WindowServer's on-screen window list, which answers without messaging the
+/// app that owns a window.
+enum WindowServerHitTest {
+    struct Window: Equatable {
+        let processIdentifier: pid_t
+        let bounds: CGRect
+    }
+
+    static func frontmostWindow(at point: CGPoint) -> Window? {
+        let windowInfo = CGWindowListCopyWindowInfo(
+            [.optionOnScreenOnly, .excludeDesktopElements],
+            kCGNullWindowID
+        ) as? [[String: Any]] ?? []
+        return frontmostWindow(at: point, in: windowInfo)
+    }
+
+    /// The front-most visible window under `point` when it is an ordinary
+    /// (layer 0) window; nil when a menu, panel, or overlay is on top.
+    /// `windowInfo` is front-to-back, as WindowServer returns it.
+    static func frontmostWindow(at point: CGPoint, in windowInfo: [[String: Any]]) -> Window? {
+        for info in windowInfo {
+            guard let boundsDictionary = info[kCGWindowBounds as String] as? NSDictionary,
+                  let bounds = CGRect(dictionaryRepresentation: boundsDictionary),
+                  bounds.contains(point) else { continue }
+            if let alpha = info[kCGWindowAlpha as String] as? Double, alpha <= 0 { continue }
+            guard (info[kCGWindowLayer as String] as? Int) == 0,
+                  let processIdentifier = info[kCGWindowOwnerPID as String] as? pid_t else { return nil }
+            return Window(processIdentifier: processIdentifier, bounds: bounds)
+        }
+        return nil
+    }
+}
+
+/// Window buttons sit in a title bar's top corner (top-right in right-to-left
+/// layouts). Clicks anywhere else in a window skip the accessibility query.
+enum TrafficLightRegion {
+    static let height: CGFloat = 60
+    static let width: CGFloat = 120
+
+    static func contains(_ point: CGPoint, windowBounds: CGRect) -> Bool {
+        guard windowBounds.contains(point), point.y - windowBounds.minY < height else { return false }
+        return point.x - windowBounds.minX < width || windowBounds.maxX - point.x <= width
     }
 }
 
@@ -698,9 +952,17 @@ final class TrafficLightButtonService {
     func start() { tap.start() }
     func stop() { tap.stop() }
 
+    /// Sees every left click on the Mac. Only a click in a standard window's
+    /// button corner asks that window's app what it hit.
     private func handle(event: CGEvent) -> Bool {
+        let point = event.location
+        let timeout = AXTools.eventTapMessagingTimeout
         guard !event.flags.contains(.maskAlternate),
-              let element = AXTools.element(at: event.location),
+              let frontWindow = WindowServerHitTest.frontmostWindow(at: point),
+              TrafficLightRegion.contains(point, windowBounds: frontWindow.bounds),
+              let element = AXTools.element(
+                  at: point, inApplication: frontWindow.processIdentifier, messagingTimeout: timeout
+              ),
               let subrole = AXTools.string(element, kAXSubroleAttribute) else {
             return false
         }
@@ -708,7 +970,8 @@ final class TrafficLightButtonService {
         let defaults = UserDefaults.standard
 
         if subrole == "AXZoomButton", defaults.bool(forKey: PowerToolKeys.greenButtonFillsWindow),
-           let window = AXTools.window(containing: element) {
+           let window = AXTools.window(containing: element, messagingTimeout: timeout) {
+            AXTools.unbounded(window)
             DispatchQueue.main.async {
                 WindowActionService.fillOrRestore(window: window)
             }
@@ -866,38 +1129,55 @@ struct KeyboardPowerToolsReducer {
         }
 
         guard input.frontmostBundleIdentifier == "com.apple.finder",
-              input.finderCanHandleFileShortcut else {
+              input.finderCanHandleFileShortcut,
+              let effect = Self.finderEffect(
+                  keyCode: input.keyCode,
+                  modifiers: input.modifiers,
+                  preferences: preferences,
+                  hasFinderCutSession: input.hasFinderCutSession
+              ) else {
             return .pass
         }
 
-        if input.keyCode == KeyboardPowerToolsKeyCode.returnKey,
-           input.modifiers.isEmpty,
+        return handledDecision(effect: effect, isAutorepeat: input.isAutorepeat)
+    }
+
+    /// The Finder shortcut a key press maps to under `preferences`, before
+    /// Finder's focus is known. Nil means the key passes without asking Finder.
+    static func finderEffect(
+        keyCode: Int64,
+        modifiers: KeyboardPowerToolsModifiers,
+        preferences: KeyboardPowerToolsPreferences,
+        hasFinderCutSession: Bool
+    ) -> KeyboardPowerToolsEffect? {
+        if keyCode == KeyboardPowerToolsKeyCode.returnKey,
+           modifiers.isEmpty,
            preferences.finderReturnOpens {
-            return handledDecision(effect: .openFinderSelection, isAutorepeat: input.isAutorepeat)
+            return .openFinderSelection
         }
 
-        if input.keyCode == KeyboardPowerToolsKeyCode.n,
-           input.modifiers == .option,
+        if keyCode == KeyboardPowerToolsKeyCode.n,
+           modifiers == .option,
            preferences.finderOptionNNewFile {
-            return handledDecision(effect: .createTextFile, isAutorepeat: input.isAutorepeat)
+            return .createTextFile
         }
 
-        if input.keyCode == KeyboardPowerToolsKeyCode.delete,
-           input.modifiers.isEmpty,
+        if keyCode == KeyboardPowerToolsKeyCode.delete,
+           modifiers.isEmpty,
            preferences.finderBackspaceMovesToTrash {
-            return handledDecision(effect: .moveFinderSelectionToTrash, isAutorepeat: input.isAutorepeat)
+            return .moveFinderSelectionToTrash
         }
 
-        if input.modifiers == .command, preferences.finderCutPaste {
-            if input.keyCode == KeyboardPowerToolsKeyCode.x {
-                return handledDecision(effect: .prepareCut, isAutorepeat: input.isAutorepeat)
+        if modifiers == .command, preferences.finderCutPaste {
+            if keyCode == KeyboardPowerToolsKeyCode.x {
+                return .prepareCut
             }
-            if input.keyCode == KeyboardPowerToolsKeyCode.v, input.hasFinderCutSession {
-                return handledDecision(effect: .pasteCut, isAutorepeat: input.isAutorepeat)
+            if keyCode == KeyboardPowerToolsKeyCode.v, hasFinderCutSession {
+                return .pasteCut
             }
         }
 
-        return .pass
+        return nil
     }
 
     mutating func reset() {
@@ -965,6 +1245,8 @@ final class KeyboardPowerToolsService {
         reducer.reset()
     }
 
+    /// Sees every key press on the Mac. Finder's focus is only queried for a key
+    /// that maps to an enabled Finder shortcut.
     private func handle(event: CGEvent) -> Bool {
         let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
         let modifiers = KeyboardPowerToolsModifiers.normalized(from: event.flags)
@@ -979,15 +1261,19 @@ final class KeyboardPowerToolsService {
             finderBackspaceMovesToTrash: defaults.bool(forKey: PowerToolKeys.finderBackspaceMovesToTrash)
         )
         let frontmostApp = NSWorkspace.shared.frontmostApplication
-        let isProtectedSafetyShortcut = modifiers == .command && (
-            (keyCode == KeyboardPowerToolsKeyCode.q && preferences.commandQDoubleTap) ||
-            (keyCode == KeyboardPowerToolsKeyCode.w && preferences.commandWDoubleTap)
-        )
+        let hasFinderCutSession = FinderPowerToolsService.shared.hasCutSession
         let finderCanHandleFileShortcut: Bool
-        if !isProtectedSafetyShortcut,
-           let frontmostApp,
-           frontmostApp.bundleIdentifier == "com.apple.finder" {
-            finderCanHandleFileShortcut = AXTools.canHandleFinderFileShortcut(in: frontmostApp)
+        if let frontmostApp,
+           frontmostApp.bundleIdentifier == "com.apple.finder",
+           KeyboardPowerToolsReducer.finderEffect(
+               keyCode: keyCode,
+               modifiers: modifiers,
+               preferences: preferences,
+               hasFinderCutSession: hasFinderCutSession
+           ) != nil {
+            finderCanHandleFileShortcut = AXTools.canHandleFinderFileShortcut(
+                in: frontmostApp, messagingTimeout: AXTools.eventTapMessagingTimeout
+            )
         } else {
             finderCanHandleFileShortcut = false
         }
@@ -1000,7 +1286,7 @@ final class KeyboardPowerToolsService {
             frontmostProcessIdentifier: frontmostApp?.processIdentifier,
             frontmostBundleIdentifier: frontmostApp?.bundleIdentifier,
             finderCanHandleFileShortcut: finderCanHandleFileShortcut,
-            hasFinderCutSession: FinderPowerToolsService.shared.hasCutSession
+            hasFinderCutSession: hasFinderCutSession
         )
         let decision = reducer.reduce(input: input, preferences: preferences)
         if let effect = decision.effect {
@@ -1169,9 +1455,13 @@ final class WindowActionService {
     /// Only consume a custom Dock click when it has a window to operate on.
     /// If there is no visible window, passing the click through preserves the
     /// app's native reopen/new-window behavior.
-    static func hasVisibleWindow(of app: NSRunningApplication) -> Bool {
+    /// A window that does not answer in time does not count as visible, so the
+    /// Dock click goes to the Dock.
+    static func hasVisibleWindow(of app: NSRunningApplication, messagingTimeout: Float? = nil) -> Bool {
         guard !app.isHidden else { return false }
-        return AXTools.windows(of: app).contains { !AXTools.isMinimized($0) }
+        return AXTools.windows(of: app, messagingTimeout: messagingTimeout).contains {
+            AXTools.minimizedState(of: $0) == false
+        }
     }
 
     static func unminimizeWindows(of app: NSRunningApplication, firstOnly: Bool) {
@@ -1228,7 +1518,15 @@ final class FinderPowerToolsService {
     }
 
     static let shared = FinderPowerToolsService()
-    private(set) var cutItems: [URL] = []
+
+    // Written on the main thread, read by the keyboard event-tap thread.
+    private let cutItemsLock = NSLock()
+    private var lockedCutItems: [URL] = []
+
+    private(set) var cutItems: [URL] {
+        get { cutItemsLock.withLock { lockedCutItems } }
+        set { cutItemsLock.withLock { lockedCutItems = newValue } }
+    }
 
     var hasCutSession: Bool { !cutItems.isEmpty }
 
@@ -1596,13 +1894,38 @@ enum AXTools {
         return unsafeBitCast(symbol, to: AXUIElementGetWindowFunction.self)
     }()
 
-    static func element(at point: CGPoint) -> AXUIElement? {
-        let systemWide = AXUIElementCreateSystemWide()
-        var element: AXUIElement?
-        guard AXUIElementCopyElementAtPosition(systemWide, Float(point.x), Float(point.y), &element) == .success else {
-            return nil
+    /// The longest an accessibility message sent from an event-tap callback may
+    /// wait. macOS holds the user's click or key meanwhile; a query that misses
+    /// this budget lets the event through unchanged.
+    static let eventTapMessagingTimeout: Float = 0.05
+
+    /// Applies `timeout` to messages sent to `element`; nil keeps the default.
+    /// Never pass the system-wide element, which would change the whole process.
+    @discardableResult
+    static func bounded(_ element: AXUIElement, _ timeout: Float?) -> AXUIElement {
+        if let timeout {
+            AXUIElementSetMessagingTimeout(element, timeout)
         }
         return element
+    }
+
+    /// Returns `element` to the process-wide timeout for work that no longer
+    /// holds the user's input.
+    static func unbounded(_ element: AXUIElement) {
+        AXUIElementSetMessagingTimeout(element, 0)
+    }
+
+    /// Hit-tests inside one app so `messagingTimeout` bounds the wait; a timeout
+    /// set on the system-wide element would apply to the whole process.
+    static func element(at point: CGPoint, inApplication processIdentifier: pid_t,
+                        messagingTimeout: Float) -> AXUIElement? {
+        let app = bounded(AXUIElementCreateApplication(processIdentifier), messagingTimeout)
+        var element: AXUIElement?
+        guard AXUIElementCopyElementAtPosition(app, Float(point.x), Float(point.y), &element) == .success,
+              let element else {
+            return nil
+        }
+        return bounded(element, messagingTimeout)
     }
 
     static func runningApplication(for element: AXUIElement) -> NSRunningApplication? {
@@ -1611,9 +1934,9 @@ enum AXTools {
         return NSRunningApplication(processIdentifier: pid)
     }
 
-    static func windows(of app: NSRunningApplication) -> [AXUIElement] {
-        let appElement = AXUIElementCreateApplication(app.processIdentifier)
-        return array(appElement, kAXWindowsAttribute)
+    static func windows(of app: NSRunningApplication, messagingTimeout: Float? = nil) -> [AXUIElement] {
+        let appElement = bounded(AXUIElementCreateApplication(app.processIdentifier), messagingTimeout)
+        return array(appElement, kAXWindowsAttribute).map { bounded($0, messagingTimeout) }
     }
 
     static func windowID(of window: AXUIElement) -> CGWindowID? {
@@ -1629,19 +1952,28 @@ enum AXTools {
         return value(appElement, kAXFocusedWindowAttribute, as: AXUIElement.self)
     }
 
-    static func focusedElement(of app: NSRunningApplication) -> AXUIElement? {
-        let appElement = AXUIElementCreateApplication(app.processIdentifier)
-        return value(appElement, kAXFocusedUIElementAttribute, as: AXUIElement.self)
+    /// The app's own answer to whether it is active. NSWorkspace's frontmost app
+    /// only updates when Geraldine's main run loop runs, so it can be stale on
+    /// the event-tap thread. False when the app does not answer.
+    static func reportsFrontmost(_ app: NSRunningApplication, messagingTimeout: Float? = nil) -> Bool {
+        let appElement = bounded(AXUIElementCreateApplication(app.processIdentifier), messagingTimeout)
+        return answer(appElement, kAXFrontmostAttribute).bool == true
     }
 
-    static func canHandleFinderFileShortcut(in app: NSRunningApplication) -> Bool {
-        guard let focusedElement = focusedElement(of: app) else {
-            return true
-        }
-        return !isTextEntryElement(focusedElement)
+    /// True only when Finder answers that it is active and that nothing is
+    /// focused or focus is outside a text field. An unanswered query lets the
+    /// key through: a slow Finder must never turn Delete during a rename, or in
+    /// the app the user just switched to, into Move to Trash.
+    static func canHandleFinderFileShortcut(in app: NSRunningApplication, messagingTimeout: Float? = nil) -> Bool {
+        let appElement = bounded(AXUIElementCreateApplication(app.processIdentifier), messagingTimeout)
+        guard answer(appElement, kAXFrontmostAttribute).bool == true else { return false }
+        let focused = answer(appElement, kAXFocusedUIElementAttribute)
+        if focused.isUnanswered { return false }
+        guard let focusedElement = focused.element else { return true }
+        return isTextEntryElement(focusedElement, messagingTimeout: messagingTimeout) == false
     }
 
-    static func window(containing element: AXUIElement) -> AXUIElement? {
+    static func window(containing element: AXUIElement, messagingTimeout: Float? = nil) -> AXUIElement? {
         if let window = value(element, kAXWindowAttribute, as: AXUIElement.self) {
             return window
         }
@@ -1649,6 +1981,7 @@ enum AXTools {
         var current: AXUIElement? = element
         for _ in 0..<8 {
             guard let parent = current.flatMap({ value($0, kAXParentAttribute, as: AXUIElement.self) }) else { break }
+            bounded(parent, messagingTimeout)
             if string(parent, kAXRoleAttribute) == kAXWindowRole {
                 return parent
             }
@@ -1657,13 +1990,13 @@ enum AXTools {
         return nil
     }
 
-    static func missionControlGroup() -> AXUIElement? {
+    static func missionControlGroup(messagingTimeout: Float? = nil) -> AXUIElement? {
         guard let dock = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock").first else {
             return nil
         }
-        let dockElement = AXUIElementCreateApplication(dock.processIdentifier)
+        let dockElement = bounded(AXUIElementCreateApplication(dock.processIdentifier), messagingTimeout)
         return array(dockElement, kAXChildrenAttribute).first { child in
-            string(child, "AXIdentifier") == "mc"
+            string(bounded(child, messagingTimeout), "AXIdentifier") == "mc"
         }
     }
 
@@ -1686,6 +2019,14 @@ enum AXTools {
 
     static func isMinimized(_ window: AXUIElement) -> Bool {
         value(window, kAXMinimizedAttribute, as: Bool.self) ?? false
+    }
+
+    /// Nil when the window did not answer; one without the attribute is not
+    /// minimized.
+    static func minimizedState(of window: AXUIElement) -> Bool? {
+        let minimized = answer(window, kAXMinimizedAttribute)
+        if minimized.isUnanswered { return nil }
+        return minimized.bool ?? false
     }
 
     static func perform(_ element: AXUIElement, _ action: String) {
@@ -1747,20 +2088,26 @@ enum AXTools {
         return url?.isFileURL == true ? url : nil
     }
 
-    private static func isTextEntryElement(_ element: AXUIElement) -> Bool {
+    /// Nil when an element did not answer, so callers never guess that focus is
+    /// outside a text field.
+    private static func isTextEntryElement(_ element: AXUIElement, messagingTimeout: Float?) -> Bool? {
         var current: AXUIElement? = element
         for _ in 0..<6 {
             guard let candidate = current else { break }
-            let role = string(candidate, kAXRoleAttribute)
-            let subrole = string(candidate, kAXSubroleAttribute)
-            if role == kAXTextFieldRole ||
-                role == kAXTextAreaRole ||
-                role == kAXComboBoxRole ||
-                subrole == "AXSearchField" ||
-                subrole == "AXSecureTextField" {
+            bounded(candidate, messagingTimeout)
+            let role = answer(candidate, kAXRoleAttribute)
+            let subrole = answer(candidate, kAXSubroleAttribute)
+            guard !role.isUnanswered, !subrole.isUnanswered else { return nil }
+            if role.string == kAXTextFieldRole ||
+                role.string == kAXTextAreaRole ||
+                role.string == kAXComboBoxRole ||
+                subrole.string == "AXSearchField" ||
+                subrole.string == "AXSecureTextField" {
                 return true
             }
-            current = value(candidate, kAXParentAttribute, as: AXUIElement.self)
+            let parent = answer(candidate, kAXParentAttribute)
+            guard !parent.isUnanswered else { return nil }
+            current = parent.element
         }
         return false
     }
@@ -1775,5 +2122,45 @@ enum AXTools {
             return nil
         }
         return value as? T
+    }
+
+    /// An attribute read that keeps "the element has no such value" apart from a
+    /// message that failed or timed out, which must not be taken as a fact.
+    private enum Answer {
+        case value(CFTypeRef)
+        case missing
+        case unanswered
+
+        var isUnanswered: Bool {
+            if case .unanswered = self { return true }
+            return false
+        }
+
+        var string: String? {
+            guard case .value(let value) = self else { return nil }
+            return value as? String
+        }
+
+        var bool: Bool? {
+            guard case .value(let value) = self else { return nil }
+            return value as? Bool
+        }
+
+        var element: AXUIElement? {
+            guard case .value(let value) = self, CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+            return (value as! AXUIElement)
+        }
+    }
+
+    private static func answer(_ element: AXUIElement, _ attribute: String) -> Answer {
+        var value: CFTypeRef?
+        switch AXUIElementCopyAttributeValue(element, attribute as CFString, &value) {
+        case .success:
+            return value.map(Answer.value) ?? .missing
+        case .noValue, .attributeUnsupported:
+            return .missing
+        default:
+            return .unanswered
+        }
     }
 }

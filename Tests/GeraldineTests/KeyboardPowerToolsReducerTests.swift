@@ -63,6 +63,49 @@ final class KeyboardPowerToolsReducerTests: XCTestCase {
         XCTAssertEqual(reacquired.effect, .moveFinderSelectionToTrash)
     }
 
+    func testFinderFocusIsOnlyQueriedForEnabledFinderShortcutKeys() {
+        let enabled = preferences()
+        func effect(
+            _ keyCode: Int64,
+            _ modifiers: KeyboardPowerToolsModifiers = [],
+            using preferences: KeyboardPowerToolsPreferences? = nil,
+            hasCutSession: Bool = false
+        ) -> KeyboardPowerToolsEffect? {
+            KeyboardPowerToolsReducer.finderEffect(
+                keyCode: keyCode,
+                modifiers: modifiers,
+                preferences: preferences ?? enabled,
+                hasFinderCutSession: hasCutSession
+            )
+        }
+
+        XCTAssertEqual(effect(KeyboardPowerToolsKeyCode.returnKey), .openFinderSelection)
+        XCTAssertEqual(effect(KeyboardPowerToolsKeyCode.n, .option), .createTextFile)
+        XCTAssertEqual(effect(KeyboardPowerToolsKeyCode.delete), .moveFinderSelectionToTrash)
+        XCTAssertEqual(effect(KeyboardPowerToolsKeyCode.x, .command), .prepareCut)
+        XCTAssertEqual(effect(KeyboardPowerToolsKeyCode.v, .command, hasCutSession: true), .pasteCut)
+
+        // Typing, the Command-Q/W safety shortcuts, and a paste with nothing cut
+        // pass without asking Finder.
+        XCTAssertNil(effect(0))
+        XCTAssertNil(effect(KeyboardPowerToolsKeyCode.n))
+        XCTAssertNil(effect(KeyboardPowerToolsKeyCode.returnKey, .shift))
+        XCTAssertNil(effect(KeyboardPowerToolsKeyCode.q, .command))
+        XCTAssertNil(effect(KeyboardPowerToolsKeyCode.w, .command))
+        XCTAssertNil(effect(KeyboardPowerToolsKeyCode.v, .command))
+
+        let disabled = preferences(
+            finderReturn: false,
+            finderCutPaste: false,
+            finderOptionN: false,
+            finderBackspace: false
+        )
+        XCTAssertNil(effect(KeyboardPowerToolsKeyCode.returnKey, using: disabled))
+        XCTAssertNil(effect(KeyboardPowerToolsKeyCode.n, .option, using: disabled))
+        XCTAssertNil(effect(KeyboardPowerToolsKeyCode.delete, using: disabled))
+        XCTAssertNil(effect(KeyboardPowerToolsKeyCode.x, .command, using: disabled))
+    }
+
     private func preferences(
         commandQ: Bool = true,
         commandW: Bool = true,
