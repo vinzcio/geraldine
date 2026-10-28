@@ -49,7 +49,7 @@ enum AIUsageAccountDiscovery {
         switch provider {
         case .claude: prefix = ".claude-"
         case .codex:  prefix = ".codex-"
-        case .antigravity, .grok, .cursor: return []
+        case .antigravity, .grok, .cursor, .opencode, .pi, .muse: return []
         }
         return folders.compactMap { folder in
             guard folder.hasPrefix(prefix), folder.count > prefix.count else { return nil }

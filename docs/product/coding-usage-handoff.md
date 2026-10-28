@@ -1,5 +1,16 @@
 # Coding usage widgets — handoff
 
+## Token history extension (2026-10-28, local source)
+
+Coding Usage now separates Allowances from Tokens & Cost. The history pipeline
+supports the original five providers plus OpenCode, Pi, and Muse. Quota readers
+remain unchanged; the three new providers report allowance support unavailable.
+Cursor history is the explicitly approved read-only dashboard API exception,
+using file credentials only. Public pricing comes from LiteLLM. See
+[token-history.md](token-history.md) for source formats, limitations, and checks.
+This extension has not been installed or released.
+
+
 **Updated:** 2026-09-15  
 **Status:** Shown tiles now fetch remaining usage. Claude Max shows Fable + all-models bars; Plus shows all-models only. Cursor shows Cursor models + other models. Codex and Grok stay one pooled bar. Grok uses the official grok.com mark.
 

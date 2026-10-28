@@ -256,7 +256,10 @@ final class WidgetLayoutStore: ObservableObject {
         WidgetItem(.aiUsage(.claude), .small, isShown: false),
         WidgetItem(.aiUsage(.cursor), .small, isShown: false),
         WidgetItem(.aiUsage(.grok), .small, isShown: false),
-        WidgetItem(.aiUsage(.antigravity), .small, isShown: false)
+        WidgetItem(.aiUsage(.antigravity), .small, isShown: false),
+        WidgetItem(.aiUsage(.opencode), .small, isShown: false),
+        WidgetItem(.aiUsage(.pi), .small, isShown: false),
+        WidgetItem(.aiUsage(.muse), .small, isShown: false)
     ]
 
     init(defaults: UserDefaults = .standard) {
