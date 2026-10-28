@@ -63,6 +63,19 @@ enum KeepAwakeDuration: String, CaseIterable, Identifiable {
     }
 }
 
+/// A running Keep Awake session carried across an update relaunch. Stay Active
+/// itself is a saved preference; only its place in the current idle stretch
+/// needs carrying.
+struct KeepAwakeSessionHandoff: Codable, Equatable {
+    var activeSince: Date
+    /// Nil for an indefinite session.
+    var activeUntil: Date?
+    var wasPaused: Bool
+    /// System uptime of Stay Active's latest pulse, only while it was pulsing.
+    var stayActivePulseUptime: TimeInterval?
+    var stayActiveLastUserInput: Date?
+}
+
 @MainActor
 final class KeepAwakeController: ObservableObject {
     private enum DefaultsKey {
@@ -302,6 +315,61 @@ final class KeepAwakeController: ObservableObject {
     func deactivate() {
         endSession()
         lastError = nil
+    }
+
+    /// The running session, for an update relaunch to continue. Nil when off.
+    func relaunchHandoff() -> KeepAwakeSessionHandoff? {
+        guard isActive, let activeSince else { return nil }
+        return KeepAwakeSessionHandoff(
+            activeSince: activeSince,
+            activeUntil: activeUntil,
+            wasPaused: isPaused,
+            stayActivePulseUptime: idleActivityShouldRun ? idleActivitySimulator.pulsingSinceUptime : nil,
+            stayActiveLastUserInput: idleActivityShouldRun ? idleActivityLastUserInput : nil
+        )
+    }
+
+    /// Continues a session that an update relaunch interrupted, with its
+    /// original start and end. A session that ended during the relaunch stays
+    /// off, and the battery policy applies exactly as it does to a new session.
+    /// A paused session resumes paused only while its session is still away
+    /// from the console; otherwise the unlock it was waiting for already came.
+    @discardableResult
+    func resume(_ handoff: KeepAwakeSessionHandoff,
+                now: Date = Date(),
+                sessionIsOnConsole: Bool = KeepAwakeController.currentSessionIsOnConsole()) -> Bool {
+        guard !isActive else { return false }
+        if let until = handoff.activeUntil, until.timeIntervalSince(now) < 1 { return false }
+        if deactivateOnBattery, currentPowerSourceIsBattery() {
+            lastError = Self.batteryPolicyRefusalMessage
+            return false
+        }
+
+        lastError = nil
+        isActive = true
+        activeSince = min(handoff.activeSince, now)
+        activeUntil = handoff.activeUntil
+        let staysPaused = handoff.wasPaused && pauseWhenScreenLocked && !sessionIsOnConsole
+        isPaused = staysPaused
+        pauseReason = staysPaused ? Self.screenLockPauseReason : nil
+        updateRemaining()
+        scheduleExpirationTimer()
+        startTicker()
+        refreshAssertions()
+        guard isActive else { return false }
+        if idleActivityShouldRun, !handoff.wasPaused {
+            idleActivitySimulator.start(idleDelay: idleActivityDelay,
+                                        resumingPulseAt: handoff.stayActivePulseUptime,
+                                        lastUserInput: handoff.stayActiveLastUserInput)
+        } else {
+            applyIdleActivitySimulation()
+        }
+        return true
+    }
+
+    nonisolated static func currentSessionIsOnConsole() -> Bool {
+        guard let session = CGSessionCopyCurrentDictionary() as? [String: Any] else { return true }
+        return session[kCGSessionOnConsoleKey as String] as? Bool ?? true
     }
 
     /// Stops the session: clears the published state, both timers, and the assertions.

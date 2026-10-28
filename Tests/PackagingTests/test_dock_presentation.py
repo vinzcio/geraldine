@@ -20,6 +20,8 @@ class DockPresentationTests(unittest.TestCase):
             APP_NAME="Geraldine",
             BUNDLE_ID="com.example.geraldine-packaging-test",
             VERSION="0.0.0",
+            BUILD_NUMBER="0",
+            UPDATE_KEYS="",
             GIT_COMMIT="test",
             GIT_COMMIT_SHORT="test",
             GIT_DIRTY_PLIST="<false/>",

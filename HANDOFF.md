@@ -2,7 +2,7 @@
 
 **Updated:** 2026-10-25
 
-Geraldine is a local-only macOS utility. It has no account system, backend, or cross-device sync, and clipboard history must not be reintroduced. Preferences and app state remain on this Mac in `UserDefaults` and Application Support. Preserve unrelated user work and the existing opt-in Dock window-preview behavior.
+Geraldine is a local-only macOS utility. It has no account system, backend, or cross-device sync, and clipboard history must not be reintroduced. Published builds update themselves from `geraldine.hemisthia.com` ([`docs/updates.md`](docs/updates.md)); that check is the only request Geraldine makes on its own. Preferences and app state remain on this Mac in `UserDefaults` and Application Support. Preserve unrelated user work and the existing opt-in Dock window-preview behavior.
 
 ## Source checkout after migration
 
@@ -45,6 +45,16 @@ kept byte-for-byte for their historical proof; they are not app source.
 - Display-asleep CPU samples (15 × 2 seconds each) measured old `993433a` mean 0.8067% / median 0.6%, and `a78fd04` mean 1.0267% / median 0.9% of one core. The earlier old mean 9.7733% / median 10.5% lacked a recorded display state and is not a matched comparison. No CPU improvement is established. `a78fd04` launched while the display was already asleep but continued monitor/thermal sampling. At record time, the source follow-up reconciled initial/start sleep state and shared it with menu-bar rendering; final parent checks and installed follow-up verification were pending. See [`docs/agent-cli.md`](docs/agent-cli.md#app-idle-cpu).
 - SDK 26.5 verification and full awake-screen CPU/visual parity remain unproved. Both old and new bundles assessed as `Unnotarized Developer ID`; no trust, quarantine, or signing-policy change was made. This records the PR #31 deployment, not final acceptance of the subsequent sleep-state repair.
 
+## Self-updates
+
+- Contract, runbook, keys, host, and tests: [`docs/updates.md`](docs/updates.md). Feed: `https://geraldine.hemisthia.com/updates/appcast.xml` (skyward nginx site `geraldine-updates.conf`, files in `/var/www/geraldine.hemisthia.com/updates`). Every published build has this URL compiled in; moving it means shipping a release that points elsewhere first.
+- Only `scripts/release/package-update.sh` builds the production channel (`GERALDINE_UPDATE_CHANNEL=production`). A plain `./build.sh` install has no feed and stops that Mac's updates until a published release is installed again. Deploying now means package + publish; Macs then update themselves.
+- `CFBundleVersion` is the commit count of `HEAD`. Publish only from `origin/main`, so build numbers only grow; the scripts refuse a build that is not newer than the live feed.
+- The update private key exists only at `~/Library/Application Support/Geraldine Release/sparkle-ed25519.key` on the Mac mini (created 2026-10-28). Losing it strands every installed client. Back it up with the Developer ID identity.
+- Update restarts carry a running Keep Awake session (same end time) and Stay Active's idle stretch through `appUpdate.relaunchHandoff`. The after-install Keep Awake/Stay Active step below still applies to manual installs and to the first install of an updater build over 0.1.0.
+- `GeraldineSupportFolderName` (Info.plist) exists only for the isolated update-test lane: it moves the control socket and chart history out of `Application Support/Geraldine`. Production bundles never set it.
+- Never publish a rehearsal payload (the publisher refuses one), and never reuse an archive name with different bytes (the publisher refuses that too).
+
 ## Current state
 
 The Plan 001–019 queue is closed; [`plans/README.md`](plans/README.md) remains the historical status record. The source-only completion gate is documented in [`README.md`](README.md).
@@ -56,7 +66,7 @@ The Plan 001–019 queue is closed; [`plans/README.md`](plans/README.md) remains
 - After every authorized rebuild/reinstall on Vincent's Mac, turn on **Keep Awake** and **Stay Active** and verify both in the running installed app. Preserve the existing duration and activity-delay choices. This is a post-install workflow requirement, not a change to app launch defaults.
 - Stay Active uses mouse nudges and paired Control-key pulses at randomized 2.0–2.4-second intervals after idle activation, targeting 24–30 distinct active seconds (40–50%) per uninterrupted minute. No arrow keys. Preserve the real-input, stop, pause, and permission handling; see the timing contract and tests in `README.md`.
 
-- `Package.swift` defines a native SwiftUI executable plus the C `CThermal` target and no third-party package graph.
+- `Package.swift` defines a native SwiftUI executable plus the C `CThermal` target. Its one third-party package is Sparkle 2.10.0, pinned exactly, for self-updates; change it only as a reviewed source change.
 - `AppState` composes feature services; AppKit owns app, menu-bar, Finder, Dock, and other system integration seams.
 - Extend the established semantic `Theme`, `Components`, and `Motion` layers, plus `GeraldineMark` and `EyeView`, instead of creating parallel styling primitives.
 - Do not pursue a generic system-monitor or AI-dashboard redesign before Geraldine has a personal identity brief.

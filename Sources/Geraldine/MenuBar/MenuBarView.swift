@@ -4,6 +4,7 @@ struct MenuBarView: View {
     @EnvironmentObject var state: AppState
     @EnvironmentObject var monitor: SystemMonitor
     @EnvironmentObject private var devices: DeviceMonitor
+    @EnvironmentObject private var updates: AppUpdateController
     let onContentHeightChange: (CGFloat) -> Void
     @State private var freeingMemory = false
     @State private var contentHeight: CGFloat = 520
@@ -38,7 +39,7 @@ struct MenuBarView: View {
     }
 
     private var hasSupportingContent: Bool {
-        hasAttentionRecommendation || shouldShowDevices
+        hasAttentionRecommendation || shouldShowDevices || updates.actionableRelease != nil
     }
 
     var body: some View {
@@ -132,6 +133,7 @@ struct MenuBarView: View {
 
     @ViewBuilder private var supportingContent: some View {
         VStack(alignment: .leading, spacing: 8) {
+            AppUpdateNotice()
             if hasAttentionRecommendation {
                 recommendation
             }

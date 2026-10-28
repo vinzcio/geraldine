@@ -78,6 +78,11 @@ struct AppSettingsView: View {
                 LaunchAtLoginControl()
             }
 
+            SettingsSectionCard {
+                SectionHeader("Updates", subtitle: updatesSubtitle)
+                AppUpdateSettingsSection()
+            }
+
             SettingsSectionCard(tier: .tinted(Theme.accent2)) {
                 SectionHeader(
                     "Coding Usage",
@@ -125,6 +130,13 @@ struct AppSettingsView: View {
             }
         }
         .onAppear { state.refreshPermissions() }
+    }
+
+    private var updatesSubtitle: String {
+        guard let host = state.updates.configuration.feedURL?.host else {
+            return "Published Geraldine releases update themselves."
+        }
+        return "Geraldine checks \(host) for new versions and verifies each one before installing it."
     }
 }
 

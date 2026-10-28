@@ -5,6 +5,7 @@ struct GeraldineCommand: Identifiable, Equatable {
         case module(Module)
         case activity(ActivitySection)
         case refreshCodingUsage
+        case checkForUpdates
     }
 
     let id: String
@@ -24,7 +25,10 @@ struct GeraldineCommand: Identifiable, Equatable {
                  keywords: "usage chart history apps helpers \(section.rawValue)", action: .activity(section))
         } + [Self(id: "refreshCodingUsage", title: "Refresh Coding Usage",
                   detail: "Refresh accounts whose usage is already enabled", systemImage: "arrow.clockwise",
-                  keywords: "quota allowance claude codex cursor grok antigravity", action: .refreshCodingUsage)]
+                  keywords: "quota allowance claude codex cursor grok antigravity", action: .refreshCodingUsage),
+             Self(id: "checkForUpdates", title: "Check For Geraldine Updates",
+                  detail: "See whether a newer Geraldine is published", systemImage: "arrow.down.circle",
+                  keywords: "update upgrade version release new geraldine", action: .checkForUpdates)]
     }
 
     static func matching(_ query: String) -> [Self] {
@@ -53,6 +57,9 @@ struct GeraldineCommand: Identifiable, Equatable {
         case .refreshCodingUsage:
             state.selection = .codingUsage
             state.aiUsage.refreshConnected()
+        case .checkForUpdates:
+            state.selection = .settings
+            state.updates.checkForUpdates()
         }
     }
 }

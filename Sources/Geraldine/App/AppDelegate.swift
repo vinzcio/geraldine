@@ -13,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let state = AppState.shared
         state.applyActivationPolicy()
         state.refreshFullDiskAccess()
+        state.resumeAfterUpdateRelaunch()
         state.monitor.start()
         state.network.start()
         state.devices.start()
@@ -21,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menuBarController = MenuBarController(state: state)
         // Best-effort: a failed socket bind must never interrupt the app.
         ControlHost.shared.start()
+        state.startUpdates()
         // SwiftUI restores the Window scene as visible. Hide it on the next
         // turn after the hosting window exists so menu-bar-only does not
         // mount the dashboard layout loop.
@@ -99,6 +101,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         ControlHost.shared.stop()
+        AppState.shared.updates.stop()
         AppState.shared.monitor.stop()
         AppState.shared.monitor.flushHistory()
         AppState.shared.keepAwake.shutdown()

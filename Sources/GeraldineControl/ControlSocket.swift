@@ -3,17 +3,22 @@ import Darwin
 
 public enum ControlEndpoint {
     public static let environmentKey = "GERALDINE_CONTROL_SOCKET"
+    public static let defaultSupportFolderName = "Geraldine"
 
     /// `~/Library/Application Support/Geraldine/control.sock`, unless a test or
-    /// a launch wrapper overrides it.
-    public static func socketURL(environment: [String: String] = ProcessInfo.processInfo.environment) -> URL {
+    /// a launch wrapper overrides it. Only an isolated test lane passes another
+    /// folder name; the CLI always uses the default.
+    public static func socketURL(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        supportFolderName: String = defaultSupportFolderName
+    ) -> URL {
         if let override = environment[environmentKey], !override.isEmpty {
             return URL(fileURLWithPath: override)
         }
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
         return support
-            .appendingPathComponent("Geraldine", isDirectory: true)
+            .appendingPathComponent(supportFolderName, isDirectory: true)
             .appendingPathComponent("control.sock", isDirectory: false)
     }
 }

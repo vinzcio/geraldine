@@ -58,6 +58,7 @@ struct RootView: View {
 struct Sidebar: View {
     @Binding var selection: Module?
     @EnvironmentObject var state: AppState
+    @EnvironmentObject private var updates: AppUpdateController
 
     /// Keep navigation state in Geraldine's own selection plate. The native
     /// selected row is deliberately nil so AppKit cannot paint its blue overlay.
@@ -112,6 +113,13 @@ struct Sidebar: View {
             #else
             let hideFooter = false
             #endif
+            if updates.actionableRelease != nil {
+                AppUpdateNotice()
+                    .listRowSeparator(.hidden)
+                    .listRowInsets(EdgeInsets(top: 12, leading: 6, bottom: 0, trailing: 6))
+                    .listRowBackground(Color.clear)
+                    .selectionDisabled()
+            }
             if !hideFooter {
                 SidebarFooter()
                     .listRowSeparator(.hidden)
