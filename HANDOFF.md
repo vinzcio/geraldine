@@ -74,6 +74,7 @@ The Plan 001–019 queue is closed; [`plans/README.md`](plans/README.md) remains
 
 - `Package.swift` defines a native SwiftUI executable plus the C `CThermal` target. Its one third-party package is Sparkle 2.10.0, pinned exactly, for self-updates; change it only as a reviewed source change.
 - `AppState` composes feature services; AppKit owns app, menu-bar, Finder, Dock, and other system integration seams.
+- Power Tools' filtering CGEvent taps (Dock actions, window buttons, Mission Control close, keyboard shortcuts) deliver on `EventTapThread`, never the main run loop. macOS holds each matching click or key until the callback answers, so on 2026-10-28 a busy main thread delayed, reordered, and dropped clicks across the Mac. Tap handlers rule events out without messaging other processes first, bound accessibility queries with `AXTools.eventTapMessagingTimeout`, treat an unanswered query as pass-through, and hand work to the main queue asynchronously. Only listen-only taps may deliver on the main run loop.
 - Extend the established semantic `Theme`, `Components`, and `Motion` layers, plus `GeraldineMark` and `EyeView`, instead of creating parallel styling primitives.
 - Do not pursue a generic system-monitor or AI-dashboard redesign before Geraldine has a personal identity brief.
 - Keep the manual status-item architecture unless a fresh installed reproduction and explicit authorization justify reconsidering it.

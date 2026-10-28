@@ -87,15 +87,18 @@ enum DockWindowPreviewAccessibility {
         return false
     }
 
+    /// `candidates` is only read once the point is on an application item.
+    /// `messagingTimeout` bounds each Dock message (nil keeps the default).
     static func target(
         at point: CGPoint, dockProcessIdentifier: pid_t,
-        candidates: [DockPreviewApplicationCandidate]
+        candidates: @autoclosure () -> [DockPreviewApplicationCandidate],
+        messagingTimeout: Float? = nil
     ) -> DockPreviewTarget? {
         // Restrict hit testing to the Dock so ordinary pointer movement never
         // waits on an unrelated application's accessibility implementation.
+        let dock = AXTools.bounded(AXUIElementCreateApplication(dockProcessIdentifier), messagingTimeout)
         var hit: AXUIElement?
-        guard AXUIElementCopyElementAtPosition(AXUIElementCreateApplication(dockProcessIdentifier),
-                                               Float(point.x), Float(point.y), &hit) == .success,
+        guard AXUIElementCopyElementAtPosition(dock, Float(point.x), Float(point.y), &hit) == .success,
               let element = hit else { return nil }
         var hitProcessIdentifier: pid_t = 0
         guard AXUIElementGetPid(element, &hitProcessIdentifier) == .success,
@@ -106,8 +109,9 @@ enum DockWindowPreviewAccessibility {
         while let candidate = current {
             guard !visited.contains(where: { CFEqual($0, candidate) }) else { return nil }
             visited.append(candidate)
+            AXTools.bounded(candidate, messagingTimeout)
             if AXTools.string(candidate, kAXSubroleAttribute) == "AXApplicationDockItem" {
-                return target(for: candidate, candidates: candidates)
+                return target(for: candidate, candidates: candidates())
             }
             current = AXTools.parent(of: candidate)
         }
