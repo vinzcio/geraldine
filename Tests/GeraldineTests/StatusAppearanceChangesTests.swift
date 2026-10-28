@@ -4,35 +4,51 @@ import XCTest
 @testable import Geraldine
 
 final class StatusAppearanceChangesTests: XCTestCase {
-    func testRepeatedNoticesForTheCurrentAppearanceNeverRedraw() {
-        let appearances = PassthroughSubject<NSAppearance, Never>()
-        var redraws: [NSAppearance.Name] = []
-        let subscription = StatusAppearanceChanges.distinct(appearances).sink { redraws.append($0) }
-        let light = NSAppearance(named: .aqua)!
-
-        appearances.send(light)
-        for _ in 0..<100 {
-            appearances.send(light)
-        }
-
-        XCTAssertEqual(redraws, [])
-        subscription.cancel()
+    private func appearance(_ name: NSAppearance.Name) -> NSAppearance {
+        NSAppearance(named: name)!
     }
 
-    func testEachRealAppearanceChangeRedrawsOnce() {
+    private func redraws(for names: [NSAppearance.Name]) -> [NSAppearance.Name?] {
         let appearances = PassthroughSubject<NSAppearance, Never>()
-        var redraws: [NSAppearance.Name] = []
+        var redraws: [NSAppearance.Name?] = []
         let subscription = StatusAppearanceChanges.distinct(appearances).sink { redraws.append($0) }
-        let light = NSAppearance(named: .aqua)!
-        let dark = NSAppearance(named: .darkAqua)!
-
-        appearances.send(light)
-        appearances.send(dark)
-        appearances.send(dark)
-        appearances.send(light)
-        appearances.send(light)
-
-        XCTAssertEqual(redraws, [.darkAqua, .aqua])
+        for name in names {
+            appearances.send(appearance(name))
+        }
         subscription.cancel()
+        return redraws
+    }
+
+    func testDarkModeNoticesAfterEachImageNeverRedraw() {
+        // macOS 27.2 sends this alternation eight times after every status image.
+        let notices = [NSAppearance.Name.darkAqua] +
+            Array(repeating: [NSAppearance.Name.darkAqua, .vibrantDark], count: 100).flatMap { $0 }
+
+        XCTAssertEqual(redraws(for: notices), [])
+    }
+
+    func testLightModeVariantsNeverRedraw() {
+        let notices = [NSAppearance.Name.aqua] +
+            Array(repeating: [NSAppearance.Name.vibrantLight, .aqua], count: 100).flatMap { $0 }
+
+        XCTAssertEqual(redraws(for: notices), [])
+    }
+
+    func testEachSwitchBetweenLightAndDarkRedrawsOnce() {
+        XCTAssertEqual(
+            redraws(for: [.aqua, .vibrantDark, .darkAqua, .vibrantLight, .aqua, .darkAqua]),
+            [.darkAqua, .aqua, .darkAqua]
+        )
+    }
+
+    func testDrawingAppearanceIsThemeAdaptivesLightOrDarkChoice() {
+        XCTAssertEqual(StatusAppearanceChanges.drawingAppearance(appearance(.aqua)), .aqua)
+        XCTAssertEqual(StatusAppearanceChanges.drawingAppearance(appearance(.vibrantLight)), .aqua)
+        XCTAssertEqual(StatusAppearanceChanges.drawingAppearance(appearance(.darkAqua)), .darkAqua)
+        XCTAssertEqual(StatusAppearanceChanges.drawingAppearance(appearance(.vibrantDark)), .darkAqua)
+        XCTAssertEqual(
+            StatusAppearanceChanges.drawingAppearance(appearance(.accessibilityHighContrastVibrantDark)),
+            .darkAqua
+        )
     }
 }
