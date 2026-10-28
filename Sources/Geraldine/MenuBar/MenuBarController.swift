@@ -245,13 +245,15 @@ final class MenuBarController: NSObject, NSWindowDelegate {
         button.imageScaling = .scaleNone
         button.imagePosition = .imageOnly
 
-        appearanceSink = button.publisher(for: \.effectiveAppearance, options: [.new])
-            .sink { [weak self] _ in
-                Task { @MainActor in
-                    self?.invalidateStatusRendering()
-                    self?.renderStatusItem()
-                }
+        appearanceSink = StatusAppearanceChanges.distinct(
+            button.publisher(for: \.effectiveAppearance, options: [.initial, .new])
+        )
+        .sink { [weak self] _ in
+            Task { @MainActor in
+                self?.invalidateStatusRendering()
+                self?.renderStatusItem()
             }
+        }
 
         renderStatusItem()
 
