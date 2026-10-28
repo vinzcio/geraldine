@@ -42,7 +42,7 @@ enum AIUsageCredentialStore {
                                             accountPaths: [["tokens", "account_id"], ["account_id"]])
         case .grok:        return grokToken(homeDirectory: homeDirectory)
         case .cursor:      return cursorToken(homeDirectory: homeDirectory)
-        case .antigravity: return nil // Authentication belongs exclusively to the agy CLI.
+        case .antigravity, .opencode, .pi, .muse: return nil // These providers do not expose credentials to this quota reader.
         }
     }
 
@@ -229,6 +229,8 @@ enum AIUsageFetcher {
         case .grok:        return await grokCLI.snapshot(homeDirectory: homeDirectory, now: now)
         case .cursor:      return await cursorCLI.snapshot(homeDirectory: homeDirectory, now: now)
         case .antigravity: return await antigravityCLI.snapshot(homeDirectory: homeDirectory, now: now)
+        case .opencode, .pi, .muse:
+            return .failed(identity.provider, message: identity.provider.usageUnavailableHint)
         }
     }
 

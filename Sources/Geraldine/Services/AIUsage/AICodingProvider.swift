@@ -10,6 +10,9 @@ enum AICodingProvider: String, CaseIterable, Codable, Identifiable, Sendable {
     case codex
     case grok
     case cursor
+    case opencode
+    case pi
+    case muse
 
     var id: String { rawValue }
 
@@ -20,6 +23,9 @@ enum AICodingProvider: String, CaseIterable, Codable, Identifiable, Sendable {
         case .codex:       return "Codex"
         case .grok:        return "Grok"
         case .cursor:      return "Cursor"
+        case .opencode: return "OpenCode"
+        case .pi: return "Pi"
+        case .muse: return "Muse"
         }
     }
 
@@ -30,6 +36,7 @@ enum AICodingProvider: String, CaseIterable, Codable, Identifiable, Sendable {
         case .codex:       return "chevron.left.forwardslash.chevron.right"
         case .grok:        return "bolt.fill"
         case .cursor:      return "cursorarrow"
+        case .opencode, .pi, .muse: return "terminal"
         }
     }
 
@@ -40,6 +47,7 @@ enum AICodingProvider: String, CaseIterable, Codable, Identifiable, Sendable {
         case .codex:       return Theme.Chart.green
         case .grok:        return Theme.Chart.silver
         case .cursor:      return Theme.Chart.purple
+        case .opencode, .pi, .muse: return Theme.Chart.blue
         }
     }
 
@@ -50,6 +58,7 @@ enum AICodingProvider: String, CaseIterable, Codable, Identifiable, Sendable {
         case .codex:       return "Usage unavailable. Run /usage in the Codex CLI, then refresh."
         case .grok:        return "Usage unavailable. Run /usage in the Grok CLI, then refresh."
         case .cursor:      return "Usage unavailable. Run /usage in the Cursor Agent CLI, then refresh."
+        case .opencode, .pi, .muse: return "Usage unavailable for allowances. Token history and cost are available in Coding Usage."
         }
     }
 
@@ -60,6 +69,7 @@ enum AICodingProvider: String, CaseIterable, Codable, Identifiable, Sendable {
         case .codex:       return ["Codex", "ChatGPT"]
         case .grok:        return ["Grok"]
         case .cursor:      return ["Cursor"]
+        case .opencode, .pi, .muse: return []
         }
     }
 
@@ -79,6 +89,9 @@ enum AICodingProvider: String, CaseIterable, Codable, Identifiable, Sendable {
         case .codex:       return URL(string: "https://chatgpt.com/codex")!
         case .grok:        return URL(string: "https://grok.com")!
         case .cursor:      return URL(string: "https://cursor.com")!
+        case .opencode: return URL(string: "https://opencode.ai")!
+        case .pi: return URL(string: "https://pi.dev")!
+        case .muse: return URL(string: "https://github.com/pingdotgg/t3code/blob/main/docs/user/usage.md")!
         }
     }
 }
@@ -125,10 +138,10 @@ struct AIUsageDisclosure: Equatable, Sendable {
     static let current = AIUsageDisclosure()
 
     var destinations: [String] {
-        ["Antigravity", "Claude", "Codex", "Grok", "Cursor"]
+        AICodingProvider.allCases.map(\.title)
     }
 
     var text: String {
-        "For Antigravity, Claude, Codex, Grok, and Cursor, runs each official CLI with the local sign-in already on this Mac; the CLI asks its provider for remaining usage. No separate Geraldine sign-in or Keychain access. Show or hide usage tiles below."
+        "Antigravity, Claude, Codex, Grok, and Cursor allowances use the local sign-in already on this Mac through each official CLI. Token history also supports OpenCode, Pi, and Muse. Cursor history uses its dashboard with file credentials; public model prices come from LiteLLM. No separate Geraldine sign-in or Keychain access. Show or hide usage tiles below."
     }
 }

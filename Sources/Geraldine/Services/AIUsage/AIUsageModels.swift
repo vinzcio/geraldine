@@ -121,7 +121,7 @@ struct AIUsageSnapshot: Equatable, Sendable {
                 shown.append(fiveHour)
             }
             return shown.isEmpty ? Array(windows.prefix(1)) : shown
-        case .antigravity:
+        case .antigravity, .opencode, .pi, .muse:
             return windows
         }
     }

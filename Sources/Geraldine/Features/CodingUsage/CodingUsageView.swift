@@ -4,6 +4,8 @@ struct CodingUsageView: View {
     @EnvironmentObject var state: AppState
     @EnvironmentObject var usage: AIUsageMonitor
     @State private var query = ""
+    @State private var showHistory = false
+    @StateObject private var history = AIUsageHistoryMonitor()
 
     private var accounts: [AIUsageAccount] {
         usage.accounts.filter { account in
@@ -16,34 +18,54 @@ struct CodingUsageView: View {
 
     var body: some View {
         ModulePage(module: .codingUsage, headerStyle: .data, widthRole: .readable) {
-            Button { usage.refreshConnected() } label: {
-                Label(usage.isRefreshing ? "Updating…" : "Refresh Usage", systemImage: "arrow.clockwise")
+            Button {
+                if showHistory {
+                    Task {
+                        await history.refreshPrices()
+                        for account in accounts where history.summaries[account.identity] != nil { history.refresh(account.identity) }
+                    }
+                } else { usage.refreshConnected() }
+            } label: {
+                Label((showHistory ? !history.reading.isEmpty : usage.isRefreshing) ? "Updating…" : "Refresh Usage", systemImage: "arrow.clockwise")
             }
             .buttonStyle(.quiet(Module.codingUsage.tint))
-            .disabled(usage.isRefreshing || !usage.accounts.contains { usage.isConnected($0.identity) })
+            .disabled(showHistory ? (!history.reading.isEmpty || history.summaries.isEmpty) : (usage.isRefreshing || !usage.accounts.contains { usage.isConnected($0.identity) }))
         } content: {
-            Text("Allowances are reported separately by each provider. Percentages from different plans and windows are not a combined balance.")
+            Picker("Usage measurement", selection: $showHistory) {
+                Text("Allowances").tag(false)
+                Text("Tokens & Cost").tag(true)
+            }.pickerStyle(.segmented)
+            if !showHistory {
+                Text("Allowances are reported separately by each provider. Percentages from different plans and windows are not a combined balance.")
                 .font(.callout).foregroundStyle(.secondary)
+            }
             TextField("Find an account or provider", text: $query)
                 .textFieldStyle(.roundedBorder)
-            ForEach(accounts) { account in
-                CodingUsageAccountCard(
-                    title: usage.displayName(for: account.identity),
-                    snapshot: usage.snapshot(for: account.identity),
-                    isRefreshing: usage.isRefreshing,
-                    refresh: { usage.connect(account.identity) },
-                    show: { state.connectAIUsage(account.identity) }
-                )
+            if showHistory {
+                CodingUsageHistoryView(history: history, accounts: accounts, title: { usage.displayName(for: $0) })
+            } else {
+                ForEach(accounts) { account in
+                    CodingUsageAccountCard(
+                        title: usage.displayName(for: account.identity),
+                        snapshot: usage.snapshot(for: account.identity),
+                        isRefreshing: usage.isRefreshing,
+                        refresh: { usage.connect(account.identity) },
+                        show: { state.connectAIUsage(account.identity) }
+                    )
+                }
             }
             if accounts.isEmpty {
                 Text("No accounts match your search.").foregroundStyle(.secondary)
             }
-            Text("Uses each official CLI with its existing local sign-in. Showing usage also enables its menu-bar tile. Manage visibility in Settings.")
-                .font(.caption).foregroundStyle(.secondary)
+            if !showHistory {
+                Text("Allowances use existing official CLI sign-ins. Showing allowances also enables a menu-bar tile. OpenCode, Pi, and Muse currently provide token history only; use Tokens & Cost.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Button("Coding Usage Settings") { state.selection = .settings }
                 .buttonStyle(.quiet(Module.codingUsage.tint))
         }
         .onAppear { usage.refreshIfStale() }
+        .onDisappear { history.stop() }
     }
 }
 

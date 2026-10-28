@@ -18,7 +18,7 @@ final class AIUsageAccountsTests: XCTestCase {
 
         let accounts = AIUsageAccountDiscovery.accounts(userHome: home)
 
-        XCTAssertEqual(accounts.map(\.id), ["antigravity", "claude", "claude.client", "codex", "codex.work", "grok", "cursor"])
+        XCTAssertEqual(accounts.map(\.id), ["antigravity", "claude", "claude.client", "codex", "codex.work", "grok", "cursor", "opencode", "pi", "muse"])
         XCTAssertEqual(name(of: "claude", in: accounts), "Example Co")
         XCTAssertEqual(name(of: "claude.client", in: accounts), "Client")
         XCTAssertEqual(name(of: "codex", in: accounts), "Personal")
