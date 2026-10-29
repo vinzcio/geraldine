@@ -35,7 +35,8 @@ final class AIUsageWidgetSnapshotRenderTests: XCTestCase {
             // Settings is another usage surface: it must keep numbers on errors
             // and show their age without running a provider or opening a window.
             let settings = ImageRenderer(content: AIUsageConnectionRow(identity: identity)
-                .environmentObject(monitor).frame(width: 640).padding(12))
+                .environmentObject(monitor).environment(\.colorScheme, .dark)
+                .frame(width: 640).padding(12).background(Color.black))
             settings.scale = 2
             let settingsImage = NSBitmapImageRep(cgImage: try XCTUnwrap(settings.cgImage))
             try XCTUnwrap(settingsImage.representation(using: .png, properties: [:]))
