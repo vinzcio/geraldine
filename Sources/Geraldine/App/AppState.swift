@@ -76,6 +76,7 @@ final class AppState: ObservableObject {
     let powerTools = PowerToolsController()
     let calendar = CalendarSettingsStore()
     let aiUsage = AIUsageMonitor()
+    let usageHistory = AIUsageHistoryMonitor()
     let updates = AppUpdateController()
     let hardware = HardwareInfo.current
 

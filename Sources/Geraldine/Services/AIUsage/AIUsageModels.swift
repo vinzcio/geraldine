@@ -1,7 +1,7 @@
 import Foundation
 
 /// One quota window from a provider (5-hour, weekly, included pool, a model).
-struct AIUsageWindow: Equatable, Identifiable, Sendable {
+struct AIUsageWindow: Equatable, Identifiable, Codable, Sendable {
     var id: String
     var title: String
     /// 0...100 used.
@@ -16,7 +16,7 @@ struct AIUsageWindow: Equatable, Identifiable, Sendable {
     }
 }
 
-enum AIUsageStatus: Equatable, Sendable {
+enum AIUsageStatus: Equatable, Codable, Sendable {
     case disconnected
     case needsSignIn
     case loading
@@ -31,7 +31,7 @@ enum AIUsageStatus: Equatable, Sendable {
     }
 }
 
-struct AIUsageSnapshot: Equatable, Sendable {
+struct AIUsageSnapshot: Equatable, Codable, Sendable {
     var provider: AICodingProvider
     var status: AIUsageStatus
     var plan: String?

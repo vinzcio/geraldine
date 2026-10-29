@@ -29,7 +29,7 @@ enum AgentCLI {
             homeDirectory.appendingPathComponent(".local/bin"),
             homeDirectory.appendingPathComponent(".homebrew/bin")
         ]
-        if homeDirectory.standardizedFileURL.path == AIUsageCredentialStore.home().standardizedFileURL.path {
+        if homeDirectory.standardizedFileURL.path == FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.path {
             directories.append(URL(fileURLWithPath: "/opt/homebrew/bin"))
             directories.append(URL(fileURLWithPath: "/usr/local/bin"))
         }

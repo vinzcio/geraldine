@@ -12,6 +12,7 @@ struct AIUsageWidget: View {
         TimelineView(.everyMinute) { context in
             presentation(at: context.date)
         }
+        .onAppear { usage.refreshIfStale() }
     }
 
     /// The live tile and offscreen checks enter through the same presentation.
@@ -75,11 +76,21 @@ struct AIUsageTile: View {
     }
 
     var body: some View {
-        Group {
-            switch size {
-            case .small:  smallBody
-            case .medium: mediumBody
-            case .large:  largeBody
+        VStack(alignment: .leading, spacing: 3) {
+            Group {
+                switch size {
+                case .small:  smallBody
+                case .medium: mediumBody
+                case .large:  largeBody
+                }
+            }
+            if snapshot.status.isConnected {
+                Text(UsageAge.text(snapshot.fetchedAt, now: now))
+                    .font(.system(size: 9)).foregroundStyle(.secondary)
+                    .lineLimit(1).minimumScaleFactor(0.8)
+                if case .error = snapshot.status, snapshot.hasDisplayableUsage {
+                    Text("Couldn't refresh").font(.system(size: 9)).foregroundStyle(.secondary)
+                }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -531,6 +542,7 @@ struct AIUsageTile: View {
                 parts.append(text)
             }
         }
+        if snapshot.status.isConnected { parts.append(UsageAge.text(snapshot.fetchedAt, now: now)) }
         return parts.joined(separator: ", ")
     }
 

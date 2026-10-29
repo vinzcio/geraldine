@@ -6,6 +6,7 @@ import Foundation
 /// and is rejected when it is a model turn or an unauthenticated stub.
 struct CursorCLIUsage: ProviderUsageReading {
     static let sourceLabel = "Cursor CLI"
+    var timeout: TimeInterval = 45
 
     /// `--disable-auto-update`: otherwise every check starts the CLI's background
     /// self-update (a full download) and the capture kills it half-extracted.
@@ -31,16 +32,10 @@ struct CursorCLIUsage: ProviderUsageReading {
             return .failed(.cursor, message: "Cursor Agent CLI was not found.")
         }
         let workspace = AgentCLI.usageWorkspace(homeDirectory: homeDirectory)
-        var environment = [
+        let environment = [
             "TERM": "xterm-256color",
             "COLORFGBG": "15;0"
         ]
-        // Reuse the official Cursor app session. The TUI otherwise opens an
-        // OAuth splash whenever its own JWT looks stale, even if the app is
-        // signed in. Passing the local token is not a new login.
-        if let token = AIUsageCredentialStore.token(for: .cursor, homeDirectory: homeDirectory)?.value {
-            environment["CURSOR_AUTH_TOKEN"] = token
-        }
         let text = AgentPTY.capture(
             executable: executable,
             arguments: Self.arguments(workspace: workspace),
@@ -64,7 +59,7 @@ struct CursorCLIUsage: ProviderUsageReading {
                 "Signing in with the browser",
                 "If your browser didn't open"
             ],
-            timeout: 22
+            timeout: timeout
         )
         switch Self.parse(Data(text.utf8), now: now) {
         case .success(let snapshot): return snapshot

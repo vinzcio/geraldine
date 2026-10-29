@@ -32,6 +32,15 @@ final class AIUsageWidgetSnapshotRenderTests: XCTestCase {
             for await snapshots in monitor.$snapshots.values {
                 if snapshots[identity] == fixture { break }
             }
+            // Settings is another usage surface: it must keep numbers on errors
+            // and show their age without running a provider or opening a window.
+            let settings = ImageRenderer(content: AIUsageConnectionRow(identity: identity)
+                .environmentObject(monitor).environment(\.colorScheme, .dark)
+                .frame(width: 640).padding(12).background(Color.black))
+            settings.scale = 2
+            let settingsImage = NSBitmapImageRep(cgImage: try XCTUnwrap(settings.cgImage))
+            try XCTUnwrap(settingsImage.representation(using: .png, properties: [:]))
+                .write(to: output.appendingPathComponent("settings-\(name).png"))
             for size in WidgetSize.allCases {
                 for scheme in [ColorScheme.light, .dark] {
                     let gridWidth: CGFloat = 608

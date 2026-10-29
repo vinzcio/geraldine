@@ -3,7 +3,7 @@
 import Foundation
 
 /// Disjoint billable categories. Reasoning is a subset of output, never added to total.
-struct AIHistoryTokens: Equatable, Sendable {
+struct AIHistoryTokens: Equatable, Codable, Sendable {
     var input: Double = 0
     var cacheRead: Double = 0
     var cacheWrite: Double = 0
@@ -32,7 +32,7 @@ struct AIHistoryRead: Sendable {
     var notice: String? = nil
 }
 
-struct AIHistoryModelTotal: Identifiable, Sendable {
+struct AIHistoryModelTotal: Identifiable, Codable, Sendable {
     var id: String { model }
     var model: String
     var tokens = AIHistoryTokens()
@@ -42,7 +42,7 @@ struct AIHistoryModelTotal: Identifiable, Sendable {
     var estimatedRecords = 0
 }
 
-struct AIHistorySummary: Sendable {
+struct AIHistorySummary: Codable, Sendable {
     var models: [AIHistoryModelTotal]
     var source: String
     var notice: String?

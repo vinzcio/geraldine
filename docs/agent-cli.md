@@ -474,12 +474,13 @@ Returns every discovered coding-assistant identity with its status (`ready`,
 known, and all returned quota windows with `usedPercent`, `remainingPercent`,
 `resetsAt`, and `durationSeconds`.
 
-`--refresh` asks the existing `AIUsageMonitor` to refresh the accounts already
-connected in the layout and waits for that batch through cancellation-aware
-request waiters. It does not start an unrelated refresh or add a request
-deadline; the caller may choose `--timeout`. Disconnecting cancels that request's
-waiter without cancelling an independently owned shared provider refresh. The
-official provider CLIs may contact their providers and update local caches.
+`--refresh` starts independent background refreshes for accounts already
+connected in the layout and returns cached values immediately. `refreshed`
+remains false because the response does not wait for new values; a warning
+confirms background work was requested. Each account retains its last successful
+`fetchedAt`, and text output includes its age. Repeated requests coalesce only
+for the same in-flight login. The official provider CLIs may contact their
+providers and update local caches.
 Geraldine sends no usage HTTP requests of its own and reads no Keychain.
 
 Result:

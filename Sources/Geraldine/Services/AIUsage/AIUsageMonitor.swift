@@ -18,25 +18,28 @@ final class AIUsageMonitor: ObservableObject {
     private let now: () -> Date
     private let userHome: URL
     private let fetchUsage: UsageFetching
-    private var refreshTask: Task<Void, Never>?
+    private var tasks: [AIUsageIdentity: Task<Void, Never>] = [:]
+    private var completedAt: [AIUsageIdentity: Date] = [:]
+    private var pending = Set<AIUsageIdentity>()
+    private var generations: [AIUsageIdentity: UUID] = [:]
+    private var saved: [AIUsageIdentity: AIUsageSnapshot] = [:]
     private var timer: Timer?
-    private var inFlight = Set<AIUsageIdentity>()
-    private var queued = Set<AIUsageIdentity>()
     private var discoveryTask: Task<Void, Never>?
 
     typealias UsageFetching = @Sendable (AIUsageIdentity, Date) async -> AIUsageSnapshot
 
+    static let cacheKey = "geraldine.aiUsage.snapshots"
+    static let accountsKey = "geraldine.aiUsage.accounts"
     static let connectedKey = "geraldine.aiUsage.connected"
     nonisolated static let refreshInterval: TimeInterval = 5 * 60
-    /// How often the timer asks whether usage is stale. `lastRefresh` lands
-    /// when a batch finishes, so a timer on `refreshInterval` itself found the
-    /// data a few seconds short of stale and skipped every other refresh.
+    /// Check more often than the cadence so a request's completion time cannot
+    /// push its next refresh out to every other five-minute tick.
     nonisolated static let stalenessCheckInterval: TimeInterval = 60
 
     init(defaults: UserDefaults = .standard,
          transport: any AIUsageTransporting = URLSessionAIUsageTransport(),
          now: @escaping () -> Date = Date.init,
-         userHome: URL = AIUsageCredentialStore.home(),
+         userHome: URL = FileManager.default.homeDirectoryForCurrentUser,
          fetchUsage: UsageFetching? = nil) {
         self.defaults = defaults
         self.transport = transport
@@ -45,10 +48,12 @@ final class AIUsageMonitor: ObservableObject {
         self.fetchUsage = fetchUsage ?? { identity, date in
             await AIUsageFetcher.fetch(identity, transport: transport, now: date, homeDirectory: userHome)
         }
-        let found = AIUsageAccountDiscovery.accounts(userHome: userHome)
-        accounts = found
-        snapshots = Dictionary(uniqueKeysWithValues: found.map { ($0.identity, .disconnected($0.identity.provider)) })
+        saved = UsageCache.load([AIUsageIdentity: AIUsageSnapshot].self, defaults: defaults, key: Self.cacheKey) ?? [:]
+        accounts = UsageCache.load([AIUsageAccount].self, defaults: defaults, key: Self.accountsKey)
+            ?? AICodingProvider.allCases.map { AIUsageAccount(identity: AIUsageIdentity($0), name: "Personal") }
+        snapshots = [:]
         restoreConnections()
+        rediscoverAccounts()
     }
 
     func snapshot(for provider: AICodingProvider) -> AIUsageSnapshot {
@@ -96,7 +101,9 @@ final class AIUsageMonitor: ObservableObject {
             }.value
             guard let self else { return }
             self.discoveryTask = nil
+            guard !Task.isCancelled else { return }
             if self.accounts != found { self.accounts = found }
+            UsageCache.save(found, defaults: self.defaults, key: Self.accountsKey)
         }
     }
 
@@ -114,22 +121,26 @@ final class AIUsageMonitor: ObservableObject {
     func stop() {
         timer?.invalidate()
         timer = nil
-        refreshTask?.cancel()
-        refreshTask = nil
-        inFlight.removeAll()
-        queued.removeAll()
+        for task in tasks.values { task.cancel() }
+        generations.removeAll()
+        pending.removeAll()
+        discoveryTask?.cancel()
         isRefreshing = false
     }
 
-    /// Popover open, become-active, and the staleness timer all use this one
-    /// shared clock. An in-flight batch is reused instead of starting another.
+    func isRefreshing(_ identity: AIUsageIdentity) -> Bool {
+        tasks[identity].map { !$0.isCancelled } ?? false
+    }
+
+    /// Each login owns its cadence and in-flight work. Opening a surface never
+    /// waits for a CLI, and one slow login cannot hold another behind a batch.
     func refreshIfStale() {
-        guard refreshTask == nil else { return }
-        guard needsSharedRefresh else { return }
-        let identities = connectedIdentities()
-        guard !identities.isEmpty else { return }
         rediscoverAccounts()
-        startBatch(Set(identities))
+        let date = now()
+        enqueue(connectedIdentities().filter { identity in
+            let last = completedAt[identity] ?? snapshots[identity]?.fetchedAt
+            return last.map { date.timeIntervalSince($0) >= Self.refreshInterval } ?? true
+        })
     }
 
     func refreshConnected() {
@@ -156,6 +167,7 @@ final class AIUsageMonitor: ObservableObject {
 
     func disconnect(_ identity: AIUsageIdentity) {
         persistConnected(identity, connected: false)
+        generations[identity] = nil
         snapshots[identity] = .disconnected(identity.provider)
         NotificationCenter.default.post(name: .aiUsageConnectionDidChange, object: identity.provider)
     }
@@ -179,6 +191,7 @@ final class AIUsageMonitor: ObservableObject {
                 NotificationCenter.default.post(name: .aiUsageConnectionDidChange, object: identity.provider)
             } else if !shouldConnect && isConnected(identity) {
                 persistConnected(identity, connected: false)
+                generations[identity] = nil
                 snapshots[identity] = .disconnected(identity.provider)
                 NotificationCenter.default.post(name: .aiUsageConnectionDidChange, object: identity.provider)
             }
@@ -201,8 +214,9 @@ final class AIUsageMonitor: ObservableObject {
 
     private func restoreConnections() {
         let stored = Set(defaults.stringArray(forKey: Self.connectedKey) ?? [])
-        for account in accounts where stored.contains(account.id) {
-            snapshots[account.identity] = .loading(account.identity.provider)
+        for id in stored {
+            guard let identity = AIUsageIdentity.from(widgetID: "ai." + id) else { continue }
+            snapshots[identity] = cachedSnapshot(identity) ?? .loading(identity.provider)
         }
     }
 
@@ -221,14 +235,19 @@ final class AIUsageMonitor: ObservableObject {
         return known.filter { isConnected($0) }.sorted { $0.id < $1.id }
     }
 
-    private var needsSharedRefresh: Bool {
-        guard let lastRefresh else { return true }
-        return now().timeIntervalSince(lastRefresh) >= Self.refreshInterval
+    private func cachedSnapshot(_ identity: AIUsageIdentity) -> AIUsageSnapshot? {
+        guard var cached = saved[identity] else { return nil }
+        let hadWindows = !cached.windows.isEmpty
+        cached.windows.removeAll { $0.resetsAt.map { $0 <= now() } ?? false }
+        if hadWindows && cached.windows.isEmpty { return nil }
+        return cached
     }
 
     private func markLoadingIfEmpty(_ identity: AIUsageIdentity) {
-        let current = snapshots[identity]
-        if current?.hasDisplayableUsage != true {
+        let current = snapshots[identity]?.hasDisplayableUsage == true ? snapshots[identity] : cachedSnapshot(identity)
+        if let current, current.hasDisplayableUsage {
+            snapshots[identity] = current
+        } else {
             snapshots[identity] = .loading(identity.provider, preserving: current)
         }
     }
@@ -246,46 +265,31 @@ final class AIUsageMonitor: ObservableObject {
     }
 
     private func enqueue(_ identities: [AIUsageIdentity]) {
-        let wanted = Set(identities).subtracting(inFlight)
-        guard !wanted.isEmpty else { return }
-        if refreshTask != nil {
-            queued.formUnion(wanted)
-            return
-        }
-        startBatch(wanted)
-    }
-
-    private func startBatch(_ identities: Set<AIUsageIdentity>) {
-        guard !identities.isEmpty else { return }
-        inFlight.formUnion(identities)
-        isRefreshing = true
-        for identity in identities {
-            markLoadingIfEmpty(identity)
-        }
-        refreshTask = Task { [fetchUsage, now] in
-            await withTaskGroup(of: (AIUsageIdentity, AIUsageSnapshot).self) { group in
-                for identity in identities {
-                    group.addTask {
-                        (identity, await fetchUsage(identity, now()))
-                    }
-                }
-                for await (identity, snapshot) in group {
-                    await MainActor.run {
-                        self.snapshots[identity] = self.keepingLastValues(snapshot, over: self.snapshots[identity])
-                        self.inFlight.remove(identity)
-                    }
-                }
+        for identity in identities where isConnected(identity) {
+            guard tasks[identity] == nil else {
+                if tasks[identity]?.isCancelled == true || generations[identity] == nil { pending.insert(identity) }
+                continue
             }
-            await MainActor.run {
-                self.lastRefresh = now()
-                self.refreshTask = nil
-                let followUp = self.queued
-                self.queued.removeAll()
-                if followUp.isEmpty {
-                    self.isRefreshing = false
-                } else {
-                    self.startBatch(followUp)
+            let generation = UUID()
+            generations[identity] = generation
+            let date = now()
+            markLoadingIfEmpty(identity)
+            isRefreshing = true
+            tasks[identity] = Task { [weak self, fetchUsage] in
+                let snapshot = await fetchUsage(identity, date)
+                guard let self else { return }
+                self.tasks[identity] = nil
+                if !Task.isCancelled, self.generations[identity] == generation, self.isConnected(identity) {
+                    let kept = self.keepingLastValues(snapshot, over: self.snapshots[identity])
+                    self.snapshots[identity] = kept
+                    self.completedAt[identity] = self.now()
+                    self.lastRefresh = self.now()
+                    // Only display data is persisted, never provider credentials or transcripts.
+                    self.saved[identity] = kept.fetchedAt == nil ? nil : kept
+                    UsageCache.save(self.saved, defaults: self.defaults, key: Self.cacheKey)
                 }
+                self.isRefreshing = self.tasks.values.contains { !$0.isCancelled }
+                if self.pending.remove(identity) != nil, self.isConnected(identity) { self.enqueue([identity]) }
             }
         }
     }
