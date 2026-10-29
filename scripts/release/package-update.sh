@@ -74,8 +74,16 @@ if [ "$REHEARSAL" -eq 0 ]; then
     || die "HEAD is not on origin/main. Merge first."
 fi
 
-SCRATCH="$(/usr/bin/mktemp -d /private/tmp/geraldine-release.XXXXXX)"
+# An operator may supply an empty CLAYGO-owned directory. Its outer owner
+# finalizes it after preserving packaging/install proof.
+if [ -n "${GERALDINE_RELEASE_SCRATCH:-}" ]; then
+  SCRATCH="$GERALDINE_RELEASE_SCRATCH"
+  [ -d "$SCRATCH" ] && [ -z "$(/bin/ls -A "$SCRATCH")" ] || die "Release scratch must be an empty owned directory"
+else
+  SCRATCH="$(/usr/bin/mktemp -d /private/tmp/geraldine-release.XXXXXX)"
+fi
 cleanup() {
+  [ -z "${GERALDINE_RELEASE_SCRATCH:-}" ] || return 0
   case "$SCRATCH" in
     /private/tmp/geraldine-release.??????) /bin/rm -rf "$SCRATCH" ;;
   esac

@@ -135,7 +135,7 @@ public enum CommandCatalog {
             name: "usage",
             summary: "Show coding-assistant remaining usage and reset windows.",
             usage: "geraldine usage [--refresh] [--json]",
-            arguments: [CommandArgument(name: "--refresh", type: "boolean", required: false, description: "Refresh only accounts already enabled in Geraldine; otherwise return the cache.")],
+            arguments: [CommandArgument(name: "--refresh", type: "boolean", required: false, description: "Refresh enabled accounts in the background and return cached values immediately.")],
             sideEffects: ["--refresh runs enabled accounts' official provider CLIs using existing sign-ins; those CLIs may contact their providers and update local usage caches. Geraldine issues no usage HTTP requests and reads no Keychain."]
         ),
         CommandDefinition(

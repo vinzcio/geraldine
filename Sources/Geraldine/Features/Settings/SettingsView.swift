@@ -129,7 +129,7 @@ struct AppSettingsView: View {
                 }
             }
         }
-        .onAppear { state.refreshPermissions() }
+        .onAppear { state.refreshPermissions(); usage.refreshIfStale() }
     }
 
     private var updatesSubtitle: String {
@@ -329,7 +329,7 @@ struct LaunchAtLoginControl: View {
     }
 }
 
-private struct AIUsageConnectionRow: View {
+struct AIUsageConnectionRow: View {
     let identity: AIUsageIdentity
     @EnvironmentObject private var state: AppState
     @EnvironmentObject private var usage: AIUsageMonitor
@@ -347,9 +347,18 @@ private struct AIUsageConnectionRow: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                if snapshot.status.isConnected {
+                    TimelineView(.everyMinute) { context in
+                        Text(UsageAge.text(snapshot.fetchedAt, now: context.date))
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                    if case .error = snapshot.status, snapshot.hasDisplayableUsage {
+                        Text("Couldn't refresh").font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
             }
             Spacer(minLength: 8)
-            if snapshot.status == .ready, let remaining = snapshot.remainingPercent {
+            if snapshot.hasDisplayableUsage, let remaining = snapshot.remainingPercent {
                 // Cursor's two pools are listed in the caption. A single tightest
                 // number would be the exhausted Other-models bar (0%) on this plan.
                 if provider != .cursor || snapshot.displayWindows.count < 2 {
@@ -365,7 +374,7 @@ private struct AIUsageConnectionRow: View {
     }
 
     private var detail: String {
-        let email = snapshot.accountEmail
+        if snapshot.hasDisplayableUsage { return usageDetail }
         switch snapshot.status {
         case .disconnected:
             return "Show usage from the existing app or CLI session."
@@ -374,39 +383,44 @@ private struct AIUsageConnectionRow: View {
         case .loading:
             return "Reading remaining usage…"
         case .ready:
-            // Absolute reset times: this caption does not tick like the tiles do.
-            func reset(_ window: AIUsageWindow) -> String? {
-                AIUsageResetText.detail(window, style: .absolute)
-            }
-            func summary(_ window: AIUsageWindow, includesReset: Bool) -> String {
-                let left = "\(window.title): \(Int(window.remainingPercent.rounded()))% left"
-                guard includesReset, let reset = reset(window) else { return left }
-                return "\(left) (\(reset))"
-            }
-            let shared = snapshot.sharedReset
-            if provider == .antigravity {
-                return snapshot.displayWindows.map { summary($0, includesReset: true) }
-                    .joined(separator: " · ")
-            }
-            if provider == .cursor || provider == .claude || (provider == .codex && snapshot.displayWindows.count > 1) {
-                let windows = snapshot.displayWindows.map {
-                    summary($0, includesReset: shared == nil)
-                }.joined(separator: " · ")
-                return [email, windows, shared.flatMap(reset), snapshot.cachedSourceDescription]
-                    .compactMap { $0 }.joined(separator: " · ")
-            }
-            let headlineReset = snapshot.headline.flatMap(reset)
-            if let email {
-                return [email, snapshot.headline?.title, headlineReset].compactMap { $0 }.joined(separator: " · ")
-            }
-            if let source = snapshot.cachedSourceDescription { return source }
-            if let window = snapshot.headline {
-                return [window.title, headlineReset].compactMap { $0 }.joined(separator: " · ")
-            }
             return "Connected"
         case .error(let message):
             return message
         }
+    }
+
+    private var usageDetail: String {
+        let email = snapshot.accountEmail
+        // Absolute reset times: this caption does not tick like the tiles do.
+        func reset(_ window: AIUsageWindow) -> String? {
+            AIUsageResetText.detail(window, style: .absolute)
+        }
+        func summary(_ window: AIUsageWindow, includesReset: Bool) -> String {
+            let left = "\(window.title): \(Int(window.remainingPercent.rounded()))% left"
+            guard includesReset, let reset = reset(window) else { return left }
+            return "\(left) (\(reset))"
+        }
+        let shared = snapshot.sharedReset
+        if provider == .antigravity {
+            return snapshot.displayWindows.map { summary($0, includesReset: true) }
+                .joined(separator: " · ")
+        }
+        if provider == .cursor || provider == .claude || (provider == .codex && snapshot.displayWindows.count > 1) {
+            let windows = snapshot.displayWindows.map {
+                summary($0, includesReset: shared == nil)
+            }.joined(separator: " · ")
+            return [email, windows, shared.flatMap(reset), snapshot.cachedSourceDescription]
+                .compactMap { $0 }.joined(separator: " · ")
+        }
+        let headlineReset = snapshot.headline.flatMap(reset)
+        if let email {
+            return [email, snapshot.headline?.title, headlineReset].compactMap { $0 }.joined(separator: " · ")
+        }
+        if let source = snapshot.cachedSourceDescription { return source }
+        if let window = snapshot.headline {
+            return [window.title, headlineReset].compactMap { $0 }.joined(separator: " · ")
+        }
+        return "Connected"
     }
 
     @ViewBuilder private var connectionButton: some View {

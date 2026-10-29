@@ -99,7 +99,7 @@ labeled with the error and the time they were read, until each window resets.
 | Claude | `claude --print /usage --output-format json --no-session-persistence`; the `.claude.json` usage cache is used only when that command just refreshed it |
 | Codex | `codex app-server --stdio`: `account/rateLimits/read` for quota, `account/read` for the email |
 | Grok | `grok agent --no-leader stdio`: ACP `initialize`, then the `x.ai/billing` extension the TUI `/usage` screen uses |
-| Cursor | The `cursor-agent --disable-auto-update` TUI `/usage` pager, handed the Cursor app's existing session token |
+| Cursor | The `cursor-agent --disable-auto-update` TUI `/usage` pager, using the CLI's own sign-in with a 45-second background timeout |
 | Antigravity | `agy --print /usage --output-format json`, stopped after 150 seconds; a bucket agy marks `disabled` (a 5-hour limit while its group's weekly limit is spent) gets no row |
 
 Checks leave nothing behind: no saved Claude transcripts, no Grok session (the
@@ -120,8 +120,26 @@ exists; Geraldine never opens it. Menu-bar apps inherit a minimal PATH, so CLI
 launches prepend the install directories Geraldine searches (`~/.local/bin`,
 `~/.homebrew/bin`, `/opt/homebrew/bin`, `/usr/local/bin`).
 
-Regression tests use isolated synthetic homes and fake CLIs, and assert that
-no usage path opens an HTTP request.
+Enabled allowances refresh independently per login every five minutes (checked
+once a minute), and opening a stale usage view starts a background refresh.
+Tiles, popovers, detail cards, and the agent CLI show cached values immediately,
+with their age. A failed refresh keeps the last good values and a small failure
+note. Successful summaries survive app relaunch; no tokens are stored in this
+cache. Account discovery and every CLI wait run off the main thread.
+
+Tokens & Cost starts independent background reads when opened, then keeps the
+requested histories current even while the page is closed. All eight providers
+use their existing history readers, including OpenCode, Pi, and Muse (which have
+no allowance source). Public prices never delay token totals. History retains
+only aggregate display summaries across relaunch, never transcript records.
+Cursor's separately approved dashboard history source still uses file-based
+credentials; this is distinct from its credential-free quota CLI reader.
+
+PTY captures close the terminal master before waiting, send SIGTERM to the
+process group, then escalate to SIGKILL if needed. No quota reader reads tokens
+or accesses Keychain. Regression tests use synthetic homes and fake CLIs to
+verify scheduling, relaunch caches, native Cursor authentication, slow startup,
+and terminal shutdown. No quota path opens an HTTP request.
 
 ### Time windows and account plans
 

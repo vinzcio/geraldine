@@ -5,7 +5,7 @@ struct CodingUsageView: View {
     @EnvironmentObject var usage: AIUsageMonitor
     @State private var query = ""
     @State private var showHistory = false
-    @StateObject private var history = AIUsageHistoryMonitor()
+    private var history: AIUsageHistoryMonitor { state.usageHistory }
 
     private var accounts: [AIUsageAccount] {
         usage.accounts.filter { account in
@@ -20,16 +20,14 @@ struct CodingUsageView: View {
         ModulePage(module: .codingUsage, headerStyle: .data, widthRole: .readable) {
             Button {
                 if showHistory {
-                    Task {
-                        await history.refreshPrices()
-                        for account in accounts where history.summaries[account.identity] != nil { history.refresh(account.identity) }
-                    }
+                    history.refreshPrices()
+                    for account in accounts { history.refresh(account.identity) }
                 } else { usage.refreshConnected() }
             } label: {
-                Label((showHistory ? !history.reading.isEmpty : usage.isRefreshing) ? "Updating…" : "Refresh Usage", systemImage: "arrow.clockwise")
+                Label("Refresh Usage", systemImage: "arrow.clockwise")
             }
             .buttonStyle(.quiet(Module.codingUsage.tint))
-            .disabled(showHistory ? (!history.reading.isEmpty || history.summaries.isEmpty) : (usage.isRefreshing || !usage.accounts.contains { usage.isConnected($0.identity) }))
+            .disabled(!showHistory && !usage.accounts.contains { usage.isConnected($0.identity) })
         } content: {
             Picker("Usage measurement", selection: $showHistory) {
                 Text("Allowances").tag(false)
@@ -48,7 +46,7 @@ struct CodingUsageView: View {
                     CodingUsageAccountCard(
                         title: usage.displayName(for: account.identity),
                         snapshot: usage.snapshot(for: account.identity),
-                        isRefreshing: usage.isRefreshing,
+                        isRefreshing: usage.isRefreshing(account.identity),
                         refresh: { usage.connect(account.identity) },
                         show: { state.connectAIUsage(account.identity) }
                     )
@@ -65,7 +63,6 @@ struct CodingUsageView: View {
                 .buttonStyle(.quiet(Module.codingUsage.tint))
         }
         .onAppear { usage.refreshIfStale() }
-        .onDisappear { history.stop() }
     }
 }
 
@@ -121,8 +118,11 @@ struct CodingUsageAccountCard: View {
                 Text("The provider returned no allowance windows.").font(.callout).foregroundStyle(.secondary)
             }
             if let fetchedAt = snapshot.fetchedAt {
-                Text("Last successful update: \(fetchedAt.formatted(date: .abbreviated, time: .standard))")
-                    .font(.caption).foregroundStyle(.secondary)
+                TimelineView(.everyMinute) { context in
+                    Text(UsageAge.text(fetchedAt, now: context.date))
+                        .font(.caption).foregroundStyle(.secondary)
+                        .help("Last successful update: \(fetchedAt.formatted(date: .abbreviated, time: .standard))")
+                }
             }
             if let source = snapshot.sourceLabel {
                 Text(source).font(.caption2).foregroundStyle(.secondary)
@@ -134,9 +134,9 @@ struct CodingUsageAccountCard: View {
     private var statusText: String? {
         switch snapshot.status {
         case .disconnected: "Usage is hidden. No usage is requested for this account."
-        case .loading: snapshot.windows.isEmpty ? "Updating usage…" : "Updating usage; showing the last successful values."
+        case .loading: snapshot.windows.isEmpty ? "No usage yet. Checking in the background…" : "Updating usage; showing the last successful values."
         case .needsSignIn: snapshot.provider.usageUnavailableHint
-        case .error(let message): snapshot.windows.isEmpty ? message : "\(message) Showing the last successful values."
+        case .error(let message): snapshot.windows.isEmpty ? message : "Couldn't refresh. Showing the last known usage."
         case .ready: nil
         }
     }

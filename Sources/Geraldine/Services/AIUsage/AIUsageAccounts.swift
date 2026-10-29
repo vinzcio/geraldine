@@ -1,7 +1,7 @@
 import Foundation
 
 /// A logged-in agent CLI home that gets its own usage tile.
-struct AIUsageAccount: Equatable, Identifiable, Sendable {
+struct AIUsageAccount: Equatable, Identifiable, Codable, Sendable {
     var identity: AIUsageIdentity
     /// Tells this login apart from its siblings. Shown only when the provider
     /// has more than one account.

@@ -55,10 +55,12 @@ struct CodingUsageHistoryView: View {
                     } else if summary.notice == nil {
                         Text("No recorded token usage in the available history.").foregroundStyle(.secondary)
                     }
-                    Text("\(summary.source) · Read \(summary.updatedAt.formatted(date: .abbreviated, time: .shortened))")
-                        .font(.caption2).foregroundStyle(.secondary)
+                    TimelineView(.everyMinute) { context in
+                        Text("\(summary.source) · \(UsageAge.text(summary.updatedAt, now: context.date))")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
                 } else {
-                    Text("Read existing history to see tokens and cost. No model request is sent.").font(.callout).foregroundStyle(.secondary)
+                    Text("No history yet. Checking in the background…").font(.callout).foregroundStyle(.secondary)
                 }
                 if account.identity.provider != .cursor {
                     Button("Choose history folder…") { chooseFolder(account.identity) }
@@ -66,6 +68,7 @@ struct CodingUsageHistoryView: View {
                         .disabled(history.reading.contains(account.identity))
                 }
             }.card(tier: .base)
+                .onAppear { history.refreshIfStale([account.identity]) }
         }
         Text("Prices: LiteLLM public model catalog. Reasoning tokens are included in output. Cursor history covers the account across machines; other providers use local history.")
             .font(.caption).foregroundStyle(.secondary)

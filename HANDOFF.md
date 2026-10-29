@@ -1,6 +1,6 @@
 # Geraldine development handoff
 
-**Updated:** 2026-10-28
+**Updated:** 2026-10-29
 
 Geraldine is a local-only macOS utility. It has no account system, backend, or cross-device sync, and clipboard history must not be reintroduced. Published builds update themselves from `geraldine.hemisthia.com` ([`docs/updates.md`](docs/updates.md)); that check is the only request Geraldine makes on its own. Preferences and app state remain on this Mac in `UserDefaults` and Application Support. Preserve unrelated user work and the existing opt-in Dock window-preview behavior.
 
@@ -63,6 +63,26 @@ kept byte-for-byte for their historical proof; they are not app source.
 - Installed at 15:49Z over local build 107, preserving the bundle root. Installed and packaged CDHash match: `21ce0565329f8c6f238fbc6224a66de2079411e7`. Strict deep signature, stapler, and Gatekeeper checks pass (Notarized Developer ID). PID `30813` answers from `/Applications/Geraldine.app`; all nine doctor checks pass. Accessibility, Full Disk Access, launch at login, menu-bar-only, and the foreground app were preserved. The exact prior state was restored: Keep Awake on indefinitely with both assertions, Stay Active off with its one-minute delay preserved.
 - Runtime verification: all three filtering taps remained enabled; the process sample confirms `com.vincent.geraldine.event-taps` runs separately from the main thread. CPU measured 4.19 seconds over 45.01 seconds, or 9.31% of one core, with animation uncapped. The listen-only probe saw no mouse events, so physical trackpad/effort-selector acceptance remains unverified. The prior source verification was 592 tests, zero failures, 18 skipped; this shipping record does not claim a new test run. Compact install/runtime/doctor proof is retained beside the release payload in `verification/`.
 - **Not yet published.** At 15:47Z, `geraldine.hemisthia.com` still did not resolve (`curl` error 6); no DNS or server configuration was changed. Once DNS exists, run `deploy/updates/setup-update-host.sh --apply`, then `scripts/release/publish-update.sh --payload ~/geraldine-releases/0.2.0-build109`. Build 109 has the production feed configured, but update checks cannot succeed until the host is reachable.
+
+## Background usage — 2026-10-29
+
+- Quota refreshes are independent per identity, with one in-flight request per
+  login and the existing five-minute cadence. Successful display snapshots and
+  discovered account names restore from preferences before background work.
+  Disconnected/stopped generations cannot overwrite current state.
+- `AppState` owns the history monitor. Requested histories refresh while their
+  view is closed; public pricing never gates token totals. Only aggregate
+  default-source summaries persist. Custom history folders remain session-local.
+- Widgets, cards, history, and `geraldine usage --refresh` return cached values
+  immediately and label age. The CLI refresh flag requests background work;
+  its `refreshed` result remains false because it does not await new values.
+- Cursor quota uses native CLI sign-in with a 45-second timeout. No quota token
+  reader remains. Cursor history retains its previously approved file-token
+  dashboard source. Do not run live history checks when credential reads are
+  prohibited; use synthetic fixtures.
+- `AgentPTY` closes its master before waiting, then escalates process-group
+  SIGTERM to SIGKILL. The native Cursor check and synthetic cold-start, flooded
+  terminal, graceful shutdown, and stubborn descendant tests cover the path.
 
 ## Current state
 

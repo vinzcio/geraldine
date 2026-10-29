@@ -19,6 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         state.devices.start()
         state.powerTools.start()
         state.aiUsage.start()
+        state.usageHistory.start()
         menuBarController = MenuBarController(state: state)
         // Best-effort: a failed socket bind must never interrupt the app.
         ControlHost.shared.start()
@@ -75,6 +76,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         AppState.shared.keepAwake.refreshIdleActivityAccess()
         AppState.shared.powerTools.refreshAccessibility()
         AppState.shared.aiUsage.refreshIfStale()
+        AppState.shared.usageHistory.refreshIfStale()
     }
 
     /// Clicking the Dock icon (or re-opening) brings the main window back.
@@ -107,5 +109,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         AppState.shared.keepAwake.shutdown()
         AppState.shared.powerTools.stop()
         AppState.shared.aiUsage.stop()
+        AppState.shared.usageHistory.stop()
     }
 }

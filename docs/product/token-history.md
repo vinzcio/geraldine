@@ -1,10 +1,14 @@
 # Token history and estimated cost
 
 Geraldine's Coding Usage page has separate **Allowances** and **Tokens & Cost** tabs.
-Use **Read history** for an account to scan its existing history. **Refresh Usage**
-refreshes public prices and rereads the accounts already scanned in this view.
-Choose history folder supports custom locations for the current view session.
-No history database, retention cutoff, or automatic history polling is introduced.
+Opening **Tokens & Cost** shows cached summaries immediately and refreshes stale
+accounts independently in the background. Requested histories continue refreshing
+on the existing five-minute usage cadence while the page is closed and after
+relaunch. **Refresh Usage** requests prices and visible histories independently;
+slow public pricing never delays token totals. **Read history** refreshes one
+account. Choose history folder keeps a custom location for this app session;
+custom-folder summaries are not restored as default-source totals after relaunch.
+No history database or retention cutoff is introduced.
 
 Supported readers:
 
@@ -29,12 +33,11 @@ already included in normalized output. Public LiteLLM rates supply estimated
 API-equivalent cost, including recorded speed tiers when rates are available.
 Provider-reported cost takes precedence. Unknown models remain unpriced and
 partial costs are explicitly labeled. Estimates use current fetched rates and
-are not historical invoices or subscription bills. Rates and summaries are kept
-in memory. Partial/unreadable sources are disclosed; a failed refresh retains the
+are not historical invoices or subscription bills. Rates stay in memory; default
+history display summaries are cached in Geraldine's preferences for relaunch. Partial/unreadable sources are disclosed; a failed refresh retains the
 last successful summary. Prompts and credentials are never retained or logged.
 
-Existing quota readers, refresh cadence, and provider credential ownership remain
-unchanged. OpenCode, Pi, and Muse currently support history in Geraldine; their
+Existing history readers and provider credential ownership remain unchanged. OpenCode, Pi, and Muse currently support history in Geraldine; their
 allowance tiles report unavailable rather than fabricate subscription limits.
 No provider ceilings, account schemas, credential refreshes, or Keychain access
 were added. Cursor history and public pricing are the approved direct HTTP exceptions.

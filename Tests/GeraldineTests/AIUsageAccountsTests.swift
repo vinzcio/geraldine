@@ -41,7 +41,7 @@ final class AIUsageAccountsTests: XCTestCase {
     }
 
     @MainActor
-    func testTilesUseAccountNamesOnlyWhenAProviderHasSeveralLogins() throws {
+    func testTilesUseAccountNamesOnlyWhenAProviderHasSeveralLogins() async throws {
         let home = try makeHome()
         defer { try? FileManager.default.removeItem(at: home) }
         try write(#"{"oauthAccount":{"emailAddress":"team@example.com","organizationType":"claude_team","organizationName":"Example Co"}}"#,
@@ -55,6 +55,9 @@ final class AIUsageAccountsTests: XCTestCase {
             .disconnected(identity.provider)
         }
 
+        for await accounts in monitor.$accounts.values where accounts.contains(where: { $0.id == "claude.client" }) { break }
+        // @Published emits before assignment.
+        await Task.yield()
         XCTAssertEqual(monitor.tileName(for: AIUsageIdentity(.claude)), "Example Co")
         XCTAssertEqual(monitor.tileName(for: AIUsageIdentity(.claude, accountKey: "client")), "Client")
         XCTAssertEqual(monitor.displayName(for: AIUsageIdentity(.claude, accountKey: "client")), "Claude · Client")

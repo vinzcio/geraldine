@@ -126,7 +126,7 @@ final class AIUsageHistoryWorkflowTests: XCTestCase {
         let identity = AIUsageIdentity(.claude)
         let directory = URL(fileURLWithPath: "/fixture/history")
         let record = AIHistoryRecord(model: "test-model", date: Date(timeIntervalSince1970: 1793149200), tokens: AIHistoryTokens(input: 1200, cacheRead: 20000, cacheWrite: 300, output: 450, reasoning: 100))
-        let monitor = AIUsageHistoryMonitor(readHistory: { received, folder in
+        let monitor = AIUsageHistoryMonitor(defaults: isolatedDefaults(), readHistory: { received, folder in
             XCTAssertEqual(received, identity); XCTAssertEqual(folder, directory)
             return AIHistoryRead(records: [record], source: "Fixture history")
         }, fetchPrices: { Data(#"{"test-model":{"input_cost_per_token":0.000003,"output_cost_per_token":0.000015,"cache_read_input_token_cost":0.0000003}}"#.utf8) })
@@ -162,7 +162,7 @@ final class AIUsageHistoryWorkflowTests: XCTestCase {
             }
         }
         let reader = Reader(), id = AIUsageIdentity(.pi)
-        let monitor = AIUsageHistoryMonitor(readHistory: { _, _ in try await reader.read() }, fetchPrices: { throw HistoryReadError.invalid })
+        let monitor = AIUsageHistoryMonitor(defaults: isolatedDefaults(), readHistory: { _, _ in try await reader.read() }, fetchPrices: { throw HistoryReadError.invalid })
         monitor.refresh(id)
         for await values in monitor.$reading.values where values.isEmpty { break }
         XCTAssertEqual(monitor.summaries[id]?.unpricedRecords, 1)
@@ -170,6 +170,13 @@ final class AIUsageHistoryWorkflowTests: XCTestCase {
         for await values in monitor.$reading.values where values.isEmpty { break }
         XCTAssertEqual(monitor.summaries[id]?.tokens.total, 10)
         XCTAssertNotNil(monitor.errors[id]); XCTAssertNotNil(monitor.pricingNotice)
+    }
+
+    private func isolatedDefaults() -> UserDefaults {
+        let name = "AIHistoryTests." + UUID().uuidString
+        let defaults = UserDefaults(suiteName: name)!
+        addTeardownBlock { defaults.removePersistentDomain(forName: name) }
+        return defaults
     }
 
     func testLiveBackgroundHistoryReaders() async throws {

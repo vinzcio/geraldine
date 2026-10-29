@@ -1,5 +1,25 @@
 # Coding usage widgets — handoff
 
+## Background usage (2026-10-29)
+
+This section and README's Coding usage contract supersede the historical source
+and credential notes below. Each enabled allowance login and each requested
+history refreshes independently, at the existing five-minute cadence and when
+opened stale. Cached display summaries restore before any CLI runs. Every usage
+surface includes age; failures keep last good values. `geraldine usage --refresh`
+now returns the cache immediately and requests background work.
+
+Cursor's native sign-in was verified with all CURSOR variables removed. Quota
+capture no longer reads or hands off tokens and allows 45 seconds. The unused
+Claude, Codex, Grok, and Cursor quota credential readers are deleted. Cursor's
+separately approved history reader remains unchanged. PTY shutdown closes the
+master before waiting and escalates TERM to KILL for the process group.
+
+The app owns the history monitor, and token totals do not wait for pricing.
+OpenCode, Pi, and Muse remain history-only. Tests: `AIUsageBackgroundTests`,
+`AgentPTYLifecycleTests`, `ControlHostUsageReviewTests`, and existing provider/UI
+suites. Live history tests are opt-in and were not run for this change.
+
 ## Token history extension (2026-10-28, local source)
 
 Coding Usage now separates Allowances from Tokens & Cost. The history pipeline

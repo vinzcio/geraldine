@@ -37,7 +37,7 @@ enum AgentPTY {
         abortContaining: [String] = [],
         timeout: TimeInterval
     ) -> String {
-        let master = posix_openpt(O_RDWR | O_NOCTTY)
+        let master = posix_openpt(O_RDWR | O_NOCTTY | O_CLOEXEC)
         guard master >= 0, grantpt(master) == 0, unlockpt(master) == 0,
               let name = ptsname(master), let slaveName = String(cString: name, encoding: .utf8) else {
             if master >= 0 { close(master) }
@@ -47,7 +47,7 @@ enum AgentPTY {
         // the child's first open resets it and the TUI lays out one column
         // wide. O_NOCTTY keeps this descriptor from claiming the terminal, and
         // it closes once the child has opened its own.
-        let sizer = open(slaveName, O_RDWR | O_NOCTTY)
+        let sizer = open(slaveName, O_RDWR | O_NOCTTY | O_CLOEXEC)
         guard sizer >= 0 else {
             close(master)
             return ""
@@ -227,15 +227,21 @@ enum AgentPTY {
         return true
     }
 
-    /// Kill the session, then close the master before reaping: a dying session
-    /// leader can block in exit while its terminal output drains, and nothing
-    /// reads the master once the capture is over.
+    /// Hang up before waiting: a child can block in exit while terminal output
+    /// drains. TERM gives the whole group a chance to exit; KILL also cleans up
+    /// descendants that ignore TERM or outlive the session leader.
     private static func finish(pid: pid_t, master: Int32, reaped: Bool) {
-        if !reaped {
-            killpg(pid, SIGKILL)
-            kill(pid, SIGKILL)
-        }
+        killpg(pid, SIGTERM)
         close(master)
+        var reaped = reaped
+        let grace = Date().addingTimeInterval(1)
+        while Date() < grace {
+            _ = isRunning(pid, reaped: &reaped)
+            if reaped && killpg(pid, 0) != 0 { return }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        killpg(pid, SIGKILL)
+        if !reaped { kill(pid, SIGKILL) }
         guard !reaped else { return }
         var status: Int32 = 0
         while waitpid(pid, &status, 0) < 0 && errno == EINTR {}

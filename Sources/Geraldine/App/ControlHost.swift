@@ -1,5 +1,4 @@
 import AppKit
-import Combine
 import Foundation
 import GeraldineControl
 import IOKit.pwr_mgt
@@ -12,7 +11,6 @@ final class ControlHost {
     static let shared = ControlHost()
 
     private var server: ControlServer?
-    private var usageWaiters: [UUID: UsageRefreshWaiter] = [:]
     private(set) var startupError: String?
     private let keepAwakeProvider: @MainActor () -> KeepAwakeController
     private let monitorProvider: @MainActor () -> SystemMonitor
@@ -42,8 +40,6 @@ final class ControlHost {
         self.sampleProcesses = sampleProcesses
         controlSettings = ControlSettings(defaults: defaults, keepAwake: keepAwake)
     }
-
-    var pendingUsageRefreshCount: Int { usageWaiters.count }
 
     var socketPath: String {
         server?.socketURL.path ?? Self.socketURL.path
@@ -81,9 +77,6 @@ final class ControlHost {
     }
 
     func stop() {
-        let waiters = Array(usageWaiters.values)
-        usageWaiters.removeAll()
-        for waiter in waiters { waiter.cancel() }
         server?.stop()
         server = nil
     }
@@ -759,18 +752,10 @@ final class ControlHost {
     private func usage(_ request: ControlRequest) async -> ControlResponse {
         let usage = usageProvider()
         var warnings: [String] = []
-        var refreshed = false
 
         if request.options["refresh"] == "true" {
             usage.refreshConnected()
-            let waiter = UsageRefreshWaiter()
-            let id = UUID()
-            usageWaiters[id] = waiter
-            refreshed = await waiter.wait(isRefreshing: usage.isRefreshing, changes: usage.$isRefreshing.eraseToAnyPublisher())
-            usageWaiters[id] = nil
-            if !refreshed {
-                warnings.append("The usage request was cancelled; showing the last known values.")
-            }
+            warnings.append("Refreshing enabled accounts in the background; showing the last known values.")
             if usage.accounts.allSatisfy({ !usage.isConnected($0.identity) }) {
                 warnings.append("No coding-usage tiles are connected. Show one with `geraldine widgets show ai.claude`.")
             }
@@ -818,7 +803,7 @@ final class ControlHost {
 
         let result = JSONValue.object([
             "accounts": .array(accounts),
-            "refreshed": .bool(refreshed)
+            "refreshed": .bool(false)
         ])
 
         var lines: [String] = []
@@ -836,13 +821,17 @@ final class ControlHost {
             case .loading:
                 lines.append("\(name): reading…")
             case .error(let message):
-                lines.append("\(name): \(message)")
+                let values = snapshot.displayWindows.map { "\($0.title) \(Int($0.remainingPercent.rounded()))% left" }
+                lines.append("\(name): " + values.joined(separator: " · ") + " · Couldn't refresh: \(message)")
             case .ready:
                 let windows = snapshot.displayWindows.map { window in
                     "\(window.title) \(Int(window.remainingPercent.rounded()))% left"
                 }
                 lines.append("\(name): " + (windows.isEmpty ? "no quota windows reported" : windows.joined(separator: " · ")))
             }
+        }
+        for identity in ordered where usage.snapshot(for: identity).fetchedAt != nil {
+            lines.append("\(usage.displayName(for: identity)): \(UsageAge.text(usage.snapshot(for: identity).fetchedAt, now: Date()))")
         }
         if let last = usage.lastRefresh {
             lines.append("Last refreshed \(last.formatted(date: .omitted, time: .shortened)).")
@@ -1179,51 +1168,5 @@ final class ControlHost {
             text: usage.map { [$0] },
             error: ControlErrorPayload(code: .usage, message: hint, hint: usage)
         )
-    }
-}
-
-// MARK: - Usage refresh waiter
-
-/// Bridges the monitor's published refresh flag to one request-owned await. The
-/// control server never polls: a command that asks for fresh usage waits for the
-/// same batch the UI uses until completion or cancellation.
-@MainActor
-final class UsageRefreshWaiter {
-    private var continuation: CheckedContinuation<Bool, Never>?
-    private var cancellable: AnyCancellable?
-    private var isCancelled = false
-
-    func wait(isRefreshing: Bool, changes: AnyPublisher<Bool, Never>) async -> Bool {
-        guard !isCancelled, !Task.isCancelled else { return false }
-        guard isRefreshing else { return true }
-        return await withTaskCancellationHandler {
-            await withCheckedContinuation { continuation in
-                self.continuation = continuation
-                guard !isCancelled, !Task.isCancelled else {
-                    finish(false)
-                    return
-                }
-                self.cancellable = changes.sink { [weak self] refreshing in
-                    guard !refreshing else { return }
-                    // @Published emits before the monitor stores its final flag.
-                    Task { @MainActor in self?.finish(true) }
-                }
-            }
-        } onCancel: {
-            Task { @MainActor [weak self] in self?.cancel() }
-        }
-    }
-
-    func cancel() {
-        isCancelled = true
-        finish(false)
-    }
-
-    private func finish(_ value: Bool) {
-        guard let continuation else { return }
-        self.continuation = nil
-        cancellable?.cancel()
-        cancellable = nil
-        continuation.resume(returning: value)
     }
 }
